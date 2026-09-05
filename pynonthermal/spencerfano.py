@@ -596,6 +596,7 @@ class SpencerFanoSolver:
         xs_vec: npt.NDArray[np.float64],
         epsilon_trans_ev: float,
         transitionkey: t.Any | None,
+        xs_is_checked: bool = False,
     ) -> tuple[npt.NDArray[np.float64], int, float]:
         # validate and record one transition, and describe its matrix band: the values vec[j]
         # (zeroed below the threshold index, where no grid electron can drive the transition),
@@ -603,8 +604,10 @@ class SpencerFanoSolver:
         self._require_not_solved("add excitation")
         self._check_not_balanced(Z)
         # get_xs_on_grid() returns a read-only copy, so a later write by the caller cannot change
-        # what the solver holds
-        xs_vec = get_xs_on_grid(xs_vec, self.engrid, "xs_vec")
+        # what the solver holds. A template array is already such a copy, so xs_is_checked skips
+        # a second check and copy for every transition of an ion.
+        if not xs_is_checked:
+            xs_vec = get_xs_on_grid(xs_vec, self.engrid, "xs_vec")
 
         self._check_epsilon_trans(epsilon_trans_ev)
         # >= rather than < 0, so that NaN, for which every comparison is False, is rejected too
@@ -752,6 +755,7 @@ class SpencerFanoSolver:
                     template.xs_vec,
                     template.epsilon_trans_ev,
                     transitionkey=transitionkey,
+                    xs_is_checked=True,
                 )
                 if not self.heating_only_approximation:
                     # the matrix takes no excitation band in the heating-only approximation
