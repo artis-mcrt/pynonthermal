@@ -229,7 +229,7 @@ Points to note:
 
 - The balance includes only non-thermal ionisation and the recombination that you give. It does not include thermal collisional ionisation, photoionisation, or charge exchange. The ion fractions therefore depend on `depositionratedensity_ev`, unlike the fixed-population case.
 - The top stage of the chain is a sink. Its ionisation is an energy loss in the matrix, but the ions it makes have no stage to go to. `solve()` warns if the ionisation rate out of the top stage exceeds 1 % of the total ionisation rate of the element, because about that fraction of the element then belongs in a higher stage. Then extend the chain with a rate coefficient for the next stage.
-- Every stage of the chain gets the built-in ionisation channels of `add_ionisation()`. You cannot call `add_ionisation()`, `add_ionisation_channel()`, or `add_excitation()` for an ion of a balanced element.
+- Every stage of the chain gets the built-in ionisation channels of `add_ionisation()`, unless you pass `builtin_channels=False`. Then add the channels of each stage yourself: `add_ionisation(Z, ion_stage, None)` for the built-in shells, `add_ionisation_channel(Z, ion_stage, None, ...)` for a custom one. `solve()` refuses a balance whose stage has no channel. Custom excitations of a balanced ion take the lower level population as a fraction of the ion: `add_excitation(Z, ion_stage, None, xs_vec, epsilon_trans_ev, levelpopfrac=...)`. See [custom cross sections](#advanced-usage-custom-cross-sections).
 - To choose the stages that get excitations, or to give each stage its own options, call `add_ion_excitation(Z, ion_stage, n_ion=None, ...)` per stage instead of `add_element_excitation()`.
 - Until `solve()` runs, `sf.ionpopdict`, `sf.get_n_e()`, and `sf.get_n_ion_tot()` hold a provisional population of equal fractions for the stages of the chain.
 - A second call to `solve()` starts from the converged rates of the first call.
@@ -320,6 +320,13 @@ with `add_excitation()` or `add_ionisation_channel()`. Interpolate your own tabl
 
 A custom cross section follows the same path through the solver as a built-in one. The matrix, the energy
 fractions, and the rate coefficients therefore stay consistent.
+
+For an ion whose population comes from an ionisation balance, leave the population argument as `None`:
+`add_ionisation_channel(Z, ion_stage, None, ...)` and `add_excitation(Z, ion_stage, None, ..., levelpopfrac=f)`,
+with the lower level population as the fraction `f` of the ion. The channel then takes part in the balance
+iteration. To replace the built-in shells of a balanced element, add it with `builtin_channels=False` and
+add every stage's channels yourself, with `add_ionisation(Z, ion_stage, None)` for the built-in shells of a
+stage that keeps them.
 
 The examples below use NumPy:
 

@@ -9,6 +9,7 @@ import typing as t
 import warnings
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 import pynonthermal
@@ -599,3 +600,78 @@ def test_add_element_validation() -> None:
             sf.add_element(2, 1e8, pynonthermal.Saha([1, 2]))
         with pytest.raises(ValueError, match="Call set_temperature"):
             sf.add_element(26, 1e8, pynonthermal.Fixed({2: 1.0}), excitation=True)
+
+
+def test_custom_channels_of_a_balanced_ion() -> None:
+    # channels and excitations added with n_ion=None / levelpopfrac take part in the balance, and the
+    # converged solver matches a fixed solver with the same channels at the converged populations
+    def custom_channel_xs(sf: pynonthermal.SpencerFanoSolver) -> npt.NDArray[np.float64]:
+        # a made-up He II channel: zero below the potential and constant above it
+        return np.where(sf.engrid > 60.0, 2e-17, 0.0)
+
+    def custom_excitation_xs(sf: pynonthermal.SpencerFanoSolver) -> npt.NDArray[np.float64]:
+        return np.where(sf.engrid > 21.0, 1e-17, 0.0)
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.set_temperature(5000)
+        sf.add_element_ionbalance(2, 1e8, HELIUM_ALPHAS, builtin_channels=False)
+        assert not sf._ionisation_channels
+        # the built-in shells of He I, a custom channel for He II, and a custom He I excitation
+        sf.add_ionisation(2, 1, None)
+        sf.add_ionisation_channel(2, 2, None, 60.0, custom_channel_xs(sf), channelkey="custom")
+        sf.add_excitation(2, 1, None, custom_excitation_xs(sf), 21.0, transitionkey="custom", levelpopfrac=0.25)
+        assert [channel.key for channel in sf._ionisation_channels[(2, 2)]] == ["custom"]
+        sf.solve(depositionratedensity_ev=1e8, balance_tol=1e-6)
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-6)
+        assert sf.excitationlists[(2, 1)]["custom"].levelnumberdensity == 0.25 * sf.ionpopdict[(2, 1)]
+
+        sf_fixed = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+        sf_fixed.add_ionisation(2, 1, sf.ionpopdict[(2, 1)])
+        sf_fixed.add_ionisation_channel(2, 2, sf.ionpopdict[(2, 2)], 60.0, custom_channel_xs(sf), channelkey="custom")
+        sf_fixed._register_ion_population(2, 3, sf.ionpopdict[(2, 3)])
+        sf_fixed.add_excitation(2, 1, 0.25 * sf.ionpopdict[(2, 1)], custom_excitation_xs(sf), 21.0, "custom")
+        sf_fixed.solve(depositionratedensity_ev=1e8)
+        assert np.allclose(sf.sfmatrix, sf_fixed.sfmatrix, rtol=1e-9, atol=1e-12 * np.abs(sf_fixed.sfmatrix).max())
+        assert np.allclose(sf.yvec, sf_fixed.yvec, rtol=1e-9)
+
+    # a Fixed element without the built-in channels gets only populations, and custom channels join with
+    # the same n_ion
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, pynonthermal.Fixed({1: 0.5, 2: 0.5}), builtin_channels=False)
+        assert sf.ionpopdict == {(2, 1): 0.5e8, (2, 2): 0.5e8}
+        assert not sf._ionisation_channels
+        sf.add_ionisation_channel(2, 2, 0.5e8, 60.0, custom_channel_xs(sf))
+        with pytest.raises(ValueError, match="different populations"):
+            sf.add_ionisation_channel(2, 1, 0.4e8, 25.0, np.where(sf.engrid > 25.0, 1e-17, 0.0))
+
+
+def test_balance_stage_without_channels_is_rejected() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element_ionbalance(2, 1e8, HELIUM_ALPHAS, builtin_channels=False)
+        sf.add_ionisation(2, 1, None)
+        with pytest.raises(ValueError, match="ion_stage 2 of the ionisation balance has no ionisation channel"):
+            sf.solve(depositionratedensity_ev=1e8)
+        # the built-in shells can still be added to a balanced ion, once
+        sf.add_ionisation(2, 2, None)
+        with pytest.raises(ValueError, match="already added"):
+            sf.add_ionisation(2, 2, None)
+        sf.solve(depositionratedensity_ev=1e8)
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-4)
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        # None needs a balanced ion, and a balanced ion needs None or levelpopfrac
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf.add_ionisation(8, 2, None)
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf.add_ionisation_channel(8, 2, None, 35.1, np.where(sf.engrid > 35.1, 1e-17, 0.0))
+        with pytest.raises(ValueError, match="levelnumberdensity is required"):
+            sf.add_excitation(8, 2, None, np.where(sf.engrid > 20.0, 1e-17, 0.0), 20.0, levelpopfrac=0.5)
+        sf.add_element_ionbalance(2, 1e8, HELIUM_ALPHAS)
+        xs_vec = np.where(sf.engrid > 21.0, 1e-17, 0.0)
+        with pytest.raises(ValueError, match="levelpopfrac must be between 0 and 1"):
+            sf.add_excitation(2, 1, None, xs_vec, 21.0)
+        with pytest.raises(ValueError, match="levelpopfrac must be between 0 and 1"):
+            sf.add_excitation(2, 1, None, xs_vec, 21.0, levelpopfrac=1.5)
+        with pytest.raises(ValueError, match="not both"):
+            sf.add_excitation(2, 1, 1e7, xs_vec, 21.0, levelpopfrac=0.5)
+        assert not sf.excitationlists
