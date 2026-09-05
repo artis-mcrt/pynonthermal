@@ -186,11 +186,12 @@ def test_n_e_cache_invalidated_by_later_adds() -> None:
     # reading n_e between add_* calls must not freeze it at the earlier value
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(8, 2, n_ion=1e8)
         assert sf.get_n_e() == 1e8
         sf.add_ionisation(8, 3, n_ion=1e8)
         assert sf.get_n_e() == 3e8
-        sf.add_ion_excitation(26, 3, n_ion=5e7, use_collstrengths=False)
+        sf.add_ion_excitation(26, 3, n_ion=5e7)
         assert sf.get_n_e() == 4e8
 
 
@@ -409,6 +410,7 @@ def test_excitation_xs_zero_above_grid() -> None:
     # highest transition energy
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=5.0, npts=300) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(26, 3, n_ion=0.7)
         sf.add_ion_excitation(26, 3, n_ion=0.7)
         for transitions in sf.excitationlists.values():
@@ -437,6 +439,7 @@ def test_excitation_only_ion_counted() -> None:
     # so its excitation fraction has to appear in the totals
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=500) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(8, 2, n_ion=1e8)
         xs_vec = np.where(sf.engrid >= 20.0, 1e-16, 0.0)
         sf.add_excitation(26, 2, levelnumberdensity=1e8, xs_vec=xs_vec, epsilon_trans_ev=20.0)
@@ -451,8 +454,9 @@ def test_ltepopexcitation_registers_population() -> None:
     # electrons and nuclei, and must not invent an ionisation channel for it
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=600) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(8, 2, n_ion=1e8)
-        sf.add_ion_excitation(26, 3, n_ion=5e7, use_collstrengths=False)
+        sf.add_ion_excitation(26, 3, n_ion=5e7)
 
         assert sf.ionpopdict[(26, 3)] == 5e7
         assert sf.get_n_e() == 1e8 * 1 + 5e7 * 2
@@ -467,8 +471,9 @@ def test_ltepopexcitation_registers_population() -> None:
     # a negative population is rejected on the excitation path too
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         with pytest.raises(ValueError, match="non-negative"):
-            sf.add_ion_excitation(26, 3, n_ion=-1.0, use_collstrengths=False)
+            sf.add_ion_excitation(26, 3, n_ion=-1.0)
 
 
 def test_population_mismatch_checked_before_atomic_data() -> None:
@@ -476,9 +481,10 @@ def test_population_mismatch_checked_before_atomic_data() -> None:
     # read, so the failed call neither caches a level table nor changes the populations
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(8, 2, n_ion=1e8)
         with pytest.raises(ValueError, match="different populations"):
-            sf.add_ion_excitation(8, 2, n_ion=5e7, use_collstrengths=False)
+            sf.add_ion_excitation(8, 2, n_ion=5e7)
         assert sf.adata_polars is None
         assert sf.ionpopdict == {(8, 2): 1e8}
         assert not sf.excitationlists
@@ -490,9 +496,10 @@ def test_conservation_warning_on_coarse_grid() -> None:
     x_e = 1e-4
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=100) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ((2, 1, 1.0 - x_e), (2, 2, x_e)):
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
         sf.solve(depositionratedensity_ev=100)
 
         with pytest.warns(UserWarning, match="energy fractions sum to"):
@@ -666,7 +673,8 @@ def test_ltepop_excitation_grouped_fill() -> None:
     npts = 400
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=npts) as sf:
         sf.set_temperature(3000)
-        sf.add_ion_excitation(2, 1, n_ion=1.0, use_collstrengths=False)
+        sf.set_atomic_data(use_collstrengths=False)
+        sf.add_ion_excitation(2, 1, n_ion=1.0)
         assert len(sf.excitationlists[(2, 1)]) > 100  # the grouping must actually see many transitions
         expected = np.zeros((npts, npts))
         for trans in sf.excitationlists[(2, 1)].values():

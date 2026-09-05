@@ -38,6 +38,7 @@ class CountingAnalysisSolver(pynonthermal.SpencerFanoSolver):
 def test_api_guards() -> None:
     with CountingAnalysisSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(2, 1, n_ion=1.0)
 
         # getters require solve() to have been called
@@ -66,8 +67,9 @@ def test_api_guards() -> None:
             )
 
         # excitation data must exist for the requested ion
+        sf.set_atomic_data(adata_polars=pl.DataFrame({"Z": [2], "ion_stage": [1]}))
         with pytest.raises(ValueError, match="No excitation data"):
-            sf.add_ion_excitation(3, 1, n_ion=1.0, adata_polars=pl.DataFrame({"Z": [2], "ion_stage": [1]}))
+            sf.add_ion_excitation(3, 1, n_ion=1.0)
 
         # a zero-population ion is a no-op and a negative population is rejected
         sf.add_ionisation(8, 3, n_ion=0.0)
@@ -128,13 +130,14 @@ def test_helium() -> None:
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=2000, verbose=True) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ions:
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
 
         # re-adding an ion's excitations with a different population is not allowed
         with pytest.raises(ValueError, match="different populations"):
-            sf.add_ion_excitation(2, 1, n_ion=99.9, use_collstrengths=False)
+            sf.add_ion_excitation(2, 1, n_ion=99.9)
 
         # call solve twice to test that it can be called multiple times without error
         sf.solve(depositionratedensity_ev=1000)
@@ -173,9 +176,10 @@ def test_heating_only_approximation() -> None:
             emin_ev=1, emax_ev=3000, npts=512, heating_only_approximation=heating_only_approximation
         )
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ions:
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
         return sf
 
     with (
@@ -217,9 +221,10 @@ def test_iron() -> None:
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=16000, npts=1024, verbose=True) as sf:
         sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ions:
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
 
         sf.solve(depositionratedensity_ev=100)
 

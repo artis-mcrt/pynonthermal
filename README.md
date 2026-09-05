@@ -118,16 +118,21 @@ sf.set_temperature(6000)  # K, once per solver
 sf.add_ion_excitation(Z=8, ion_stage=1, n_ion=1.0e10)
 ```
 
-The solver has one temperature (`sf.temperature`), which the LTE level populations and the [Saha equation](#saha-equation) use. Call `set_temperature()` before the first method that needs it; a second call with a different value raises a `ValueError`.
+The solver has one temperature (`sf.temperature`), which the LTE level populations and the [Saha model](#the-saha-model) use. Call `set_temperature()` before the first method that needs it; a second call with a different value raises a `ValueError`.
 
-Optional parameters:
+The level data and the options of the excitations are solver-wide settings, given once with `set_atomic_data()` before the excitations are added:
 
-- `maxnlevelslower`, `maxnlevelsupper`: only include transitions from the lowest `maxnlevelslower` levels up to the lowest `maxnlevelsupper` levels (defaults 5 and 250, matching ARTIS). Pass `None` to include all.
+```python
+sf.set_atomic_data(use_collstrengths=False, maxnlevelslower=5, maxnlevelsupper=250)
+```
+
+- `adata_polars`: your own level/transition table in the format of `artistools.atomic.get_levels()`, instead of the internal database.
 - `use_collstrengths`: use tabulated collision strengths where available (default `True`); otherwise cross sections come from the oscillator strength via the van Regemorter approximation.
+- `maxnlevelslower`, `maxnlevelsupper`: only include transitions from the lowest `maxnlevelslower` levels up to the lowest `maxnlevelsupper` levels (defaults 5 and 250, matching ARTIS). Pass `None` to include all.
 
-Transitions with energies outside the energy grid are dropped. If the internal database has no data for the ion, a `ValueError` is raised — you can then either supply your own level/transition table via `adata_polars` or add [custom cross sections](#custom-excitation-cross-sections) with `add_excitation()`.
+Transitions with energies outside the energy grid are dropped. If the level data has no entry for the ion, a `ValueError` is raised — you can then either supply your own table with `set_atomic_data()` or add [custom cross sections](#custom-excitation-cross-sections) with `add_excitation()`.
 
-An ion added only for excitation still contributes its charge to the free electron density.
+An ion added only for excitation still contributes its charge to the free electron density. `n_ion=None` is allowed for an ion whose population the solver already holds, from `add_element()` or an earlier call.
 
 ### 4. Solve
 
@@ -136,8 +141,8 @@ sf.solve(depositionratedensity_ev=1.0e8)
 ```
 
 - `depositionratedensity_ev`: the rate of energy deposition per volume in eV s^-1 cm^-3 (must be positive and finite). The energy *fractions* are independent of this value; the *rate coefficients* scale linearly with it.
-- `override_n_e`: optionally override the free electron density (cm^-3) instead of deriving it from the ion populations.
-- `balance_tol`: the relative tolerance of the [ionisation balance](#ion-populations-from-an-ionisation-balance) (default `1e-4`). It has no effect without a balanced element.
+- `override_n_e`: optionally override the free electron density (cm^-3) instead of deriving it from the ion populations. It cannot be combined with a `Saha` or `IonBalance` element, which set the free electron density from charge neutrality.
+- `balance_tol`: the relative tolerance of the [ionisation balance](#ion-populations-from-an-ionisation-balance) (default `1e-4`). It has no effect without an `IonBalance` element.
 
 The solution spectrum is stored as `sf.yvec` over `sf.engrid` (see [Method background](#method-background) for the numerical scheme).
 
@@ -202,26 +207,11 @@ print(sf.ionpopdict)  # the ion densities [cm^-3], converged for the balanced el
 print(sf.get_n_e())  # the charge-neutral free electron density [cm^-3]
 ```
 
-`excitation=True` adds the bound-bound excitations of every stage with level data, with the default options of `add_ion_excitation()`. Every stage gets the built-in ionisation channels. A future non-LTE population model will be a fourth model object.
+`add_element()` registers the population of every stage, so the per-ion methods can take `n_ion=None` for these ions afterwards. `excitation=True` adds the bound-bound excitations of every stage with level data, with the settings of `set_atomic_data()`; to choose the stages, call `add_ion_excitation(Z, ion_stage, None)` per stage instead. Every stage gets the built-in ionisation channels unless `builtin_channels=False`. After `solve()`, `sf.get_ion_fractions(Z)` gives the fraction of the element in each stage. A future non-LTE population model will be a fourth model object.
 
-The two sections below describe the `Saha` and `IonBalance` models. The methods `add_element_saha()` and `add_element_ionbalance()` do the same as `add_element()` with those models, and `add_element_excitation()` adds the excitations of a balanced element with your own options.
+### The IonBalance model
 
-### Non-thermal ionisation against recombination
-
-```python
-sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=3000, npts=4096)
-
-# recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that recombines
-sf.add_element_ionbalance(Z=8, n_elem=1.0e10, recomb_ratecoeffs={2: 3.0e-13, 3: 3.0e-12, 4: 1.0e-11})
-
-# LTE excitations of every stage of the element that has level data. The populations follow the balance.
-sf.set_temperature(6000)
-sf.add_element_excitation(Z=8)
-
-sf.solve(depositionratedensity_ev=2.95e8)
-```
-
-For each pair of adjacent ion stages `i` and `i+1`, the balance is `n_i Gamma_i = n_{i+1} n_e alpha_{i+1}`. `Gamma_i` is the non-thermal ionisation rate coefficient of stage `i` from the Spencer-Fano solution (`get_ionisation_ratecoeff()`), and `alpha_{i+1}` is the recombination rate coefficient that you give for stage `i+1`. The chain of stages runs from one below the lowest key of `recomb_ratecoeffs` to the highest key. In the example, the chain is O I to O IV.
+For each pair of adjacent ion stages `i` and `i+1`, the balance is `n_i Gamma_i = n_{i+1} n_e alpha_{i+1}`. `Gamma_i` is the non-thermal ionisation rate coefficient of stage `i` from the Spencer-Fano solution (`get_ionisation_ratecoeff()`), and `alpha_{i+1}` is the recombination rate coefficient that you give for stage `i+1`, in cm^3 s^-1 and keyed by the ion stage that recombines. The chain of stages runs from one below the lowest key to the highest key. In the example above, the chain is O I to O IV.
 
 The Spencer-Fano solution depends on the ion densities, so `solve()` iterates: it solves the equation, updates the ion densities from the balance and the free electron density from charge neutrality, and repeats until the population ratios agree to `balance_tol`. A `RuntimeError` reports a balance that did not converge within 100 iterations. Typical cases converge in about 5 to 10 iterations.
 
@@ -229,23 +219,15 @@ Points to note:
 
 - The balance includes only non-thermal ionisation and the recombination that you give. It does not include thermal collisional ionisation, photoionisation, or charge exchange. The ion fractions therefore depend on `depositionratedensity_ev`, unlike the fixed-population case.
 - The top stage of the chain is a sink. Its ionisation is an energy loss in the matrix, but the ions it makes have no stage to go to. `solve()` warns if the ionisation rate out of the top stage exceeds 1 % of the total ionisation rate of the element, because about that fraction of the element then belongs in a higher stage. Then extend the chain with a rate coefficient for the next stage.
-- Every stage of the chain gets the built-in ionisation channels of `add_ionisation()`, unless you pass `builtin_channels=False`. Then add the channels of each stage yourself: `add_ionisation(Z, ion_stage, None)` for the built-in shells, `add_ionisation_channel(Z, ion_stage, None, ...)` for a custom one. `solve()` refuses a balance whose stage has no channel. Custom excitations of a balanced ion take the lower level population as a fraction of the ion: `add_excitation(Z, ion_stage, None, xs_vec, epsilon_trans_ev, levelpopfrac=...)`. See [custom cross sections](#advanced-usage-custom-cross-sections).
-- To choose the stages that get excitations, or to give each stage its own options, call `add_ion_excitation(Z, ion_stage, n_ion=None, ...)` per stage instead of `add_element_excitation()`.
+- With `builtin_channels=False`, add the channels of each stage yourself: `add_ionisation(Z, ion_stage, None)` for the built-in shells, `add_ionisation_channel(Z, ion_stage, None, ...)` for a custom one. `solve()` refuses a balance whose stage has no channel. Custom excitations of a balanced ion take the lower level population as a fraction of the ion: `add_excitation(Z, ion_stage, None, xs_vec, epsilon_trans_ev, levelpopfrac=...)`. See [custom cross sections](#advanced-usage-custom-cross-sections).
 - Until `solve()` runs, `sf.ionpopdict`, `sf.get_n_e()`, and `sf.get_n_ion_tot()` hold a provisional population of equal fractions for the stages of the chain.
 - A second call to `solve()` starts from the converged rates of the first call.
 
-### Saha equation
+### The Saha model
 
-```python
-sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=3000, npts=4096)
-sf.set_temperature(12000)
-sf.add_element_saha(Z=8, n_elem=1.0e10, ion_stages=[1, 2, 3])
-sf.solve(depositionratedensity_ev=2.95e8)
-```
+No recombination rate coefficients are needed. For each pair of adjacent stages, `n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T))`, with the solver temperature `T` from `set_temperature()` and the ionisation potentials `chi_i` from the NIST table. The partition functions `U_i` come from the LTE level populations of the level data at that temperature; the built-in data covers He, O, and Fe. For other elements, give them with `Saha(ion_stages, partfuncs={ion_stage: U, ...})`, or supply a level table with `set_atomic_data()`. The bare nucleus (`ion_stage = Z + 1`) has a partition function of 1. `solve()` finds the free electron density from charge neutrality in one pass.
 
-No recombination rate coefficients are needed. For each pair of adjacent stages, `n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T))`, with the solver temperature `T` from `set_temperature()` and the ionisation potentials `chi_i` from the NIST table. The partition functions `U_i` come from the LTE level populations of the built-in level data at that temperature, which covers He, O, and Fe. For other elements, give them with `partfuncs={ion_stage: U, ...}`, or supply a level table via `adata_polars`. The bare nucleus (`ion_stage = Z + 1`) has a partition function of 1. `solve()` finds the free electron density from charge neutrality in one pass.
-
-Both kinds of balanced element can be in one solver together with ions that have fixed number densities. The free electron density then sums the charges of all of them. With `override_n_e`, the balance uses that density instead.
+Both kinds of balanced element can be in one solver together with ions that have fixed number densities. The free electron density then sums the charges of all of them.
 
 The functions behind the balance are in `pynonthermal.ionbalance`: `get_saha_factor()`, `get_ion_fractions()`, `solve_charge_neutral_n_e_ratios()`, and the general root find `solve_charge_neutral_n_e()`, which takes any charge density function that does not increase with the free electron density.
 

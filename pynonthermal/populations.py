@@ -26,7 +26,7 @@ class Fixed:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Saha:
-    """Ion fractions from the Saha equation at the solver temperature (see add_element_saha()).
+    """Ion fractions from the Saha equation at the solver temperature (see add_element()).
 
     ion_stages:
         at least two contiguous ion stages between 1 and Z + 1
@@ -42,7 +42,7 @@ class Saha:
 class IonBalance:
     """Ion fractions from the balance of non-thermal ionisation against recombination.
 
-    See add_element_ionbalance(). solve() iterates until the populations converge.
+    See add_element(). solve() iterates until the populations converge.
 
     recomb_ratecoeffs:
         the recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that recombines.
