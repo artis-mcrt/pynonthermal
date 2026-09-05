@@ -531,3 +531,71 @@ def test_deprecated_excitation_name() -> None:
         sf_new.add_ion_excitation(2, 2, n_ion=1e8, use_collstrengths=False)
         assert sf_old.excitationlists[(2, 2)].keys() == sf_new.excitationlists[(2, 2)].keys()
         assert np.array_equal(sf_old.sfmatrix, sf_new.sfmatrix)
+
+
+def test_add_element_models_match_the_explicit_methods() -> None:
+    # add_element() with each population model gives the same solver as the explicit calls
+    def new_solver() -> pynonthermal.SpencerFanoSolver:
+        sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+        sf.set_temperature(12000.0)
+        return sf
+
+    with new_solver() as sf_model, new_solver() as sf_explicit:
+        sf_model.add_element(2, 1e8, pynonthermal.IonBalance(HELIUM_ALPHAS), excitation=True)
+        sf_model.add_element(8, 1e9, pynonthermal.Saha([1, 2, 3]), excitation=True)
+        sf_model.add_element(26, 1e7, pynonthermal.Fixed({2: 0.3, 3: 0.7}), excitation=True)
+
+        sf_explicit.add_element_ionbalance(2, 1e8, HELIUM_ALPHAS)
+        sf_explicit.add_element_excitation(2)
+        sf_explicit.add_element_saha(8, 1e9, [1, 2, 3])
+        sf_explicit.add_element_excitation(8)
+        sf_explicit.add_ionisation(26, 2, 0.3e7)
+        sf_explicit.add_ionisation(26, 3, 0.7e7)
+        sf_explicit.add_ion_excitation(26, 2, n_ion=0.3e7)
+        sf_explicit.add_ion_excitation(26, 3, n_ion=0.7e7)
+
+        assert sf_model.ionpopdict == sf_explicit.ionpopdict
+        assert sf_model.excitationlists.keys() == sf_explicit.excitationlists.keys()
+        assert np.array_equal(sf_model.sfmatrix, sf_explicit.sfmatrix)
+        sf_model.solve(depositionratedensity_ev=1e9)
+        sf_explicit.solve(depositionratedensity_ev=1e9)
+        assert np.array_equal(sf_model.yvec, sf_explicit.yvec)
+        assert sf_model.ionpopdict == sf_explicit.ionpopdict
+
+    # the bare nucleus in a Fixed model gets a population but no channel, and excitation=False adds none
+    with new_solver() as sf:
+        sf.add_element(2, 1e8, pynonthermal.Fixed({1: 0.5, 2: 0.3, 3: 0.2}))
+        assert sf.ionpopdict == {(2, 1): 0.5e8, (2, 2): 0.3e8, (2, 3): 0.2e8}
+        assert (2, 3) not in sf._ionisation_channels
+        assert not sf.excitationlists
+        assert math.isclose(sf.get_n_e(), 0.3e8 + 2 * 0.2e8, rel_tol=1e-12)
+
+
+def test_add_element_validation() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        bad_model: t.Any = {2: 1e-12}
+        with pytest.raises(TypeError, match="Fixed, Saha, or IonBalance"):
+            sf.add_element(8, 1e10, bad_model)
+        with pytest.raises(ValueError, match="at least one ion fraction"):
+            sf.add_element(8, 1e10, pynonthermal.Fixed({}))
+        with pytest.raises(ValueError, match="must sum to one"):
+            sf.add_element(8, 1e10, pynonthermal.Fixed({1: 0.5, 2: 0.4}))
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            sf.add_element(8, 1e10, pynonthermal.Fixed({1: 1.5, 2: -0.5}))
+        with pytest.raises(ValueError, match="between 1 and 9"):
+            sf.add_element(8, 1e10, pynonthermal.Fixed({10: 1.0}))
+        with pytest.raises(ValueError, match="n_elem"):
+            sf.add_element(8, 0.0, pynonthermal.Fixed({1: 1.0}))
+        assert not sf.ionpopdict
+        assert not sf.sfmatrix.any()
+
+        sf.add_element(8, 1e10, pynonthermal.Fixed({1: 0.9, 2: 0.1}))
+        with pytest.raises(ValueError, match="already has ions"):
+            sf.add_element(8, 1e10, pynonthermal.Fixed({1: 1.0}))
+        with pytest.raises(ValueError, match="already has ions"):
+            sf.add_element(8, 1e10, pynonthermal.IonBalance({2: 1e-12}))
+        # a Saha model or excitation needs the temperature
+        with pytest.raises(ValueError, match="Call set_temperature"):
+            sf.add_element(2, 1e8, pynonthermal.Saha([1, 2]))
+        with pytest.raises(ValueError, match="Call set_temperature"):
+            sf.add_element(26, 1e8, pynonthermal.Fixed({2: 1.0}), excitation=True)

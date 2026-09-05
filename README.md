@@ -179,7 +179,32 @@ Each method shows the figure interactively, or saves it when `outputfilename` is
 
 ## Ion populations from an ionisation balance
 
-Instead of a number density for each ion, you can give the number density of an element. The solver then finds the ion densities in `solve()`, in one of two ways.
+Instead of a number density for each ion, you can give the number density of an element together with a population model. `add_element()` takes the model as an object:
+
+```python
+from pynonthermal import Fixed, IonBalance, Saha
+
+sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=3000, npts=4096)
+sf.set_temperature(6000)
+
+# ion fractions that you give (the same as add_ionisation() per ion)
+sf.add_element(Z=26, n_elem=1.0e6, populations=Fixed({2: 0.3, 3: 0.7}))
+
+# the Saha equation at the solver temperature
+sf.add_element(Z=2, n_elem=1.0e8, populations=Saha(ion_stages=[1, 2, 3]))
+
+# non-thermal ionisation balanced against recombination, iterated in solve()
+sf.add_element(Z=8, n_elem=1.0e10, populations=IonBalance({2: 3.0e-13, 3: 3.0e-12, 4: 1.0e-11}), excitation=True)
+
+sf.solve(depositionratedensity_ev=2.95e8)
+
+print(sf.ionpopdict)  # the ion densities [cm^-3], converged for the balanced elements
+print(sf.get_n_e())  # the charge-neutral free electron density [cm^-3]
+```
+
+`excitation=True` adds the bound-bound excitations of every stage with level data, with the default options of `add_ion_excitation()`. Every stage gets the built-in ionisation channels. A future non-LTE population model will be a fourth model object.
+
+The two sections below describe the `Saha` and `IonBalance` models. The methods `add_element_saha()` and `add_element_ionbalance()` do the same as `add_element()` with those models, and `add_element_excitation()` adds the excitations of a balanced element with your own options.
 
 ### Non-thermal ionisation against recombination
 
@@ -194,9 +219,6 @@ sf.set_temperature(6000)
 sf.add_element_excitation(Z=8)
 
 sf.solve(depositionratedensity_ev=2.95e8)
-
-print(sf.ionpopdict)  # the converged ion densities [cm^-3]
-print(sf.get_n_e())  # the charge-neutral free electron density [cm^-3]
 ```
 
 For each pair of adjacent ion stages `i` and `i+1`, the balance is `n_i Gamma_i = n_{i+1} n_e alpha_{i+1}`. `Gamma_i` is the non-thermal ionisation rate coefficient of stage `i` from the Spencer-Fano solution (`get_ionisation_ratecoeff()`), and `alpha_{i+1}` is the recombination rate coefficient that you give for stage `i+1`. The chain of stages runs from one below the lowest key of `recomb_ratecoeffs` to the highest key. In the example, the chain is O I to O IV.

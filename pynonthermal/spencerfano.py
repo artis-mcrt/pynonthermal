@@ -27,6 +27,10 @@ from pynonthermal.excitation import ExcitationTransition
 from pynonthermal.ionbalance import get_ion_fractions
 from pynonthermal.ionbalance import get_saha_factor
 from pynonthermal.ionbalance import solve_charge_neutral_n_e_ratios
+from pynonthermal.populations import Fixed
+from pynonthermal.populations import IonBalance
+from pynonthermal.populations import PopulationModel
+from pynonthermal.populations import Saha
 
 if t.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1116,6 +1120,97 @@ class SpencerFanoSolver:
         self._register_ion_population(Z, ion_stage, n_ion)
         self._store_ionisation_channel(Z, ion_stage, channel)
         self._add_ionisation_channel_to_matrix(n_ion, channel)
+
+    def add_element(
+        self,
+        Z: int,
+        n_elem: float,
+        populations: PopulationModel,
+        excitation: bool = False,
+        adata_polars: pl.DataFrame | None = None,
+    ) -> None:
+        """Add the ions of one element, with populations from a population model.
+
+        This is the one entry point for an element. The model decides where the ion populations
+        come from:
+
+        - Fixed(ion_fractions): the caller gives the fraction in each stage, as with
+          add_ionisation() per ion
+        - Saha(ion_stages, partfuncs): the Saha equation at the solver temperature, as with
+          add_element_saha()
+        - IonBalance(recomb_ratecoeffs): the balance of non-thermal ionisation against
+          recombination, as with add_element_ionbalance()
+
+        Every stage gets the built-in ionisation channels. With excitation=True, every stage with
+        level data also gets its bound-bound excitations, as with add_element_excitation() and
+        add_ion_excitation() with the default options. Call set_temperature() first for a Saha
+        model or for excitations.
+
+        n_elem:
+            the number density of the element in cm^-3
+        adata_polars:
+            a levels/transitions table in the format of add_ion_excitation(), for the Saha
+            partition functions and the excitations
+        """
+        if isinstance(populations, IonBalance):
+            self.add_element_ionbalance(Z, n_elem, populations.recomb_ratecoeffs)
+        elif isinstance(populations, Saha):
+            self.add_element_saha(
+                Z, n_elem, populations.ion_stages, partfuncs=populations.partfuncs, adata_polars=adata_polars
+            )
+        elif isinstance(populations, Fixed):
+            self._add_element_fixed(Z, n_elem, populations.ion_fractions)
+        else:
+            msg = f"populations must be a Fixed, Saha, or IonBalance model but is {type(populations).__name__}"
+            raise TypeError(msg)
+
+        if not excitation:
+            return
+        if isinstance(populations, Fixed):
+            for ion_stage, fraction in sorted(populations.ion_fractions.items()):
+                if ion_stage <= Z and self._get_ion_levels(Z, ion_stage, adata_polars) is not None:
+                    self.add_ion_excitation(Z, ion_stage, n_ion=n_elem * fraction, adata_polars=adata_polars)
+        else:
+            self.add_element_excitation(Z, adata_polars=adata_polars)
+
+    def _add_element_fixed(self, Z: int, n_elem: float, ion_fractions: Mapping[int, float]) -> None:
+        # the Fixed model: register each stage with n_elem times its fraction. The bare nucleus has no
+        # ionisation channel, so it only gets a population.
+        self._require_not_solved("add element")
+        self._check_not_balanced(Z)
+        if Z < 1:
+            msg = f"Z must be at least 1 but is {Z}"
+            raise ValueError(msg)
+        if not 0.0 < n_elem < math.inf:
+            msg = f"n_elem must be greater than zero and finite but is {n_elem}"
+            raise ValueError(msg)
+        if not ion_fractions:
+            msg = f"the Fixed model of Z={Z} needs at least one ion fraction"
+            raise ValueError(msg)
+        for ion_stage, fraction in ion_fractions.items():
+            if not isinstance(ion_stage, int) or isinstance(ion_stage, bool) or not 1 <= ion_stage <= Z + 1:
+                msg = f"the ion stages of Z={Z} must be integers between 1 and {Z + 1} but one is {ion_stage!r}"
+                raise ValueError(msg)
+            # the chained comparison also rejects nan
+            if not 0.0 <= fraction <= 1.0:
+                msg = f"the ion fraction of Z={Z} ion_stage {ion_stage} must be between 0 and 1 but is {fraction}"
+                raise ValueError(msg)
+        if not math.isclose(sum(ion_fractions.values()), 1.0, rel_tol=1e-6):
+            msg = f"the ion fractions of Z={Z} must sum to one but sum to {sum(ion_fractions.values())}"
+            raise ValueError(msg)
+        # the whole element is added at once, so none of its ions can be present already
+        ions_present = {*self.ionpopdict, *self._ionisation_channels, *self.excitationlists}
+        if any(Z_present == Z for Z_present, _ in ions_present):
+            msg = f"Z={Z} already has ions, so add_element() cannot add it"
+            raise ValueError(msg)
+
+        for ion_stage, fraction in sorted(ion_fractions.items()):
+            n_ion = n_elem * fraction
+            if ion_stage == Z + 1:
+                # the bare nucleus counts towards n_e and n_ion_tot but has nothing to ionise
+                self._register_ion_population(Z, ion_stage, n_ion)
+            else:
+                self.add_ionisation(Z, ion_stage, n_ion)
 
     def add_element_ionbalance(self, Z: int, n_elem: float, recomb_ratecoeffs: Mapping[int, float]) -> None:
         """Add an element whose ion populations solve() finds from an ionisation/recombination balance.
