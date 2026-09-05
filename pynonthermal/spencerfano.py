@@ -56,6 +56,13 @@ BALANCE_MAXITER: int = 100
 BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 
 
+class _Omitted:
+    """The marker of a parameter that a call did not give, where None has a meaning of its own."""
+
+
+_OMITTED = _Omitted()
+
+
 @dataclasses.dataclass(frozen=True, slots=True, eq=False)
 class _ExcitationTemplate:
     # one bound-bound excitation of an ion with a population from the ionisation balance. The lower
@@ -776,14 +783,16 @@ class SpencerFanoSolver:
         n_ion: float | None = None,
         temperature: float | None = None,
         adata_polars: pl.DataFrame | None = None,
-        use_collstrengths: bool | None = None,
-        maxnlevelslower: int | None = None,
-        maxnlevelsupper: int | None = None,
+        use_collstrengths: bool | _Omitted = _OMITTED,
+        maxnlevelslower: int | _Omitted | None = _OMITTED,
+        maxnlevelsupper: int | _Omitted | None = _OMITTED,
     ) -> None:
         """Call set_temperature(), set_atomic_data(), and add_ion_excitation().
 
         This name is deprecated and a later release removes it. Its old parameters go to the
         solver-level settings: temperature to set_temperature(), the others to set_atomic_data().
+        As in the old signature, a call without a temperature uses 3000 K if the solver has no
+        temperature yet. Only this deprecated method has that default.
         """
         warnings.warn(
             "add_ion_ltepopexcitation() is deprecated. Call set_temperature(), set_atomic_data(), and"
@@ -791,24 +800,29 @@ class SpencerFanoSolver:
             DeprecationWarning,
             stacklevel=2,
         )
+        if temperature is None and self.temperature is None:
+            temperature = 3000.0
         if temperature is not None:
             self.set_temperature(temperature)
-        options = {
-            "adata_polars": adata_polars,
-            "use_collstrengths": use_collstrengths,
-            "maxnlevelslower": maxnlevelslower,
-            "maxnlevelsupper": maxnlevelsupper,
+        # the options that this call does not give keep the values that the solver has. An explicit
+        # None for a level cutoff disables it, as the old signature documented.
+        settings: dict[str, t.Any] = {
+            "use_collstrengths": self._use_collstrengths,
+            "maxnlevelslower": self._maxnlevelslower,
+            "maxnlevelsupper": self._maxnlevelsupper,
         }
-        given = {name: value for name, value in options.items() if value is not None}
-        if given:
-            # the options that this call does not give keep the values that the solver has
-            settings: dict[str, t.Any] = {
-                "use_collstrengths": self._use_collstrengths,
-                "maxnlevelslower": self._maxnlevelslower,
-                "maxnlevelsupper": self._maxnlevelsupper,
-            }
+        given = {
+            name: value
+            for name, value in (
+                ("use_collstrengths", use_collstrengths),
+                ("maxnlevelslower", maxnlevelslower),
+                ("maxnlevelsupper", maxnlevelsupper),
+            )
+            if not isinstance(value, _Omitted)
+        }
+        if given or adata_polars is not None:
             settings.update(given)
-            self.set_atomic_data(**settings)
+            self.set_atomic_data(adata_polars=adata_polars, **settings)
         self.add_ion_excitation(Z, ion_stage, n_ion)
 
     def _add_element_excitation(self, Z: int) -> None:
@@ -1231,18 +1245,36 @@ class SpencerFanoSolver:
         n_elem:
             the number density of the element in cm^-3
         """
-        if isinstance(populations, IonBalance):
-            self._add_element_ionbalance(Z, n_elem, populations.recomb_ratecoeffs, builtin_channels)
-        elif isinstance(populations, Saha):
-            self._add_element_saha(Z, n_elem, populations.ion_stages, populations.partfuncs, builtin_channels)
-        elif isinstance(populations, Fixed):
-            self._add_element_fixed(Z, n_elem, populations.ion_fractions, builtin_channels)
-        else:
-            msg = f"populations must be a Fixed, Saha, or IonBalance model but is {type(populations).__name__}"
-            raise TypeError(msg)
+        # the model registration and the excitations write several structures in turn, so an error
+        # in a later step (for example missing level data for the excitations) restores all of them.
+        # A rejected call then leaves the solver unchanged, and the caller can repeat it.
+        saved_ionpopdict = dict(self.ionpopdict)
+        saved_channels = {key: list(channels) for key, channels in self._ionisation_channels.items()}
+        saved_excitationlists = {key: dict(transitions) for key, transitions in self.excitationlists.items()}
+        saved_balanced_elements = dict(self._balanced_elements)
+        saved_sfmatrix = self.sfmatrix.copy()
+        saved_n_e = self._n_e
+        try:
+            if isinstance(populations, IonBalance):
+                self._add_element_ionbalance(Z, n_elem, populations.recomb_ratecoeffs, builtin_channels)
+            elif isinstance(populations, Saha):
+                self._add_element_saha(Z, n_elem, populations.ion_stages, populations.partfuncs, builtin_channels)
+            elif isinstance(populations, Fixed):
+                self._add_element_fixed(Z, n_elem, populations.ion_fractions, builtin_channels)
+            else:
+                msg = f"populations must be a Fixed, Saha, or IonBalance model but is {type(populations).__name__}"
+                raise TypeError(msg)  # noqa: TRY301
 
-        if excitation:
-            self._add_element_excitation(Z)
+            if excitation:
+                self._add_element_excitation(Z)
+        except Exception:
+            self.ionpopdict = saved_ionpopdict
+            self._ionisation_channels = saved_channels
+            self.excitationlists = saved_excitationlists
+            self._balanced_elements = saved_balanced_elements
+            np.copyto(self.sfmatrix, saved_sfmatrix)
+            self._n_e = saved_n_e
+            raise
 
     def _add_element_fixed(
         self, Z: int, n_elem: float, ion_fractions: Mapping[int, float], builtin_channels: bool

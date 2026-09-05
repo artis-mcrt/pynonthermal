@@ -697,3 +697,57 @@ def test_balance_stage_without_channels_is_rejected() -> None:
         with pytest.raises(ValueError, match="not both"):
             sf.add_excitation(2, 1, 1e7, xs_vec, 21.0, levelpopfrac=0.5)
         assert not sf.excitationlists
+
+
+def test_deprecated_excitation_name_keeps_its_old_parameters() -> None:
+    # the deprecated method keeps the old default temperature of 3000 K when the solver has none,
+    # and an explicit None for a level cutoff disables the cutoff, as the old signature documented
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_old,
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_new,
+    ):
+        sf_old.add_ionisation(8, 2, n_ion=1e8)
+        with pytest.warns(DeprecationWarning, match="add_ion_ltepopexcitation"):
+            sf_old.add_ion_ltepopexcitation(8, 2, n_ion=1e8, maxnlevelslower=None, maxnlevelsupper=None)
+        assert sf_old.temperature == 3000
+        assert sf_old._maxnlevelslower is None
+        assert sf_old._maxnlevelsupper is None
+
+        sf_new.set_temperature(3000)
+        sf_new.set_atomic_data(maxnlevelslower=None, maxnlevelsupper=None)
+        sf_new.add_ionisation(8, 2, n_ion=1e8)
+        sf_new.add_ion_excitation(8, 2, n_ion=1e8)
+        assert sf_old.excitationlists[(8, 2)].keys() == sf_new.excitationlists[(8, 2)].keys()
+        # without the cutoffs there are transitions from above the fifth level
+        assert any(lower >= 5 for lower, _ in sf_new.excitationlists[(8, 2)])
+        assert np.array_equal(sf_old.sfmatrix, sf_new.sfmatrix)
+
+
+def test_add_element_is_atomic() -> None:
+    # an error in a later step of add_element() leaves the solver unchanged, so the call can be repeated
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.set_temperature(5000)
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        matrix_before = sf.sfmatrix.copy()
+        n_e_before = sf.get_n_e()
+
+        # Ba has no level data, so the excitations fail after the Saha element was registered
+        with pytest.raises(ValueError, match="No excitation data"):
+            sf.add_element(56, 1e8, pynonthermal.Saha([1, 2], partfuncs={1: 1.0, 2: 2.0}), excitation=True)
+        assert 56 not in sf._balanced_elements
+        assert sf.ionpopdict == {(8, 2): 1e8}
+        assert not sf.excitationlists
+        assert np.array_equal(sf.sfmatrix, matrix_before)
+        assert sf.get_n_e() == n_e_before
+
+        # a Fixed element whose second stage has a shell below emin_ev fails after the first stage
+        with pynonthermal.SpencerFanoSolver(emin_ev=12.0, emax_ev=3000, npts=300) as sf_emin:
+            with pytest.raises(ValueError, match="below emin_ev"):
+                sf_emin.add_element(26, 1e8, pynonthermal.Fixed({2: 0.5, 1: 0.5}))
+            assert not sf_emin.ionpopdict
+            assert not sf_emin._ionisation_channels
+            assert not sf_emin.sfmatrix.any()
+
+        # the repeated call with a usable model succeeds
+        sf.add_element(56, 1e8, pynonthermal.Saha([1, 2], partfuncs={1: 1.0, 2: 2.0}))
+        assert 56 in sf._balanced_elements
