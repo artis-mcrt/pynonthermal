@@ -1633,7 +1633,6 @@ class SpencerFanoSolver:
             msg = f"depositionratedensity_ev must be greater than zero and finite but is {depositionratedensity_ev}"
             raise ValueError(msg)
 
-        self.depositionratedensity_ev = depositionratedensity_ev
         if override_n_e is not None and not 0.0 < override_n_e < math.inf:
             msg = f"override_n_e must be greater than zero and finite but is {override_n_e}"
             raise ValueError(msg)
@@ -1649,6 +1648,10 @@ class SpencerFanoSolver:
         if not 0.0 < balance_tol < 1.0:
             msg = f"balance_tol must be between zero and one but is {balance_tol}"
             raise ValueError(msg)
+
+        # every check of the arguments runs first, so a rejected call leaves the deposition rate
+        # density of the last solution in place instead of a rate that no solution used
+        self.depositionratedensity_ev = depositionratedensity_ev
 
         # None clears any previously-set override, so that n_e is calculated on demand from ion populations
         self._n_e_override = override_n_e
@@ -1751,16 +1754,11 @@ class SpencerFanoSolver:
                 for (Z, ion_stage), n_ion in self.ionpopdict.items()
                 if Z not in self._balanced_elements
             )
-            n_e = (
-                self._n_e_override
-                if self._n_e_override is not None
-                else solve_charge_neutral_n_e_ratios(
-                    n_e_fixed,
-                    [
-                        (element.n_elem, element.ion_stages[0], get_element_ratio_coeffs(element))
-                        for element in elements
-                    ],
-                )
+            # solve() rejects override_n_e together with a balanced element, so the free electron
+            # density here always comes from charge neutrality
+            n_e = solve_charge_neutral_n_e_ratios(
+                n_e_fixed,
+                [(element.n_elem, element.ion_stages[0], get_element_ratio_coeffs(element)) for element in elements],
             )
             for element in elements:
                 fractions = get_ion_fractions(get_element_ratio_coeffs(element), n_e)

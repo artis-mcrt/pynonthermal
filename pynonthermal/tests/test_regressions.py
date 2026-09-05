@@ -984,3 +984,18 @@ def test_every_builtin_ion_builds_channels() -> None:
                     n_fit += 1
         assert n_lotz > 0
         assert n_fit > 0
+
+
+def test_rejected_solve_keeps_the_last_deposition_rate() -> None:
+    # every argument of solve() is checked before the deposition rate density is stored, so a
+    # rejected call leaves the value that the last solution used
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        sf.solve(depositionratedensity_ev=100.0)
+        assert sf.depositionratedensity_ev == 100.0
+        with pytest.raises(ValueError, match="balance_tol"):
+            sf.solve(depositionratedensity_ev=999.0, balance_tol=0.0)
+        assert sf.depositionratedensity_ev == 100.0
+        with pytest.raises(ValueError, match="override_n_e"):
+            sf.solve(depositionratedensity_ev=999.0, override_n_e=-1.0)
+        assert sf.depositionratedensity_ev == 100.0

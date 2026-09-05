@@ -279,7 +279,7 @@ The resulting plot shows the energy distribution of contributions to ionisation,
 - `ion_stage = charge + 1` (for example, Fe I has `ion_stage=1`, Fe II has `ion_stage=2`).
 - `depositionratedensity_ev` in `solve()` is in eV s^-1 cm^-3.
 - `get_ionisation_ratecoeff()` and `get_excitation_ratecoeff()` both return rates in s^-1.
-- The recombination rate coefficients of `add_element_ionbalance()` are in cm^3 s^-1, keyed by the ion stage that recombines.
+- The recombination rate coefficients of `IonBalance` are in cm^3 s^-1, keyed by the ion stage that recombines.
 
 ## Method background
 
