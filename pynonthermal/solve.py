@@ -286,7 +286,7 @@ def solve_spencerfano(
     elements: Sequence[Element],
     deposition_ev_per_s_per_cm3: float,
     emin_ev: float = 0.1,
-    emax_ev: float = 3000.0,
+    emax_ev: float = 16000.0,
     npts: int = 4096,
     *,
     temperature: float | None = None,
@@ -311,7 +311,8 @@ def solve_spencerfano(
     emin_ev, emax_ev:
         the bounds of the uniform energy grid in eV. An electron that degrades below emin_ev is
         taken to have thermalised, so its remaining energy counts as heating. Every ionisation
-        potential must lie above emin_ev.
+        potential must lie above emin_ev. The default emax_ev of 16 keV covers the K-shell
+        ionisation of iron at about 7 keV; lower it to 3 keV to match Kozma & Fransson 1992.
     npts:
         the number of energy grid points. More points cost memory and time; check frac_sum of the
         result. The defaults emin_ev=0.1 and npts=4096 are the ARTIS values.

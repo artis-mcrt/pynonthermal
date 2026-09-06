@@ -276,14 +276,18 @@ class SpencerFanoSolver:
 
     def __init__(
         self,
-        emin_ev: float = 1.0,
-        emax_ev: float = 3000.0,
+        emin_ev: float = 0.1,
+        emax_ev: float = 16000.0,
         npts: int = 4096,
         verbose: bool = False,
         use_ar1985: bool = False,
         heating_only_approximation: bool = False,
     ) -> None:
         """Make a solver with a uniform linear energy grid and the given options.
+
+        The default grid runs from 0.1 eV to 16 keV in 4096 points: emin_ev and npts are the ARTIS
+        values, and emax_ev covers the K-shell ionisation of iron at about 7 keV. Lower emax_ev to
+        3 keV to match Kozma & Fransson 1992.
 
         If heating_only_approximation is True, the solver removes the excitation and
         ionisation loss terms from the matrix and keeps only the heating loss.

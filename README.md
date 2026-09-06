@@ -67,9 +67,6 @@ result = pynonthermal.solve_spencerfano(
         pynonthermal.Element(Z=8, n_elem=1.0e8, ion_fractions={2: 1.0}),
     ],
     deposition_ev_per_s_per_cm3=1.0e8,  # the rate of energy deposition per volume
-    emin_ev=0.1,
-    emax_ev=3000.0,
-    npts=4096,
 )
 
 print("heating fraction:", result.frac_heating)
@@ -121,17 +118,19 @@ An `Element` takes:
 ### 2. Solve
 
 ```python
-result = pynonthermal.solve_spencerfano(plasma, 1.0e8, emin_ev=0.1, emax_ev=3000.0, npts=4096)
+result = pynonthermal.solve_spencerfano(elements, 1.0e8, temperature=6000)
 ```
 
 - `deposition_ev_per_s_per_cm3`: the rate of energy deposition per volume in eV s^-1 cm^-3 (positive and
   finite). With fixed populations the energy *fractions* do not depend on it and the *rate coefficients*
   scale linearly with it; with `recomb_ratecoeffs` the populations depend on it too.
-- `emin_ev`, `emax_ev`: the bounds of the uniform energy grid in eV. An electron that degrades below
-  `emin_ev` is taken to have thermalised, so its energy counts as heating. Every ionisation potential of
-  the plasma must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to use.
-- `npts`: the number of energy grid points. More points cost memory and time; check `result.frac_sum`.
-  The examples use the ARTIS defaults `emin_ev=0.1` and `npts=4096`.
+- `emin_ev`, `emax_ev`: the bounds of the uniform energy grid in eV (defaults `0.1` and `16000.0`). An
+  electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
+  Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
+  use. The default `emax_ev` covers the K-shell ionisation of iron at about 7 keV; lower it to 3000 eV
+  to match Kozma & Fransson (1992).
+- `npts`: the number of energy grid points (default `4096`). More points cost memory and time; check
+  `result.frac_sum`.
 - `balance_tol`: the relative tolerance of the population ratios of a `recomb_ratecoeffs` element (default `1e-4`).
 - `verbose`: print the setup, each added channel, and a per-ion, per-shell breakdown.
 - `use_ar1985`: use the original Arnaud & Rothenflug (1985) ionisation cross sections
@@ -268,7 +267,8 @@ oxygen = pynonthermal.Element(Z=8, n_elem=n_oxygen, ion_fractions={1: 1 - x_e, 2
 
 # with fixed ion densities, any positive deposition rate works here: the energy fractions
 # are independent of it (with recomb_ratecoeffs they would not be).
-# emin_ev=1 matches the low-energy cutoff E_0 of Kozma & Fransson (1992).
+# the grid is theirs rather than the default: emin_ev=1 is their low-energy cutoff E_0,
+# and emax_ev=3000 is the top of their energy range.
 result = pynonthermal.solve_spencerfano(
     [oxygen], 2950.49 * n_oxygen, emin_ev=1, emax_ev=3000, npts=4096, temperature=6000, verbose=True
 )
