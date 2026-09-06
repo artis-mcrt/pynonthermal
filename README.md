@@ -61,15 +61,11 @@ Describe the plasma, then solve it:
 ```python
 import pynonthermal
 
-plasma = pynonthermal.Plasma(
+result = pynonthermal.solve_spencerfano(
     elements=[
         # O II (ion_stage=2, i.e. charge +1) at a number density of 1e8 cm^-3
-        pynonthermal.Element(Z=8, n_elem=1.0e8, populations=pynonthermal.Fixed({2: 1.0})),
-    ]
-)
-
-result = pynonthermal.solve_spencerfano(
-    plasma,
+        pynonthermal.Element(Z=8, n_elem=1.0e8, ion_fractions={2: 1.0}),
+    ],
     deposition_ev_per_s_per_cm3=1.0e8,  # the rate of energy deposition per volume
     emin_ev=0.1,
     emax_ev=3000.0,
@@ -83,7 +79,7 @@ print("sum of fractions:", result.frac_sum)
 print("ionisation rate coeff [s^-1]:", result.ionisation_ratecoeff(Z=8, ion_stage=2))
 ```
 
-A `Plasma` says only what the gas contains, so the same one can be solved on any energy grid and at
+An `Element` says only what the gas contains, so the same one can be solved on any energy grid and at
 any deposition rate. The result is read only.
 
 The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example, and can be launched on Binder:
@@ -91,16 +87,13 @@ The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main
 
 ## Usage guide
 
-### 1. Describe the plasma
+### 1. Describe the elements
 
 ```python
-plasma = pynonthermal.Plasma(
-    elements=[
-        pynonthermal.Element(Z=8, n_elem=1.0e10, populations=pynonthermal.Fixed({1: 0.99, 2: 0.01}), excitation=True),
-        pynonthermal.Element(Z=26, n_elem=1.0e6, populations=pynonthermal.Saha(ion_stages=[1, 2, 3])),
-    ],
-    temperature=6000,
-)
+elements = [
+    pynonthermal.Element(Z=8, n_elem=1.0e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True),
+    pynonthermal.Element(Z=26, n_elem=1.0e6, saha_ion_stages=[1, 2, 3]),
+]
 ```
 
 An `Element` takes:
@@ -114,12 +107,12 @@ An `Element` takes:
   every channel yourself (see [custom cross sections](#advanced-usage-custom-cross-sections)).
 - `ionisation_channels` and `excitations`: channels and transitions whose cross sections you give.
 
-A `Plasma` takes the elements, one entry per atomic number, and:
+`solve_spencerfano()` takes the elements, one entry per atomic number, and:
 
 - `temperature`: in K, for the LTE level populations and the Saha equation. It is required if any
-  element uses `Saha` or `excitation=True`.
+  element gives `saha_ion_stages` or `excitation=True`.
 - `free_electron_density`: in cm^-3, in place of the one that the ion charges give. It cannot be
-  combined with a `Saha` or `IonBalance` element, which set it through charge neutrality.
+  combined with `saha_ion_stages` or `recomb_ratecoeffs`, which set it through charge neutrality.
 - `adata_polars`, `use_collstrengths`, `maxnlevelslower`, `maxnlevelsupper`: the level data for the
   excitations and how to build their cross sections. `adata_polars` takes your own level/transition
   table in the format of `artistools.atomic.get_levels()`; the others default to the ARTIS values
@@ -133,13 +126,13 @@ result = pynonthermal.solve_spencerfano(plasma, 1.0e8, emin_ev=0.1, emax_ev=3000
 
 - `deposition_ev_per_s_per_cm3`: the rate of energy deposition per volume in eV s^-1 cm^-3 (positive and
   finite). With fixed populations the energy *fractions* do not depend on it and the *rate coefficients*
-  scale linearly with it; with an `IonBalance` element the populations depend on it too.
+  scale linearly with it; with `recomb_ratecoeffs` the populations depend on it too.
 - `emin_ev`, `emax_ev`: the bounds of the uniform energy grid in eV. An electron that degrades below
   `emin_ev` is taken to have thermalised, so its energy counts as heating. Every ionisation potential of
   the plasma must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to use.
 - `npts`: the number of energy grid points. More points cost memory and time; check `result.frac_sum`.
   The examples use the ARTIS defaults `emin_ev=0.1` and `npts=4096`.
-- `balance_tol`: the relative tolerance of the population ratios of an `IonBalance` element (default `1e-4`).
+- `balance_tol`: the relative tolerance of the population ratios of a `recomb_ratecoeffs` element (default `1e-4`).
 - `verbose`: print the setup, each added channel, and a per-ion, per-shell breakdown.
 - `use_ar1985`: use the original Arnaud & Rothenflug (1985) ionisation cross sections
   (see [Cross-section datasets](#cross-section-datasets)).
@@ -196,63 +189,62 @@ Each method shows the figure interactively, or saves it when `outputfilename` is
 
 ## Where the ion populations come from
 
-The `populations` of an `Element` is one of three models. A future non-LTE model will be a fourth.
+Every `Element` gives exactly one of three rules. A future non-LTE rule will be a fourth keyword.
+
+### ion_fractions
 
 ```python
-from pynonthermal import Fixed, IonBalance, Saha
+pynonthermal.Element(26, 1.0e6, ion_fractions={2: 0.3, 3: 0.7})
 ```
 
-### Fixed
+The fraction of the element in each ion stage, keyed by ion stage. They must lie between 0 and 1 and
+sum to one.
+
+### saha_ion_stages
 
 ```python
-pynonthermal.Element(26, 1.0e6, Fixed({2: 0.3, 3: 0.7}))
+pynonthermal.Element(8, 1.0e10, saha_ion_stages=[1, 2, 3])
 ```
 
-The ion fractions that you give, keyed by ion stage. They must be between 0 and 1 and sum to one.
-
-### Saha
-
-```python
-pynonthermal.Element(8, 1.0e10, Saha(ion_stages=[1, 2, 3]))
-```
-
-For each pair of adjacent stages,
+At least two contiguous ion stages, whose populations come from the Saha equation. For each pair of
+adjacent stages,
 `n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T))`, with the
-temperature `T` of the plasma and the ionisation potentials `chi_i` from the NIST table. The partition
-functions `U_i` come from the LTE level populations of the level data; the built-in data covers He, O,
-and Fe. For other elements give them as `Saha(ion_stages, partfuncs={ion_stage: U, ...})`, or supply a
-level table as `Plasma(adata_polars=...)`. The bare nucleus (`ion_stage = Z + 1`) has a partition
-function of 1. The free electron density follows from charge neutrality in one pass.
+temperature `T` of the solution and the ionisation potentials `chi_i` from the NIST table. The
+partition functions `U_i` come from the LTE level populations of the level data; the built-in data
+covers He, O, and Fe. For other elements give them as `Element(..., partfuncs={ion_stage: U, ...})`,
+or supply a level table as `solve_spencerfano(..., adata_polars=...)`. The bare nucleus
+(`ion_stage = Z + 1`) has a partition function of 1. The free electron density follows from charge
+neutrality in one pass.
 
-### IonBalance
+### recomb_ratecoeffs
 
 ```python
-pynonthermal.Element(8, 1.0e10, IonBalance({2: 3.0e-13, 3: 3.0e-12, 4: 1.0e-11}))
+pynonthermal.Element(8, 1.0e10, recomb_ratecoeffs={2: 3.0e-13, 3: 3.0e-12, 4: 1.0e-11})
 ```
 
-The recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that recombines. For each pair
-of adjacent stages `i` and `i+1` the balance is `n_i Gamma_i = n_{i+1} n_e alpha_{i+1}`, where `Gamma_i`
-is the non-thermal ionisation rate coefficient of stage `i` from the Spencer-Fano solution and
-`alpha_{i+1}` is the coefficient you give. The chain runs from one below the lowest key to the highest
-key, so the example is O I to O IV.
+The recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that recombines. For each
+pair of adjacent stages `i` and `i+1` the balance is `n_i Gamma_i = n_{i+1} n_e alpha_{i+1}`, where
+`Gamma_i` is the non-thermal ionisation rate coefficient of stage `i` from the Spencer-Fano solution
+and `alpha_{i+1}` is the coefficient you give. The chain runs from one below the lowest key to the
+highest key, so the example is O I to O IV.
 
 The solution depends on the ion densities, so `solve_spencerfano()` iterates: it solves the equation,
-updates the densities from the balance and the free electron density from charge neutrality, and repeats
-until the population ratios agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations;
-a `RuntimeError` reports a balance that did not converge within 100. `result.balance_iterations` says
-how many it took.
+updates the densities from the balance and the free electron density from charge neutrality, and
+repeats until the population ratios agree to `balance_tol`. Typical cases converge in about 5 to 10
+iterations; a `RuntimeError` reports a balance that did not converge within 100.
+`result.balance_iterations` says how many it took.
 
 Points to note:
 
 - The balance includes only non-thermal ionisation and the recombination that you give. It does not
   include thermal collisional ionisation, photoionisation, or charge exchange. The ion fractions
   therefore depend on the deposition rate density, unlike the fixed-population case.
-- The top stage of the chain is a sink: its ionisation is an energy loss in the matrix, but the ions it
-  makes have no stage to go to. A warning is raised if the ionisation rate out of the top stage exceeds
-  1 % of the total ionisation rate of the element, because about that fraction of the element then
-  belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
+- The top stage of the chain is a sink: its ionisation is an energy loss in the matrix, but the ions
+  it makes have no stage to go to. A warning is raised if the ionisation rate out of the top stage
+  exceeds 1 % of the total ionisation rate of the element, because about that fraction of the element
+  then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
 
-The functions behind the two balance models are in `pynonthermal.ionbalance`: `get_saha_factor()`,
+The functions behind the two balance rules are in `pynonthermal.ionbalance`: `get_saha_factor()`,
 `get_ion_fractions()`, `solve_charge_neutral_n_e_ratios()`, and the general root find
 `solve_charge_neutral_n_e()`, which takes any charge density function that does not increase with the
 free electron density.
@@ -272,19 +264,15 @@ n_e = 1e8  # free electron density [cm^-3]
 x_e = 1e-2  # ionisation fraction n_OII / (n_OI + n_OII)
 n_oxygen = n_e / x_e
 
-plasma = pynonthermal.Plasma(
-    temperature=6000,
-    elements=[
-        pynonthermal.Element(
-            Z=8, n_elem=n_oxygen, populations=pynonthermal.Fixed({1: 1 - x_e, 2: x_e}), excitation=True
-        )
-    ],
-)
+oxygen = pynonthermal.Element(Z=8, n_elem=n_oxygen, ion_fractions={1: 1 - x_e, 2: x_e}, excitation=True)
 
 # with fixed ion densities, any positive deposition rate works here: the energy fractions
-# are independent of it (with an IonBalance element they would not be).
+# are independent of it (with recomb_ratecoeffs they would not be).
 # emin_ev=1 matches the low-energy cutoff E_0 of Kozma & Fransson (1992).
-result = pynonthermal.solve_spencerfano(plasma, 2950.49 * n_oxygen, emin_ev=1, emax_ev=3000, npts=4096, verbose=True)
+result = pynonthermal.solve_spencerfano(
+    [oxygen], 2950.49 * n_oxygen, emin_ev=1, emax_ev=3000, npts=4096, temperature=6000, verbose=True
+)
+
 
 result.print_analysis()
 result.plot_channels(xscalelog=True)
@@ -302,7 +290,7 @@ The resulting plot shows the energy distribution of contributions to ionisation,
 - `ion_stage = charge + 1` (for example, Fe I has `ion_stage=1`, Fe II has `ion_stage=2`).
 - `deposition_ev_per_s_per_cm3` is in eV s^-1 cm^-3.
 - `ionisation_ratecoeff()` and `excitation_ratecoeff()` both return rates in s^-1.
-- The recombination rate coefficients of `IonBalance` are in cm^3 s^-1, keyed by the ion stage that recombines.
+- The `recomb_ratecoeffs` of an `Element` are in cm^3 s^-1, keyed by the ion stage that recombines.
 
 ## Method background
 
@@ -337,23 +325,17 @@ def my_ionisation_xs(en_ev):
     return np.interp(en_ev, my_en_ev, my_xs_cm2, left=0.0, right=0.0)
 
 
-plasma = pynonthermal.Plasma(
-    elements=[
-        pynonthermal.Element(
-            Z=8,
-            n_elem=1.0e8,
-            populations=pynonthermal.Fixed({2: 1.0}),
-            # keep the built-in shells and add one channel; builtin_channels=False replaces them
-            ionisation_channels=[
-                pynonthermal.CustomChannel(ion_stage=2, ionpot_ev=35.0, xs=my_ionisation_xs, key="mine")
-            ],
-            excitations=[
-                pynonthermal.CustomExcitation(
-                    ion_stage=2, levelpopfrac=0.9, epsilon_trans_ev=20.0, xs=my_excitation_xs, key=(0, 3)
-                )
-            ],
+oxygen = pynonthermal.Element(
+    Z=8,
+    n_elem=1.0e8,
+    ion_fractions={2: 1.0},
+    # keep the built-in shells and add one channel; builtin_channels=False replaces them
+    ionisation_channels=[pynonthermal.CustomChannel(ion_stage=2, ionpot_ev=35.0, xs=my_ionisation_xs, key="mine")],
+    excitations=[
+        pynonthermal.CustomExcitation(
+            ion_stage=2, levelpopfrac=0.9, epsilon_trans_ev=20.0, xs=my_excitation_xs, key=(0, 3)
         )
-    ]
+    ],
 )
 ```
 
@@ -391,8 +373,8 @@ analytically, so its shape is not adjustable.
 `pynonthermal.SpencerFanoSolver` is the engine that `solve_spencerfano()` drives. It is a mutable
 builder: create it with the energy grid, call `set_temperature()`, `set_atomic_data()`, `add_element()`,
 `add_ionisation()`, `add_ionisation_channel()`, `add_ion_excitation()`, and `add_excitation()`, then
-`solve()`, then read the `get_*()` methods. Use it when you want to add ions one at a time rather than
-describe a plasma; `Plasma` and `solve_spencerfano()` cover everything it does.
+`solve()`, then read the `get_*()` methods. Use it when you want to add ions one at a time;
+`Element` and `solve_spencerfano()` cover everything it does.
 
 ## Citing pynonthermal
 

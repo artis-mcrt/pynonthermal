@@ -1,4 +1,4 @@
-"""Tests of the declarative interface: Plasma, Element, and solve_spencerfano()."""
+"""Tests of the declarative interface: Element and solve_spencerfano()."""
 
 import math
 import typing as t
@@ -14,21 +14,24 @@ HELIUM_ALPHAS = {2: 4e-13, 3: 2e-12}
 
 def test_solve_spencerfano_matches_the_solver() -> None:
     # the declarative call gives the same solution as the low-level solver that it drives
-    plasma = pynonthermal.Plasma(
+    result = pynonthermal.solve_spencerfano(
+        [
+            pynonthermal.Element(8, 1e9, ion_fractions={1: 0.9, 2: 0.1}, excitation=True),
+            pynonthermal.Element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS),
+        ],
+        1e8,
+        emin_ev=1,
+        emax_ev=3000,
+        npts=300,
         temperature=6000,
         use_collstrengths=False,
-        elements=[
-            pynonthermal.Element(8, 1e9, pynonthermal.Fixed({1: 0.9, 2: 0.1}), excitation=True),
-            pynonthermal.Element(2, 1e8, pynonthermal.IonBalance(HELIUM_ALPHAS)),
-        ],
     )
-    result = pynonthermal.solve_spencerfano(plasma, 1e8, emin_ev=1, emax_ev=3000, npts=300)
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.set_temperature(6000)
         sf.set_atomic_data(use_collstrengths=False)
-        sf.add_element(8, 1e9, pynonthermal.Fixed({1: 0.9, 2: 0.1}), excitation=True)
-        sf.add_element(2, 1e8, pynonthermal.IonBalance(HELIUM_ALPHAS))
+        sf.add_element(8, 1e9, ion_fractions={1: 0.9, 2: 0.1}, excitation=True)
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         assert np.array_equal(result.yvec, sf.yvec)
@@ -44,7 +47,7 @@ def test_solve_spencerfano_matches_the_solver() -> None:
         assert result.frac_excitation_ion(8, 1) == sf.get_frac_excitation_ion(8, 1)
         assert result.ionisation_ratecoeff(8, 1) == sf.get_ionisation_ratecoeff(8, 1)
         assert result.eff_ionpot(8, 1) == sf.get_eff_ionpot(8, 1)
-        assert result.ion_populations(2) == {(2, stage)[1]: sf.ionpopdict[(2, stage)] for stage in (1, 2, 3)}
+        assert result.ion_populations(2) == {stage: sf.ionpopdict[(2, stage)] for stage in (1, 2, 3)}
         assert result.ion_fractions(2) == sf.get_ion_fractions(2)
         assert result.balance_iterations == sf.balance_iterations
         assert result.temperature == 6000
@@ -54,78 +57,91 @@ def test_solve_spencerfano_matches_the_solver() -> None:
         assert result.excitation_ratecoeff(8, 1, transitionkey) == sf.get_excitation_ratecoeff(8, 1, transitionkey)
 
 
-def test_result_is_read_only() -> None:
-    plasma = pynonthermal.Plasma(elements=[pynonthermal.Element(8, 1e9, pynonthermal.Fixed({1: 0.9, 2: 0.1}))])
-    result = pynonthermal.solve_spencerfano(plasma, 1e8, emin_ev=1, emax_ev=3000, npts=200)
+def test_result_and_elements_are_read_only() -> None:
+    element = pynonthermal.Element(8, 1e9, ion_fractions={1: 0.9, 2: 0.1})
+    result = pynonthermal.solve_spencerfano([element], 1e8, emin_ev=1, emax_ev=3000, npts=200)
     for array in (result.yvec, result.engrid):
         with pytest.raises(ValueError, match="read-only"):
             array[0] = 1.0
-    # the plasma that the solution used cannot change either
+    # the element that the solution used cannot change either
     with pytest.raises(AttributeError):
-        setattr(plasma, "temperature", 5000)  # noqa: B010
+        setattr(element, "n_elem", 1.0)  # noqa: B010
 
 
-def test_plasma_validation() -> None:
-    element = pynonthermal.Element(8, 1e9, pynonthermal.Fixed({1: 1.0}))
+def test_solve_spencerfano_validation() -> None:
+    element = pynonthermal.Element(8, 1e9, ion_fractions={1: 1.0})
     with pytest.raises(ValueError, match="at least one element"):
-        pynonthermal.Plasma(elements=[])
+        pynonthermal.solve_spencerfano([], 1e8)
     with pytest.raises(ValueError, match="own atomic number"):
-        pynonthermal.Plasma(elements=[element, element])
-    not_an_element: t.Any = [{"Z": 8}]
+        pynonthermal.solve_spencerfano([element, element], 1e8)
+    not_elements: t.Any = [{"Z": 8}]
     with pytest.raises(TypeError, match="must be an Element"):
-        pynonthermal.Plasma(elements=not_an_element)
+        pynonthermal.solve_spencerfano(not_elements, 1e8)
     for bad in (0.0, -1.0, math.nan, math.inf):
         with pytest.raises(ValueError, match="temperature"):
-            pynonthermal.Plasma(elements=[element], temperature=bad)
-        with pytest.raises(ValueError, match="free_electron_density"):
-            pynonthermal.Plasma(elements=[element], free_electron_density=bad)
+            pynonthermal.solve_spencerfano([element], 1e8, temperature=bad)
 
-    # a Saha element needs the temperature of the plasma
-    saha = pynonthermal.Plasma(elements=[pynonthermal.Element(8, 1e9, pynonthermal.Saha([1, 2]))])
+    # saha_ion_stages needs the temperature of the solution
     with pytest.raises(ValueError, match="Call set_temperature"):
-        pynonthermal.solve_spencerfano(saha, 1e8, emin_ev=1, emax_ev=3000, npts=200)
+        pynonthermal.solve_spencerfano(
+            [pynonthermal.Element(8, 1e9, saha_ion_stages=[1, 2])], 1e8, emin_ev=1, emax_ev=3000, npts=200
+        )
 
     # a balanced element sets the free electron density itself
-    balanced = pynonthermal.Plasma(
-        elements=[pynonthermal.Element(2, 1e8, pynonthermal.IonBalance(HELIUM_ALPHAS))],
-        free_electron_density=1e5,
-    )
     with pytest.raises(ValueError, match="cannot be combined"):
-        pynonthermal.solve_spencerfano(balanced, 1e8, emin_ev=1, emax_ev=3000, npts=200)
+        pynonthermal.solve_spencerfano(
+            [pynonthermal.Element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)],
+            1e8,
+            emin_ev=1,
+            emax_ev=3000,
+            npts=200,
+            free_electron_density=1e5,
+        )
 
 
-def test_custom_cross_sections_of_a_plasma() -> None:
-    # a cross section given as a function needs no energy grid, so the plasma is grid independent
+def test_exactly_one_population_rule() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        with pytest.raises(ValueError, match="exactly one of ion_fractions"):
+            sf.add_element(8, 1e9)
+        with pytest.raises(ValueError, match="exactly one of ion_fractions"):
+            sf.add_element(8, 1e9, ion_fractions={1: 1.0}, recomb_ratecoeffs={2: 1e-12})
+        with pytest.raises(ValueError, match="partfuncs belongs to saha_ion_stages"):
+            sf.add_element(8, 1e9, ion_fractions={1: 1.0}, partfuncs={1: 1.0})
+        assert not sf.ionpopdict
+        assert not sf.sfmatrix.any()
+
+    # the same rules reach the solver through an Element
+    with pytest.raises(ValueError, match="exactly one of ion_fractions"):
+        pynonthermal.solve_spencerfano([pynonthermal.Element(8, 1e9)], 1e8, emin_ev=1, emax_ev=3000, npts=200)
+
+
+def test_custom_cross_sections_need_no_energy_grid() -> None:
+    # a cross section given as a function does not tie the element to one grid
     def channel_xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return np.where(en_ev > 60.0, 2e-17, 0.0)
 
     def excitation_xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return np.where(en_ev > 21.0, 1e-17, 0.0)
 
-    plasma = pynonthermal.Plasma(
-        elements=[
-            pynonthermal.Element(
-                2,
-                1e8,
-                pynonthermal.IonBalance(HELIUM_ALPHAS),
-                builtin_channels=False,
-                ionisation_channels=[
-                    pynonthermal.CustomChannel(1, 24.6, channel_xs, key="He I custom"),
-                    pynonthermal.CustomChannel(2, 54.4, channel_xs, key="He II custom"),
-                ],
-                excitations=[pynonthermal.CustomExcitation(1, 0.25, 21.0, excitation_xs, key="He I custom")],
-            )
-        ]
+    element = pynonthermal.Element(
+        2,
+        1e8,
+        recomb_ratecoeffs=HELIUM_ALPHAS,
+        builtin_channels=False,
+        ionisation_channels=[
+            pynonthermal.CustomChannel(1, 24.6, channel_xs, key="He I custom"),
+            pynonthermal.CustomChannel(2, 54.4, channel_xs, key="He II custom"),
+        ],
+        excitations=[pynonthermal.CustomExcitation(1, 0.25, 21.0, excitation_xs, key="He I custom")],
     )
 
     for npts in (200, 300):
-        result = pynonthermal.solve_spencerfano(plasma, 1e8, emin_ev=1, emax_ev=3000, npts=npts, balance_tol=1e-6)
+        result = pynonthermal.solve_spencerfano([element], 1e8, emin_ev=1, emax_ev=3000, npts=npts, balance_tol=1e-6)
         # the balance holds with the custom channels driving it
-        n_e = result.n_e
+        populations = result.ion_populations(2)
         for upper, alpha in HELIUM_ALPHAS.items():
-            populations = result.ion_populations(2)
             rate_ionisation = populations[upper - 1] * result.ionisation_ratecoeff(2, upper - 1)
-            assert math.isclose(rate_ionisation, populations[upper] * n_e * alpha, rel_tol=2e-6)
+            assert math.isclose(rate_ionisation, populations[upper] * result.n_e * alpha, rel_tol=2e-6)
         assert result.excitation_ratecoeff(2, 1, "He I custom") > 0.0
         assert result.transitionkeys(2, 1) == ["He I custom"]
 

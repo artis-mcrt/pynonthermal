@@ -27,10 +27,6 @@ from pynonthermal.excitation import ExcitationTransition
 from pynonthermal.ionbalance import get_ion_fractions
 from pynonthermal.ionbalance import get_saha_factor
 from pynonthermal.ionbalance import solve_charge_neutral_n_e_ratios
-from pynonthermal.populations import Fixed
-from pynonthermal.populations import IonBalance
-from pynonthermal.populations import PopulationModel
-from pynonthermal.populations import Saha
 
 if t.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -56,6 +52,27 @@ BALANCE_MAXITER: int = 100
 # total ionisation rate of the element (which recombination balances). Warn when that ratio exceeds
 # this value, because the chain then needs a higher stage.
 BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
+
+
+def _rule_ion_stages(
+    ion_fractions: Mapping[int, float] | None,
+    saha_ion_stages: Sequence[int] | None,
+    recomb_ratecoeffs: Mapping[int, float] | None,
+) -> tuple[int, ...]:
+    # the ion stages that a population rule of add_element() covers. add_element() reads them before
+    # it validates the rule, to build the excitations without changing the solver, so a malformed
+    # rule gives an empty tuple here and add_element() reports the fault itself.
+    try:
+        if ion_fractions is not None:
+            return tuple(sorted(ion_fractions))
+        if saha_ion_stages is not None:
+            return tuple(int(ion_stage) for ion_stage in saha_ion_stages)
+        if recomb_ratecoeffs is not None:
+            upper_stages = sorted(recomb_ratecoeffs)
+            return tuple(range(upper_stages[0] - 1, upper_stages[-1] + 1))
+    except (TypeError, ValueError, IndexError):
+        return ()
+    return ()
 
 
 class _Omitted:
@@ -1270,51 +1287,84 @@ class SpencerFanoSolver:
         self,
         Z: int,
         n_elem: float,
-        populations: PopulationModel,
+        *,
+        ion_fractions: Mapping[int, float] | None = None,
+        saha_ion_stages: Sequence[int] | None = None,
+        recomb_ratecoeffs: Mapping[int, float] | None = None,
+        partfuncs: Mapping[int, float] | None = None,
         excitation: bool = False,
         builtin_channels: bool = True,
     ) -> None:
-        """Add the ions of one element, with populations from a population model.
+        """Add the ions of one element, with the rule that gives their populations.
 
-        This is the entry point for an element. The model decides where the ion populations come
-        from:
+        This is the entry point for an element. Give exactly one of the three rules:
 
-        - Fixed(ion_fractions): the caller gives the fraction in each stage, as with
-          add_ionisation() per ion
-        - Saha(ion_stages, partfuncs): the Saha equation at the solver temperature
-        - IonBalance(recomb_ratecoeffs): the balance of non-thermal ionisation against
-          recombination, which solve() iterates
+        ion_fractions:
+            the fraction of the element in each ion stage, keyed by ion stage. They must lie
+            between 0 and 1 and sum to one.
+        saha_ion_stages:
+            at least two contiguous ion stages between 1 and Z + 1, whose populations come from the
+            Saha equation at the temperature of set_temperature(). For each pair of adjacent stages,
+            n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T)),
+            with the ionisation potentials chi_i from the NIST table. solve() finds the free
+            electron density from charge neutrality in one pass.
+        recomb_ratecoeffs:
+            the recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that
+            recombines. For each pair of adjacent stages the balance is
+            n_i Gamma_i = n_{i+1} n_e alpha_{i+1}, with Gamma_i the non-thermal ionisation rate
+            coefficient [s^-1] of stage i from the Spencer-Fano solution. The chain of stages runs
+            from one below the lowest key to the highest key, and solve() iterates it. Thermal
+            collisional ionisation, photoionisation, and charge exchange are not included, so these
+            populations depend on the deposition rate density.
 
         Every stage gets the built-in ionisation channels, unless builtin_channels is False: then
         add the channels of each stage yourself with add_ionisation() or add_ionisation_channel()
         and n_ion=None. With excitation=True, every stage with level data also gets its bound-bound
         excitations, as with add_ion_excitation() per stage with the settings of set_atomic_data().
-        Call set_temperature() first for a Saha model or for excitations.
+        Call set_temperature() first for saha_ion_stages or for excitations.
 
-        After this call, ionpopdict holds the populations of the stages. For a Saha or IonBalance
-        model they are provisional (equal fractions) until solve() runs.
+        After this call, ionpopdict holds the populations of the stages. With saha_ion_stages or
+        recomb_ratecoeffs they are provisional (equal fractions) until solve() runs.
 
         n_elem:
-            the number density of the element in cm^-3
+            the number density of the element in cm^-3, summed over its ion stages
+        partfuncs:
+            partition functions keyed by ion stage, for saha_ion_stages only. A stage without an
+            entry gets the LTE partition function at the temperature from the level data, or 1 for
+            the bare nucleus. A ValueError names a stage that has neither.
         """
-        # the excitation templates are built before the model is registered, and each model checks
+        rules = {
+            "ion_fractions": ion_fractions,
+            "saha_ion_stages": saha_ion_stages,
+            "recomb_ratecoeffs": recomb_ratecoeffs,
+        }
+        given = [name for name, rule in rules.items() if rule is not None]
+        if len(given) != 1:
+            msg = (
+                "give exactly one of ion_fractions (the fractions you set), saha_ion_stages (the Saha equation),"
+                f" or recomb_ratecoeffs (the ionisation balance), but {given or 'none'} was given"
+            )
+            raise ValueError(msg)
+        if partfuncs is not None and saha_ion_stages is None:
+            msg = "partfuncs belongs to saha_ion_stages, so give the ion stages of the Saha equation as well"
+            raise ValueError(msg)
+
+        # the excitation templates are built before the element is registered, and each rule checks
         # every stage before it writes the first one, so a rejected call leaves the solver unchanged
         # and the caller can repeat it. Nothing above the registration writes to the solver.
         templates_of_stage = None
-        if excitation and isinstance(populations, Fixed | Saha | IonBalance):
-            ion_stages = populations.get_ion_stages()
+        if excitation:
+            ion_stages = _rule_ion_stages(ion_fractions, saha_ion_stages, recomb_ratecoeffs)
             if ion_stages:
                 templates_of_stage = self._build_element_excitation_templates(Z, ion_stages)
 
-        if isinstance(populations, IonBalance):
-            self._add_element_ionbalance(Z, n_elem, populations.recomb_ratecoeffs, builtin_channels)
-        elif isinstance(populations, Saha):
-            self._add_element_saha(Z, n_elem, populations.ion_stages, populations.partfuncs, builtin_channels)
-        elif isinstance(populations, Fixed):
-            self._add_element_fixed(Z, n_elem, populations.ion_fractions, builtin_channels)
+        if recomb_ratecoeffs is not None:
+            self._add_element_ionbalance(Z, n_elem, recomb_ratecoeffs, builtin_channels)
+        elif saha_ion_stages is not None:
+            self._add_element_saha(Z, n_elem, saha_ion_stages, partfuncs, builtin_channels)
         else:
-            msg = f"populations must be a Fixed, Saha, or IonBalance model but is {type(populations).__name__}"
-            raise TypeError(msg)
+            assert ion_fractions is not None
+            self._add_element_fixed(Z, n_elem, ion_fractions, builtin_channels)
 
         if templates_of_stage is not None:
             self._apply_element_excitation_templates(Z, templates_of_stage)

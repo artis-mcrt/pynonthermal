@@ -1,21 +1,131 @@
-"""solve_spencerfano(): the Spencer-Fano equation for a Plasma, and the result it returns."""
+"""solve_spencerfano(): the Spencer-Fano equation for a list of elements, and the result it returns.
 
+An Element says what one element of the gas contains and where its ion populations come from. It
+holds no energy grid and no deposition rate, so the same elements can be solved on any grid and at
+any rate. Every object here is frozen, so nothing can change under a solution that used it.
+"""
+
+import dataclasses
+import math
 import typing as t
+from collections.abc import Mapping
+from collections.abc import Sequence
 from pathlib import Path
 
 import matplotlib.axes as mplax
 import numpy as np
 import numpy.typing as npt
+import polars as pl
 
-from pynonthermal.plasma import Plasma
+from pynonthermal.base import CrossSectionFunc
 from pynonthermal.spencerfano import SpencerFanoSolver
+
+# a cross section [cm^2], either as a function of an array of energies [eV] or as an array on the
+# energy grid of the solution. Prefer the function: the solver evaluates it between the grid points
+# as well, where an array can only be interpolated, and it does not tie the element to one grid.
+CrossSection = npt.NDArray[np.float64] | CrossSectionFunc
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CustomChannel:
+    """One collisional ionisation channel of an ion, with a cross section that the caller gives.
+
+    The channel enters the ionisation term of the degradation equation (Kozma & Fransson 1992
+    equation 7) in the same way as a shell of the built-in table. To replace the built-in shells of
+    an element instead of adding to them, give Element(builtin_channels=False).
+
+    ion_stage:
+        the ion stage that this channel ionises
+    ionpot_ev:
+        the ionisation potential of the channel in eV. It must lie on the energy grid of the
+        solution, and the cross section must be zero at and below it.
+    xs:
+        the cross section in cm^2 (see CrossSection)
+    key:
+        a key that names the channel in its ion, for the verbose output. The default is the number
+        of channels that the ion already has.
+    """
+
+    ion_stage: int
+    ionpot_ev: float
+    xs: CrossSection
+    key: t.Any | None = None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CustomExcitation:
+    """One bound-bound excitation of an ion, with a cross section that the caller gives.
+
+    ion_stage:
+        the ion stage that this transition excites
+    levelpopfrac:
+        the population of the lower level as a fraction of the ion population. The level population
+        follows the ion population, so it is right whether the populations are fixed or come from
+        a balance.
+    epsilon_trans_ev:
+        the transition energy in eV
+    xs:
+        the cross section in cm^2 (see CrossSection)
+    key:
+        a key that identifies the transition, to pass to SpencerFanoResult.excitation_ratecoeff().
+        The default is the number of transitions that the ion already has.
+    """
+
+    ion_stage: int
+    levelpopfrac: float
+    epsilon_trans_ev: float
+    xs: CrossSection
+    key: t.Any | None = None
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Element:
+    """One element of the gas, with the rule that gives its ion populations.
+
+    Give exactly one of ion_fractions, saha_ion_stages, or recomb_ratecoeffs. They are the three
+    rules of SpencerFanoSolver.add_element(), which this passes on:
+
+    - ion_fractions: the fraction of the element in each ion stage, keyed by ion stage
+    - saha_ion_stages: contiguous ion stages whose populations come from the Saha equation at the
+      temperature of the solution
+    - recomb_ratecoeffs: recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that
+      recombines, balanced against the non-thermal ionisation rates of the solution
+
+    Z:
+        the atomic number
+    n_elem:
+        the number density of the element in cm^-3, summed over its ion stages
+    partfuncs:
+        partition functions keyed by ion stage, for saha_ion_stages only
+    excitation:
+        add the bound-bound excitations of every ion stage that has level data, with LTE level
+        populations at the temperature of the solution
+    builtin_channels:
+        give every ion stage the built-in ionisation cross sections. With False, the element is
+        ionised only through the channels in ionisation_channels.
+    ionisation_channels:
+        ionisation channels with cross sections that the caller gives
+    excitations:
+        bound-bound excitations with cross sections that the caller gives
+    """
+
+    Z: int
+    n_elem: float
+    ion_fractions: Mapping[int, float] | None = None
+    saha_ion_stages: Sequence[int] | None = None
+    recomb_ratecoeffs: Mapping[int, float] | None = None
+    partfuncs: Mapping[int, float] | None = None
+    excitation: bool = False
+    builtin_channels: bool = True
+    ionisation_channels: Sequence[CustomChannel] = ()
+    excitations: Sequence[CustomExcitation] = ()
 
 
 class SpencerFanoResult:
-    """The solved Spencer-Fano equation for one plasma, as solve_spencerfano() returns it.
+    """The solved Spencer-Fano equation, as solve_spencerfano() returns it.
 
-    The result is read only. Solve the plasma again to get the solution for another energy grid or
-    another deposition rate density.
+    The result is read only. Solve again to get the solution for another energy grid or another
+    deposition rate density.
 
     Every energy fraction is the share of the deposited energy that one channel takes (Kozma &
     Fransson 1992 equations 8 to 10), and every rate coefficient is per ion in s^-1 and scales with
@@ -49,7 +159,7 @@ class SpencerFanoResult:
 
     @property
     def temperature(self) -> float | None:
-        """The temperature in K of the LTE level populations and the Saha equation, if the plasma set one."""
+        """The temperature in K of the LTE level populations and the Saha equation, if one was given."""
         return self._solver.temperature
 
     @property
@@ -126,7 +236,7 @@ class SpencerFanoResult:
 
         Multiply it by the population of the lower level for excitations per second per cm^3. For
         the excitations of Element(excitation=True) the key is (lower level index, upper level
-        index); for a CustomExcitation it is the key that the plasma gave.
+        index); for a CustomExcitation it is the key that the element gave.
         """
         return self._solver.get_excitation_ratecoeff(Z, ion_stage, transitionkey)
 
@@ -173,35 +283,57 @@ class SpencerFanoResult:
 
 
 def solve_spencerfano(
-    plasma: Plasma,
+    elements: Sequence[Element],
     deposition_ev_per_s_per_cm3: float,
-    emin_ev: float = 1.0,
+    emin_ev: float = 0.1,
     emax_ev: float = 3000.0,
     npts: int = 4096,
     *,
+    temperature: float | None = None,
+    free_electron_density: float | None = None,
+    adata_polars: pl.DataFrame | None = None,
+    use_collstrengths: bool = True,
+    maxnlevelslower: int | None = 5,
+    maxnlevelsupper: int | None = 250,
     balance_tol: float = 1e-4,
     use_ar1985: bool = False,
     heating_only_approximation: bool = False,
     verbose: bool = False,
 ) -> SpencerFanoResult:
-    """Solve the Spencer-Fano equation for a plasma and return the solution.
+    """Solve the Spencer-Fano equation for a list of elements and return the solution.
 
-    plasma:
-        what the gas contains (see pynonthermal.Plasma)
+    elements:
+        the elements of the gas, one entry per atomic number (see Element)
     deposition_ev_per_s_per_cm3:
-        the rate of energy deposition per volume in eV s^-1 cm^-3. The energy fractions of a plasma
-        with fixed populations do not depend on it, but the rate coefficients scale with it, and
-        the populations of an IonBalance element depend on it.
+        the rate of energy deposition per volume in eV s^-1 cm^-3. The energy fractions of fixed
+        populations do not depend on it, but the rate coefficients scale with it, and the
+        populations of an element with recomb_ratecoeffs depend on it.
     emin_ev, emax_ev:
         the bounds of the uniform energy grid in eV. An electron that degrades below emin_ev is
         taken to have thermalised, so its remaining energy counts as heating. Every ionisation
-        potential of the plasma must lie above emin_ev.
+        potential must lie above emin_ev.
     npts:
         the number of energy grid points. More points cost memory and time; check frac_sum of the
-        result. The ARTIS defaults are emin_ev=0.1 and npts=4096.
+        result. The defaults emin_ev=0.1 and npts=4096 are the ARTIS values.
+    temperature:
+        the temperature in K of the LTE level populations and of the Saha equation. It is required
+        if any element gives saha_ion_stages or excitation=True.
+    free_electron_density:
+        the free electron density in cm^-3, in place of the one that the ion charges give. It
+        cannot be combined with saha_ion_stages or recomb_ratecoeffs, which set the free electron
+        density through charge neutrality.
+    adata_polars:
+        a levels/transitions table to use instead of the internal database (the CMFGEN-derived
+        ARTIS atomic data), in the format that artistools.atomic.get_levels() returns with
+        get_transitions=True
+    use_collstrengths:
+        compute the excitation cross sections from tabulated collision strengths where available
+        (Li et al. 2012 equation 11), rather than from the oscillator strength alone
+    maxnlevelslower, maxnlevelsupper:
+        include only transitions whose lower level index is below maxnlevelslower and whose upper
+        level index is below maxnlevelsupper; None disables that cutoff. The defaults match ARTIS.
     balance_tol:
-        the relative tolerance of the population ratios of an IonBalance element. It has no effect
-        on a plasma without one.
+        the relative tolerance of the population ratios of an element with recomb_ratecoeffs
     use_ar1985:
         use the original Arnaud & Rothenflug (1985) ionisation cross sections
     heating_only_approximation:
@@ -211,6 +343,23 @@ def solve_spencerfano(
     verbose:
         print the setup, every added channel, and the per-ion breakdown of the solution
     """
+    if not elements:
+        msg = "solve_spencerfano() needs at least one element"
+        raise ValueError(msg)
+    for element in elements:
+        if not isinstance(element, Element):
+            msg = f"every entry of elements must be an Element but one is a {type(element).__name__}"
+            raise TypeError(msg)
+    atomic_numbers = [element.Z for element in elements]
+    duplicates = sorted({Z for Z in atomic_numbers if atomic_numbers.count(Z) > 1})
+    if duplicates:
+        msg = f"every element needs its own atomic number, but Z={duplicates} appear more than once"
+        raise ValueError(msg)
+    # the chained comparison also rejects nan
+    if temperature is not None and not 0.0 < temperature < math.inf:
+        msg = f"temperature must be greater than zero and finite but is {temperature}"
+        raise ValueError(msg)
+
     solver = SpencerFanoSolver(
         emin_ev=emin_ev,
         emax_ev=emax_ev,
@@ -219,20 +368,23 @@ def solve_spencerfano(
         use_ar1985=use_ar1985,
         heating_only_approximation=heating_only_approximation,
     )
-    if plasma.temperature is not None:
-        solver.set_temperature(plasma.temperature)
+    if temperature is not None:
+        solver.set_temperature(temperature)
     solver.set_atomic_data(
-        adata_polars=plasma.adata_polars,
-        use_collstrengths=plasma.use_collstrengths,
-        maxnlevelslower=plasma.maxnlevelslower,
-        maxnlevelsupper=plasma.maxnlevelsupper,
+        adata_polars=adata_polars,
+        use_collstrengths=use_collstrengths,
+        maxnlevelslower=maxnlevelslower,
+        maxnlevelsupper=maxnlevelsupper,
     )
 
-    for element in plasma.elements:
+    for element in elements:
         solver.add_element(
             element.Z,
             element.n_elem,
-            element.populations,
+            ion_fractions=element.ion_fractions,
+            saha_ion_stages=element.saha_ion_stages,
+            recomb_ratecoeffs=element.recomb_ratecoeffs,
+            partfuncs=element.partfuncs,
             excitation=element.excitation,
             builtin_channels=element.builtin_channels,
         )
@@ -251,6 +403,6 @@ def solve_spencerfano(
                 levelpopfrac=transition.levelpopfrac,
             )
 
-    solver.solve(deposition_ev_per_s_per_cm3, override_n_e=plasma.free_electron_density, balance_tol=balance_tol)
+    solver.solve(deposition_ev_per_s_per_cm3, override_n_e=free_electron_density, balance_tol=balance_tol)
 
     return SpencerFanoResult(solver)
