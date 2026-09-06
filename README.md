@@ -56,7 +56,7 @@ uv run -- python3 -m pytest
 
 ## Quick start
 
-Describe the plasma, then solve it:
+Describe the elements of the gas, then solve them:
 
 ```python
 import pynonthermal
@@ -64,7 +64,7 @@ import pynonthermal
 result = pynonthermal.solve_spencerfano(
     elements=[
         # O II (ion_stage=2, i.e. charge +1) at a number density of 1e8 cm^-3
-        pynonthermal.Element(Z=8, n_elem=1.0e8, ion_fractions={2: 1.0}),
+        pynonthermal.Element(Z=8, ion_densities={2: 1.0e8}),
     ],
     deposition_ev_per_s_per_cm3=1.0e8,  # the rate of energy deposition per volume
 )
@@ -95,10 +95,12 @@ elements = [
 
 An `Element` takes:
 
-- `Z`: the atomic number, and `n_elem`: the number density of the element in cm^-3, summed over its ion stages.
-- `populations`: where the ion populations come from — see [the next section](#where-the-ion-populations-come-from).
+- `Z`: the atomic number, and `n_elem`: the number density of the element in cm^-3, summed over its ion
+  stages. Every rule needs `n_elem` except `ion_densities`, which gives the densities themselves.
+- the population rule: exactly one of `ion_densities`, `ion_fractions`, `saha_ion_stages`, or
+  `recomb_ratecoeffs` — see [the next section](#where-the-ion-populations-come-from).
 - `excitation`: also add the bound-bound excitations of every ion stage that has level data, with LTE
-  level populations at the temperature of the plasma. Every stage gets the built-in ionisation cross
+  level populations at the temperature of the solution. Every stage gets the built-in ionisation cross
   sections either way.
 - `builtin_channels`: set it to `False` to leave the built-in ionisation cross sections out and give
   every channel yourself (see [custom cross sections](#advanced-usage-custom-cross-sections)).
@@ -188,7 +190,16 @@ Each method shows the figure interactively, or saves it when `outputfilename` is
 
 ## Where the ion populations come from
 
-Every `Element` gives exactly one of three rules. A future non-LTE rule will be a fourth keyword.
+Every `Element` gives exactly one of four rules. A future non-LTE rule will be a fifth keyword.
+
+### ion_densities
+
+```python
+pynonthermal.Element(26, ion_densities={2: 3.0e5, 3: 7.0e5})
+```
+
+The number density in cm^-3 of each ion stage, keyed by ion stage. `n_elem` is their sum, so do not
+give it as well. This is usually what a plasma code already holds.
 
 ### ion_fractions
 
@@ -196,8 +207,7 @@ Every `Element` gives exactly one of three rules. A future non-LTE rule will be 
 pynonthermal.Element(26, 1.0e6, ion_fractions={2: 0.3, 3: 0.7})
 ```
 
-The fraction of the element in each ion stage, keyed by ion stage. They must lie between 0 and 1 and
-sum to one.
+The same populations as a share of `n_elem`. The fractions must lie between 0 and 1 and sum to one.
 
 ### saha_ion_stages
 

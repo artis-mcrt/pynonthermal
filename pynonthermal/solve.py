@@ -82,9 +82,11 @@ class CustomExcitation:
 class Element:
     """One element of the gas, with the rule that gives its ion populations.
 
-    Give exactly one of ion_fractions, saha_ion_stages, or recomb_ratecoeffs. They are the three
-    rules of SpencerFanoSolver.add_element(), which this passes on:
+    Give exactly one of ion_densities, ion_fractions, saha_ion_stages, or recomb_ratecoeffs. They
+    are the four rules of SpencerFanoSolver.add_element(), which this passes on:
 
+    - ion_densities: the number density in cm^-3 of each ion stage, keyed by ion stage. n_elem is
+      their sum, so do not give it as well.
     - ion_fractions: the fraction of the element in each ion stage, keyed by ion stage
     - saha_ion_stages: contiguous ion stages whose populations come from the Saha equation at the
       temperature of the solution
@@ -94,7 +96,8 @@ class Element:
     Z:
         the atomic number
     n_elem:
-        the number density of the element in cm^-3, summed over its ion stages
+        the number density of the element in cm^-3, summed over its ion stages. Every rule needs it
+        except ion_densities, which gives the densities themselves.
     partfuncs:
         partition functions keyed by ion stage, for saha_ion_stages only
     excitation:
@@ -110,7 +113,8 @@ class Element:
     """
 
     Z: int
-    n_elem: float
+    n_elem: float | None = None
+    ion_densities: Mapping[int, float] | None = None
     ion_fractions: Mapping[int, float] | None = None
     saha_ion_stages: Sequence[int] | None = None
     recomb_ratecoeffs: Mapping[int, float] | None = None
@@ -382,6 +386,7 @@ def solve_spencerfano(
         solver.add_element(
             element.Z,
             element.n_elem,
+            ion_densities=element.ion_densities,
             ion_fractions=element.ion_fractions,
             saha_ion_stages=element.saha_ion_stages,
             recomb_ratecoeffs=element.recomb_ratecoeffs,

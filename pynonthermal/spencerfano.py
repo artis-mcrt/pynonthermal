@@ -55,16 +55,16 @@ BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 
 
 def _rule_ion_stages(
-    ion_fractions: Mapping[int, float] | None,
+    ion_densities: Mapping[int, float] | None,
     saha_ion_stages: Sequence[int] | None,
     recomb_ratecoeffs: Mapping[int, float] | None,
 ) -> tuple[int, ...]:
     # the ion stages that a population rule of add_element() covers. add_element() reads them before
-    # it validates the rule, to build the excitations without changing the solver, so a malformed
+    # it registers the element, to build the excitations without changing the solver, so a malformed
     # rule gives an empty tuple here and add_element() reports the fault itself.
     try:
-        if ion_fractions is not None:
-            return tuple(sorted(ion_fractions))
+        if ion_densities is not None:
+            return tuple(sorted(ion_densities))
         if saha_ion_stages is not None:
             return tuple(int(ion_stage) for ion_stage in saha_ion_stages)
         if recomb_ratecoeffs is not None:
@@ -1290,8 +1290,9 @@ class SpencerFanoSolver:
     def add_element(
         self,
         Z: int,
-        n_elem: float,
+        n_elem: float | None = None,
         *,
+        ion_densities: Mapping[int, float] | None = None,
         ion_fractions: Mapping[int, float] | None = None,
         saha_ion_stages: Sequence[int] | None = None,
         recomb_ratecoeffs: Mapping[int, float] | None = None,
@@ -1301,11 +1302,14 @@ class SpencerFanoSolver:
     ) -> None:
         """Add the ions of one element, with the rule that gives their populations.
 
-        This is the entry point for an element. Give exactly one of the three rules:
+        This is the entry point for an element. Give exactly one of the four rules:
 
+        ion_densities:
+            the number density in cm^-3 of each ion stage, keyed by ion stage. n_elem is their sum,
+            so do not give it as well.
         ion_fractions:
             the fraction of the element in each ion stage, keyed by ion stage. They must lie
-            between 0 and 1 and sum to one.
+            between 0 and 1 and sum to one, and n_elem is required.
         saha_ion_stages:
             at least two contiguous ion stages between 1 and Z + 1, whose populations come from the
             Saha equation at the temperature of set_temperature(). For each pair of adjacent stages,
@@ -1331,13 +1335,15 @@ class SpencerFanoSolver:
         recomb_ratecoeffs they are provisional (equal fractions) until solve() runs.
 
         n_elem:
-            the number density of the element in cm^-3, summed over its ion stages
+            the number density of the element in cm^-3, summed over its ion stages. Every rule
+            needs it except ion_densities, which gives the densities themselves.
         partfuncs:
             partition functions keyed by ion stage, for saha_ion_stages only. A stage without an
             entry gets the LTE partition function at the temperature from the level data, or 1 for
             the bare nucleus. A ValueError names a stage that has neither.
         """
         rules = {
+            "ion_densities": ion_densities,
             "ion_fractions": ion_fractions,
             "saha_ion_stages": saha_ion_stages,
             "recomb_ratecoeffs": recomb_ratecoeffs,
@@ -1345,12 +1351,43 @@ class SpencerFanoSolver:
         given = [name for name, rule in rules.items() if rule is not None]
         if len(given) != 1:
             msg = (
-                "give exactly one of ion_fractions (the fractions you set), saha_ion_stages (the Saha equation),"
-                f" or recomb_ratecoeffs (the ionisation balance), but {given or 'none'} was given"
+                "give exactly one of ion_densities (the densities you set), ion_fractions (their fractions of"
+                " n_elem), saha_ion_stages (the Saha equation), or recomb_ratecoeffs (the ionisation balance),"
+                f" but {given or 'none'} was given"
             )
             raise ValueError(msg)
         if partfuncs is not None and saha_ion_stages is None:
             msg = "partfuncs belongs to saha_ion_stages, so give the ion stages of the Saha equation as well"
+            raise ValueError(msg)
+        if ion_densities is not None:
+            if n_elem is not None:
+                msg = "n_elem is the sum of ion_densities, so give one or the other and not both"
+                raise ValueError(msg)
+        elif n_elem is None:
+            msg = f"n_elem is required with {given[0]}, because the rule gives the ion stages a share of it"
+            raise ValueError(msg)
+        elif not 0.0 < n_elem < math.inf:
+            msg = f"n_elem must be greater than zero and finite but is {n_elem}"
+            raise ValueError(msg)
+
+        if ion_fractions is not None:
+            # the fractions of an element must be a share of it, so that ion_fractions and
+            # ion_densities cannot describe the same populations with different totals
+            if not ion_fractions:
+                msg = f"Z={Z} needs at least one ion fraction"
+                raise ValueError(msg)
+            for ion_stage, fraction in ion_fractions.items():
+                # the chained comparison also rejects nan
+                if not 0.0 <= fraction <= 1.0:
+                    msg = f"the ion fraction of Z={Z} ion_stage {ion_stage} must be between 0 and 1 but is {fraction}"
+                    raise ValueError(msg)
+            if not math.isclose(sum(ion_fractions.values()), 1.0, rel_tol=1e-6):
+                msg = f"the ion fractions of Z={Z} must sum to one but sum to {sum(ion_fractions.values())}"
+                raise ValueError(msg)
+            assert n_elem is not None
+            ion_densities = {ion_stage: n_elem * fraction for ion_stage, fraction in ion_fractions.items()}
+        elif ion_densities is not None and not ion_densities:
+            msg = f"Z={Z} needs at least one ion density"
             raise ValueError(msg)
 
         # the excitation templates are built before the element is registered, and each rule checks
@@ -1358,48 +1395,43 @@ class SpencerFanoSolver:
         # and the caller can repeat it. Nothing above the registration writes to the solver.
         templates_of_stage = None
         if excitation:
-            ion_stages = _rule_ion_stages(ion_fractions, saha_ion_stages, recomb_ratecoeffs)
+            ion_stages = _rule_ion_stages(ion_densities, saha_ion_stages, recomb_ratecoeffs)
             if ion_stages:
                 templates_of_stage = self._build_element_excitation_templates(Z, ion_stages)
 
         if recomb_ratecoeffs is not None:
+            assert n_elem is not None
             self._add_element_ionbalance(Z, n_elem, recomb_ratecoeffs, builtin_channels)
         elif saha_ion_stages is not None:
+            assert n_elem is not None
             self._add_element_saha(Z, n_elem, saha_ion_stages, partfuncs, builtin_channels)
         else:
-            assert ion_fractions is not None
-            self._add_element_fixed(Z, n_elem, ion_fractions, builtin_channels)
+            assert ion_densities is not None
+            self._add_element_fixed(Z, ion_densities, builtin_channels)
 
         if templates_of_stage is not None:
             self._apply_element_excitation_templates(Z, templates_of_stage)
 
-    def _add_element_fixed(
-        self, Z: int, n_elem: float, ion_fractions: Mapping[int, float], builtin_channels: bool
-    ) -> None:
-        # the Fixed model: register each stage with n_elem times its fraction. The bare nucleus has no
-        # ionisation channel, so it only gets a population, as does every stage without the built-in
-        # channels (the caller then adds channels with add_ionisation_channel() and the same n_ion).
+    def _add_element_fixed(self, Z: int, ion_densities: Mapping[int, float], builtin_channels: bool) -> None:
+        # register each stage of an element with the density that the caller gave or that its
+        # fraction of n_elem gives. The bare nucleus has no ionisation channel, so it only gets a
+        # population, as does every stage without the built-in channels (the caller then adds
+        # channels with add_ionisation_channel() and n_ion=None).
         self._require_not_solved("add element")
         self._check_not_balanced(Z)
         if Z < 1:
             msg = f"Z must be at least 1 but is {Z}"
             raise ValueError(msg)
-        if not 0.0 < n_elem < math.inf:
-            msg = f"n_elem must be greater than zero and finite but is {n_elem}"
-            raise ValueError(msg)
-        if not ion_fractions:
-            msg = f"the Fixed model of Z={Z} needs at least one ion fraction"
-            raise ValueError(msg)
-        for ion_stage, fraction in ion_fractions.items():
+        for ion_stage, n_ion in ion_densities.items():
             if not isinstance(ion_stage, int) or isinstance(ion_stage, bool) or not 1 <= ion_stage <= Z + 1:
                 msg = f"the ion stages of Z={Z} must be integers between 1 and {Z + 1} but one is {ion_stage!r}"
                 raise ValueError(msg)
             # the chained comparison also rejects nan
-            if not 0.0 <= fraction <= 1.0:
-                msg = f"the ion fraction of Z={Z} ion_stage {ion_stage} must be between 0 and 1 but is {fraction}"
+            if not 0.0 <= n_ion < math.inf:
+                msg = f"the density of Z={Z} ion_stage {ion_stage} must be non-negative and finite but is {n_ion}"
                 raise ValueError(msg)
-        if not math.isclose(sum(ion_fractions.values()), 1.0, rel_tol=1e-6):
-            msg = f"the ion fractions of Z={Z} must sum to one but sum to {sum(ion_fractions.values())}"
+        if not 0.0 < sum(ion_densities.values()) < math.inf:
+            msg = f"the ion densities of Z={Z} must sum to a number greater than zero and finite"
             raise ValueError(msg)
         # the whole element is added at once, so none of its ions can be present already
         ions_present = {*self.ionpopdict, *self._ionisation_channels, *self.excitationlists}
@@ -1411,10 +1443,10 @@ class SpencerFanoSolver:
         # whose shells the built-in table does not hold, or whose potential lies below emin_ev,
         # leaves the solver unchanged
         channels_of_stage: dict[int, list[IonisationChannel]] = {}
-        for ion_stage, fraction in sorted(ion_fractions.items()):
+        for ion_stage, n_ion in sorted(ion_densities.items()):
             # a bare nucleus has no electrons to remove, and a stage with no ions or without the
             # built-in channels gets a population only
-            if ion_stage == Z + 1 or not builtin_channels or n_elem * fraction == 0.0:
+            if ion_stage == Z + 1 or not builtin_channels or n_ion == 0.0:
                 channels_of_stage[ion_stage] = []
                 continue
             channels = pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
@@ -1423,7 +1455,7 @@ class SpencerFanoSolver:
             channels_of_stage[ion_stage] = channels
 
         for ion_stage, channels in channels_of_stage.items():
-            n_ion = n_elem * ion_fractions[ion_stage]
+            n_ion = ion_densities[ion_stage]
             if self.verbose and channels:
                 print(
                     f"  including Z={Z} ion_stage"

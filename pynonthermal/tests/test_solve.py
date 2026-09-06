@@ -101,9 +101,9 @@ def test_solve_spencerfano_validation() -> None:
 
 def test_exactly_one_population_rule() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
-        with pytest.raises(ValueError, match="exactly one of ion_fractions"):
+        with pytest.raises(ValueError, match="exactly one of ion_densities"):
             sf.add_element(8, 1e9)
-        with pytest.raises(ValueError, match="exactly one of ion_fractions"):
+        with pytest.raises(ValueError, match="exactly one of ion_densities"):
             sf.add_element(8, 1e9, ion_fractions={1: 1.0}, recomb_ratecoeffs={2: 1e-12})
         with pytest.raises(ValueError, match="partfuncs belongs to saha_ion_stages"):
             sf.add_element(8, 1e9, ion_fractions={1: 1.0}, partfuncs={1: 1.0})
@@ -111,7 +111,7 @@ def test_exactly_one_population_rule() -> None:
         assert not sf.sfmatrix.any()
 
     # the same rules reach the solver through an Element
-    with pytest.raises(ValueError, match="exactly one of ion_fractions"):
+    with pytest.raises(ValueError, match="exactly one of ion_densities"):
         pynonthermal.solve_spencerfano([pynonthermal.Element(8, 1e9)], 1e8, emin_ev=1, emax_ev=3000, npts=200)
 
 
@@ -164,3 +164,61 @@ def test_deprecated_deposition_argument() -> None:
             sf.solve(**both)
         with pytest.raises(ValueError, match="needs the deposition rate density"):
             sf.solve()
+
+
+def test_ion_densities_rule() -> None:
+    # ion_densities gives the number densities directly, and n_elem is their sum
+    densities = {1: 9.9e9, 2: 1e8}
+    by_density = pynonthermal.solve_spencerfano(
+        [pynonthermal.Element(8, ion_densities=densities, excitation=True)],
+        1e8,
+        emin_ev=1,
+        emax_ev=3000,
+        npts=300,
+        temperature=6000,
+        use_collstrengths=False,
+    )
+    by_fraction = pynonthermal.solve_spencerfano(
+        [pynonthermal.Element(8, 1e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True)],
+        1e8,
+        emin_ev=1,
+        emax_ev=3000,
+        npts=300,
+        temperature=6000,
+        use_collstrengths=False,
+    )
+    # the densities are kept exactly, and the two rules describe the same gas
+    assert by_density.ion_populations(8) == densities
+    assert by_density.n_ion_tot == sum(densities.values())
+    assert np.array_equal(by_density.yvec, by_fraction.yvec)
+    assert by_density.ion_populations(8) == by_fraction.ion_populations(8)
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        # n_elem is the sum, so giving both is a contradiction waiting to happen
+        with pytest.raises(ValueError, match="n_elem is the sum of ion_densities"):
+            sf.add_element(8, 1e10, ion_densities=densities)
+        # every other rule needs n_elem
+        with pytest.raises(ValueError, match="n_elem is required with ion_fractions"):
+            sf.add_element(8, ion_fractions={1: 1.0})
+        with pytest.raises(ValueError, match="n_elem is required with saha_ion_stages"):
+            sf.add_element(8, saha_ion_stages=[1, 2])
+        for bad in (0.0, -1.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="n_elem must be greater than zero"):
+                sf.add_element(8, bad, ion_fractions={1: 1.0})
+
+        with pytest.raises(ValueError, match="at least one ion density"):
+            sf.add_element(8, ion_densities={})
+        with pytest.raises(ValueError, match="must sum to a number greater than zero"):
+            sf.add_element(8, ion_densities={1: 0.0, 2: 0.0})
+        for bad in (-1.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="must be non-negative and finite"):
+                sf.add_element(8, ion_densities={1: bad})
+        with pytest.raises(ValueError, match="exactly one of ion_densities"):
+            sf.add_element(8, ion_densities=densities, ion_fractions={1: 1.0})
+        assert not sf.ionpopdict
+        assert not sf.sfmatrix.any()
+
+        # a zero-density stage is registered without channels, so n_ion=None works for it later
+        sf.add_element(8, ion_densities={1: 1e9, 2: 0.0})
+        assert sf.ionpopdict == {(8, 1): 1e9, (8, 2): 0.0}
+        assert (8, 2) not in sf._ionisation_channels
