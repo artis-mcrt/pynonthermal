@@ -16,7 +16,7 @@ def test_lotz_heavy_element() -> None:
     # elements heavier than Ni (Z>28) use the Axelrod 1980/Lotz 1967 cross section approximation
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400, verbose=True) as sf:
         sf.add_ionisation(56, 2, n_ion=1.0)
-        sf.solve(depositionratedensity_ev=100, override_n_e=1.0)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1.0)
 
         # per-ion getter triggers the analysis lazily
         assert sf.get_frac_ionisation_ion(56, 2) > 0.0
@@ -37,6 +37,8 @@ class CountingAnalysisSolver(pynonthermal.SpencerFanoSolver):
 
 def test_api_guards() -> None:
     with CountingAnalysisSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(2, 1, n_ion=1.0)
 
         # getters require solve() to have been called
@@ -65,8 +67,9 @@ def test_api_guards() -> None:
             )
 
         # excitation data must exist for the requested ion
+        sf.set_atomic_data(adata_polars=pl.DataFrame({"Z": [2], "ion_stage": [1]}))
         with pytest.raises(ValueError, match="No excitation data"):
-            sf.add_ion_ltepopexcitation(3, 1, n_ion=1.0, adata_polars=pl.DataFrame({"Z": [2], "ion_stage": [1]}))
+            sf.add_ion_excitation(3, 1, n_ion=1.0)
 
         # a zero-population ion is a no-op and a negative population is rejected
         sf.add_ionisation(8, 3, n_ion=0.0)
@@ -77,7 +80,7 @@ def test_api_guards() -> None:
         # second ion with no excitation channels (exercises the zero-excitation analysis path)
         sf.add_ionisation(8, 2, n_ion=0.1)
 
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
 
         # a legitimately-zero excitation fraction must not trigger repeated re-analysis
         assert sf.get_frac_excitation_tot() == 0.0
@@ -87,13 +90,13 @@ def test_api_guards() -> None:
         assert sf.analyse_count == count_after_first_call
 
         # each getter triggers the analysis lazily from a freshly-solved (un-analysed) state
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
         assert sf.get_frac_ionisation_tot() > 0.0
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
         assert sf.get_frac_ionisation_ion(2, 1) > 0.0
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
         assert sf.get_eff_ionpot(2, 1) > 0.0
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
         assert sf.get_ionisation_ratecoeff(2, 1) > 0.0
 
         # additions are locked after solving
@@ -108,7 +111,7 @@ def test_invalid_excitation_fraction_reported() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=100) as sf:
         sf.add_ionisation(2, 1, n_ion=1.0)
         sf.add_excitation(2, 1, levelnumberdensity=1e30, xs_vec=np.full(100, 1e-10), epsilon_trans_ev=25.0)
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
 
         with pytest.warns(UserWarning, match="invalid frac_excitation_ion"):
             frac_excitation_tot = sf.get_frac_excitation_tot()
@@ -126,17 +129,19 @@ def test_helium() -> None:
     ]
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=2000, verbose=True) as sf:
+        sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ions:
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_ltepopexcitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
 
         # re-adding an ion's excitations with a different population is not allowed
         with pytest.raises(ValueError, match="different populations"):
-            sf.add_ion_ltepopexcitation(2, 1, n_ion=99.9, use_collstrengths=False)
+            sf.add_ion_excitation(2, 1, n_ion=99.9)
 
         # call solve twice to test that it can be called multiple times without error
-        sf.solve(depositionratedensity_ev=1000)
-        sf.solve(depositionratedensity_ev=100)
+        sf.solve(deposition_ev_per_s_per_cm3=1000)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         sf.analyse_ntspectrum()
         frac_excitation_tot = sf.get_frac_excitation_tot()
@@ -170,9 +175,11 @@ def test_heating_only_approximation() -> None:
         sf = pynonthermal.SpencerFanoSolver(
             emin_ev=1, emax_ev=3000, npts=512, heating_only_approximation=heating_only_approximation
         )
+        sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ions:
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_ltepopexcitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
         return sf
 
     with (
@@ -183,8 +190,8 @@ def test_heating_only_approximation() -> None:
         assert not sf_heat.sfmatrix.any()
         assert sf_full.sfmatrix.any()
 
-        sf_heat.solve(depositionratedensity_ev=100)
-        sf_full.solve(depositionratedensity_ev=100)
+        sf_heat.solve(deposition_ev_per_s_per_cm3=100)
+        sf_full.solve(deposition_ev_per_s_per_cm3=100)
 
         # the analysis of the heating-only solution must not show a solver warning
         with warnings.catch_warnings():
@@ -213,11 +220,13 @@ def test_iron() -> None:
     ]
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=16000, npts=1024, verbose=True) as sf:
+        sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
         for Z, ion_stage, n_ion in ions:
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
-            sf.add_ion_ltepopexcitation(Z, ion_stage, n_ion=n_ion, use_collstrengths=False)
+            sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
 
-        sf.solve(depositionratedensity_ev=100)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         sf.analyse_ntspectrum()
         frac_excitation_tot = sf.get_frac_excitation_tot()
