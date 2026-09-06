@@ -35,6 +35,8 @@ from pynonthermal.populations import Saha
 if t.TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from pynonthermal.base import CrossSectionFunc
+
 # The weight of the new value when the ionisation balance mixes the ratio coefficients in log space.
 # The fixed-point map ln(c_new) = F(ln(c)) has a slope between -1/2 (the balanced element gives the
 # electrons and heating takes most of the energy, so Gamma is proportional to 1 / n_e and n_e to
@@ -236,7 +238,7 @@ class SpencerFanoSolver:
     _eff_ionpot: dict[tuple[int, int], float]
     _nt_ionisation_ratecoeff: dict[tuple[int, int], float]
     _ionisation_channels: dict[tuple[int, int], list[IonisationChannel]]
-    depositionratedensity_ev: float
+    deposition_ev_per_s_per_cm3: float
     ionpopdict: dict[tuple[int, int], float]
     excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]
     verbose: bool
@@ -531,7 +533,7 @@ class SpencerFanoSolver:
         Z: int,
         ion_stage: int,
         levelnumberdensity: float | None,
-        xs_vec: npt.NDArray[np.float64],
+        xs_vec: npt.NDArray[np.float64] | CrossSectionFunc,
         epsilon_trans_ev: float,
         transitionkey: t.Any | None = None,
         *,
@@ -554,9 +556,9 @@ class SpencerFanoSolver:
             the lower level population as a fraction of the ion population, with
             levelnumberdensity=None
         xs_vec:
-            an array of cross sections in cm^2 at every energy of the SpencerFanoSolver.engrid
-            array [eV]. The solver keeps a read-only copy, so a later write to your own array
-            cannot change it.
+            the cross sections in cm^2, either as a function of an array of energies [eV] or as an
+            array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
+            read-only copy, so a later write to your own array cannot change it.
         epsilon_trans_ev:
             the transition energy in eV
         transitionkey:
@@ -600,7 +602,7 @@ class SpencerFanoSolver:
         Z: int,
         ion_stage: int,
         levelnumberdensity: float,
-        xs_vec: npt.NDArray[np.float64],
+        xs_vec: npt.NDArray[np.float64] | CrossSectionFunc,
         epsilon_trans_ev: float,
         transitionkey: t.Any | None,
         xs_is_checked: bool = False,
@@ -613,8 +615,11 @@ class SpencerFanoSolver:
         # get_xs_on_grid() returns a read-only copy, so a later write by the caller cannot change
         # what the solver holds. A template array is already such a copy, so xs_is_checked skips
         # a second check and copy for every transition of an ion.
-        if not xs_is_checked:
-            xs_vec = get_xs_on_grid(xs_vec, self.engrid, "xs_vec")
+        if xs_is_checked:
+            assert isinstance(xs_vec, np.ndarray)
+            xs_grid = xs_vec
+        else:
+            xs_grid = get_xs_on_grid(xs_vec, self.engrid, "xs_vec")
 
         self._check_epsilon_trans(epsilon_trans_ev)
         # >= rather than < 0, so that NaN, for which every comparison is False, is rejected too
@@ -632,10 +637,10 @@ class SpencerFanoSolver:
             raise ValueError(msg)
         self.excitationlists[(Z, ion_stage)][transitionkey] = ExcitationTransition(
             levelnumberdensity=levelnumberdensity,
-            xs_vec=xs_vec,
+            xs_vec=xs_grid,
             epsilon_trans_ev=epsilon_trans_ev,
         )
-        return self._excitation_band_vectors(levelnumberdensity, xs_vec, epsilon_trans_ev)
+        return self._excitation_band_vectors(levelnumberdensity, xs_grid, epsilon_trans_ev)
 
     def _check_epsilon_trans(self, epsilon_trans_ev: float) -> None:
         # a non-positive transition energy would put matrix entries below the diagonal, where the
@@ -1171,7 +1176,7 @@ class SpencerFanoSolver:
         ion_stage: int,
         n_ion: float | None,
         ionpot_ev: float,
-        xs_vec: npt.NDArray[np.float64],
+        xs_vec: npt.NDArray[np.float64] | CrossSectionFunc,
         channelkey: t.Any | None = None,
     ) -> None:
         """Add one collisional ionisation channel of an ion, with a custom cross section.
@@ -1193,10 +1198,11 @@ class SpencerFanoSolver:
             the ionisation potential of the channel in eV. It must be between emin_ev and
             emax_ev. The cross section must be zero at and below it.
         xs_vec:
-            an array of cross sections in cm^2 at every energy of the SpencerFanoSolver.engrid
-            array [eV]. The solver keeps a read-only copy, so a later write to your own array
-            cannot change it. calculate_N_e() needs the cross section between the grid points
-            just above the ionisation potential, and interpolates the array there.
+            the cross sections in cm^2, either as a function of an array of energies [eV] or as an
+            array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
+            read-only copy of an array, so a later write to your own array cannot change it.
+            calculate_N_e() needs the cross section between the grid points just above the
+            ionisation potential: it calls a function there, and interpolates an array.
         channelkey:
             any key to identify the channel in the ion. The default is the number of channels
             that the ion already has.
@@ -1224,13 +1230,20 @@ class SpencerFanoSolver:
 
         # every check runs before anything is recorded, so a rejected call leaves the solver
         # unchanged. The cross section is checked even for a zero population, which adds no channel.
-        channel = IonisationChannel.from_xs_grid(
-            arr_enev=self.engrid,
-            Z=Z,
-            ion_stage=ion_stage,
-            ionpot_ev=ionpot_ev,
-            xs_vec=xs_vec,
-            key=channelkey,
+        # A function is kept as it is, so that calculate_N_e() can call it between the grid points.
+        channel = (
+            IonisationChannel.from_xs(
+                arr_enev=self.engrid, Z=Z, ion_stage=ion_stage, ionpot_ev=ionpot_ev, xs=xs_vec, key=channelkey
+            )
+            if not isinstance(xs_vec, np.ndarray) and callable(xs_vec)
+            else IonisationChannel.from_xs_grid(
+                arr_enev=self.engrid,
+                Z=Z,
+                ion_stage=ion_stage,
+                ionpot_ev=ionpot_ev,
+                xs_vec=xs_vec,
+                key=channelkey,
+            )
         )
         self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev])
         self._check_ionisation_channel_keys(Z, ion_stage, [channel.key])
@@ -1381,7 +1394,7 @@ class SpencerFanoSolver:
         recombination rate coefficient of stage i+1. The solution depends on the populations, so
         solve() iterates until the populations converge, and it finds the free electron density
         from charge neutrality. Thermal collisional ionisation, photoionisation, and charge
-        exchange are not included, so the populations depend on depositionratedensity_ev.
+        exchange are not included, so the populations depend on deposition_ev_per_s_per_cm3.
 
         The chain of ion stages runs from one below the lowest key to the highest key. The top
         stage is a sink: its ionisation is an energy loss in the matrix, but the ions it makes have
@@ -1631,6 +1644,16 @@ class SpencerFanoSolver:
 
         return self._n_e
 
+    @property
+    def depositionratedensity_ev(self) -> float:
+        """The former name of deposition_ev_per_s_per_cm3, deprecated and removed in a later release."""
+        warnings.warn(
+            "SpencerFanoSolver.depositionratedensity_ev is deprecated. Its name is now deposition_ev_per_s_per_cm3.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.deposition_ev_per_s_per_cm3
+
     def get_ion_fractions(self, Z: int) -> dict[int, float]:
         """Get the fraction of element Z in each ion stage that the solver holds, keyed by ion stage.
 
@@ -1653,12 +1676,16 @@ class SpencerFanoSolver:
 
     def solve(
         self,
-        depositionratedensity_ev: float,
+        deposition_ev_per_s_per_cm3: float | None = None,
         override_n_e: float | None = None,
         *,
         balance_tol: float = 1e-4,
+        depositionratedensity_ev: float | None = None,
     ) -> None:
         """Solve the Spencer-Fano equation for the deposition rate density [eV s^-1 cm^-3].
+
+        depositionratedensity_ev is the former name of deposition_ev_per_s_per_cm3. It still works,
+        with a DeprecationWarning, and a later release removes it.
 
         override_n_e:
             a free electron density [cm^-3] to use in place of the one from the ion populations.
@@ -1672,6 +1699,21 @@ class SpencerFanoSolver:
             After solve(), balance_iterations holds the number of iterations that the balance took
             (zero without balanced elements).
         """
+        if depositionratedensity_ev is not None:
+            warnings.warn(
+                "the depositionratedensity_ev argument of solve() is deprecated. Its name is now"
+                " deposition_ev_per_s_per_cm3.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if deposition_ev_per_s_per_cm3 is not None:
+                msg = "give the deposition rate density once, as deposition_ev_per_s_per_cm3"
+                raise ValueError(msg)
+            deposition_ev_per_s_per_cm3 = depositionratedensity_ev
+        if deposition_ev_per_s_per_cm3 is None:
+            msg = "solve() needs the deposition rate density in eV s^-1 cm^-3 as deposition_ev_per_s_per_cm3"
+            raise ValueError(msg)
+
         self._solved = False
         self.reset_solution_analysis()
 
@@ -1680,8 +1722,10 @@ class SpencerFanoSolver:
         # and of every rate coefficient while leaving the energy fractions summing to one.
         # the chained comparison (not a "<= 0.0" test) also rejects nan, whose comparisons are
         # always False, and inf, which would scale yvec to inf without ever raising
-        if not 0.0 < depositionratedensity_ev < math.inf:
-            msg = f"depositionratedensity_ev must be greater than zero and finite but is {depositionratedensity_ev}"
+        if not 0.0 < deposition_ev_per_s_per_cm3 < math.inf:
+            msg = (
+                f"deposition_ev_per_s_per_cm3 must be greater than zero and finite but is {deposition_ev_per_s_per_cm3}"
+            )
             raise ValueError(msg)
 
         if override_n_e is not None and not 0.0 < override_n_e < math.inf:
@@ -1702,7 +1746,7 @@ class SpencerFanoSolver:
 
         # every check of the arguments runs first, so a rejected call leaves the deposition rate
         # density of the last solution in place instead of a rate that no solution used
-        self.depositionratedensity_ev = depositionratedensity_ev
+        self.deposition_ev_per_s_per_cm3 = deposition_ev_per_s_per_cm3
 
         # None clears any previously-set override, so that n_e is calculated on demand from ion populations
         self._n_e_override = override_n_e
@@ -1721,7 +1765,7 @@ class SpencerFanoSolver:
             print(f" n_ion_tot: {n_ion_tot:.2e} [/cm3]        (total ion density)")
             print(f"       n_e: {n_e:.2e} [/cm3]        (free electron density)")
             print(f"       x_e: {x_e:.2e}               (electrons per nucleus)")
-            print(f"deposition: {self.depositionratedensity_ev:7.2f}  [eV/s/cm3]")
+            print(f"deposition: {self.deposition_ev_per_s_per_cm3:7.2f}  [eV/s/cm3]")
 
         self._solved = True
 
@@ -1753,14 +1797,14 @@ class SpencerFanoSolver:
         # downward (the scheme K&F credit to Xu 1989) exploits the triangularity and is much
         # faster than a general LU solve.
         yvec_reference = solve_upper_triangular(self.sfmatrix, self.rhsvec, diag_add=lossvec)
-        self.yvec = np.array(yvec_reference * self.depositionratedensity_ev / self.E_init_ev, dtype=np.float64)
+        self.yvec = np.array(yvec_reference * self.deposition_ev_per_s_per_cm3 / self.E_init_ev, dtype=np.float64)
 
     def _solve_ion_balance(self, balance_tol: float) -> None:
         # find the populations of the balanced elements and the free electron density, and solve the
         # matrix equation at them. On return, yvec, ionpopdict, and the matrix agree with each other.
         elements = list(self._balanced_elements.values())
         recomb_elements = [element for element in elements if element.recomb_ratecoeffs is not None]
-        deposition = self.depositionratedensity_ev
+        deposition = self.deposition_ev_per_s_per_cm3
 
         # a stage without an ionisation channel has no ionisation rate, so the balance would leave every
         # ion in that stage or below. That is a missing add_ionisation() or add_ionisation_channel()
@@ -1883,7 +1927,7 @@ class SpencerFanoSolver:
     def _balanced_ratecoeffs_per_deposition(self, element: _BalancedElement) -> dict[int, float]:
         # the ionisation rate coefficient per unit deposition rate density of each stage below the top
         return {
-            ion_stage: self._calculate_ionisation_ratecoeff(element.Z, ion_stage) / self.depositionratedensity_ev
+            ion_stage: self._calculate_ionisation_ratecoeff(element.Z, ion_stage) / self.deposition_ev_per_s_per_cm3
             for ion_stage in element.ion_stages[:-1]
         }
 
@@ -1920,7 +1964,7 @@ class SpencerFanoSolver:
         for trans in self.excitationlists[(Z, ion_stage)].values():
             xs_excitation_vec_sum_alltrans += trans.levelnumberdensity * trans.epsilon_trans_ev * trans.xs_vec
 
-        return np.dot(xs_excitation_vec_sum_alltrans, self.yvec) * deltaen / self.depositionratedensity_ev
+        return np.dot(xs_excitation_vec_sum_alltrans, self.yvec) * deltaen / self.deposition_ev_per_s_per_cm3
 
     @staticmethod
     def _npts_subgrid(width_ev: float, J: float) -> int:
@@ -2079,11 +2123,11 @@ class SpencerFanoSolver:
         deltaen = self.deltaen
         frac_heating += (
             deltaen
-            / self.depositionratedensity_ev
+            / self.deposition_ev_per_s_per_cm3
             * sum(electronlossfunction(float(en_ev), n_e) * self.yvec[i] for i, en_ev in enumerate(self.engrid))
         )
 
-        frac_heating_E_0_part = E_0 * self.yvec[0] * electronlossfunction(E_0, n_e) / self.depositionratedensity_ev
+        frac_heating_E_0_part = E_0 * self.yvec[0] * electronlossfunction(E_0, n_e) / self.deposition_ev_per_s_per_cm3
 
         frac_heating += frac_heating_E_0_part
 
@@ -2101,7 +2145,7 @@ class SpencerFanoSolver:
             arr_en = np.linspace(0.0, E_0, num=NPTS_SUB_E0_INTEGRAL, endpoint=True, dtype=np.float64)
             arr_en_N_e = np.array([en_ev * self.calculate_N_e(en_ev) for en_ev in arr_en], dtype=np.float64)
             integral_e_n_e = integrate_simpson_uniform(arr_en_N_e, arr_en)
-            frac_heating_N_e = integral_e_n_e / self.depositionratedensity_ev
+            frac_heating_N_e = integral_e_n_e / self.deposition_ev_per_s_per_cm3
 
             if self.verbose:
                 print(f" frac_heating(E<EMIN): {frac_heating_N_e:.5f}")
@@ -2161,7 +2205,11 @@ class SpencerFanoSolver:
                 # equation 10: n_ion * ionpot * the integral of y(E) sigma_ic(E) dE, divided
                 # by the deposition rate density
                 frac_ionisation_shell = (
-                    n_ion * channel.ionpot_ev * np.dot(self.yvec, ar_xs_array) * deltaen / self.depositionratedensity_ev
+                    n_ion
+                    * channel.ionpot_ev
+                    * np.dot(self.yvec, ar_xs_array)
+                    * deltaen
+                    / self.deposition_ev_per_s_per_cm3
                 )
 
                 if self.verbose:
@@ -2192,7 +2240,7 @@ class SpencerFanoSolver:
             # rate coefficient, which stays finite for a stage with zero population.
             ratecoeff = self._calculate_ionisation_ratecoeff(Z, ion_stage)
             eff_ionpot = (
-                self.depositionratedensity_ev / n_ion_tot / ratecoeff
+                self.deposition_ev_per_s_per_cm3 / n_ion_tot / ratecoeff
                 if ratecoeff > 0.0 and n_ion_tot > 0.0
                 else float("inf")
             )
@@ -2322,6 +2370,14 @@ class SpencerFanoSolver:
 
         return self._frac_ionisation_ion[(Z, ion_stage)]
 
+    def get_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
+        """Get one ion's share of the excitation fraction (Kozma & Fransson 1992 equation 9)."""
+        self._require_solved()
+        if not self._analysed:
+            self.analyse_ntspectrum()
+
+        return self._frac_excitation_ion[(Z, ion_stage)]
+
     def get_eff_ionpot(self, Z: int, ion_stage: int) -> float:
         """Get the ion's effective ionisation potential in eV (Kozma & Fransson 1992 equation 12)."""
         self._require_solved()
@@ -2335,7 +2391,7 @@ class SpencerFanoSolver:
 
         This is Kozma & Fransson 1992 equation 13 with the deposition rate density per ion in
         place of their gamma-ray energy absorption rate, divided by the effective ionisation
-        potential. It scales with depositionratedensity_ev.
+        potential. It scales with deposition_ev_per_s_per_cm3.
         """
         self._require_solved()
         if not self._analysed:
@@ -2347,7 +2403,7 @@ class SpencerFanoSolver:
         """Get the non-thermal excitation rate coefficient in s^-1 for one transition.
 
         This is the integral of y(E) * sigma(E) dE in Kozma & Fransson equation 9, matching the
-        convention of get_ionisation_ratecoeff(). It scales with depositionratedensity_ev.
+        convention of get_ionisation_ratecoeff(). It scales with deposition_ev_per_s_per_cm3.
 
         transitionkey is the key given to add_excitation(); for transitions added by
         add_ion_excitation() it is (lower level index, upper level index).
@@ -2363,7 +2419,7 @@ class SpencerFanoSolver:
     def get_d_etaheating_by_d_en_vec(self) -> list[float]:
         self._require_solved()
         return [
-            self.electronlossfunction(self.engrid[i]) * self.yvec[i] / self.depositionratedensity_ev
+            self.electronlossfunction(self.engrid[i]) * self.yvec[i] / self.deposition_ev_per_s_per_cm3
             for i in range(len(self.engrid))
         ]
 
@@ -2374,7 +2430,7 @@ class SpencerFanoSolver:
         for Z, ion_stage in self.excitationlists:
             for trans in self.excitationlists[(Z, ion_stage)].values():
                 part_integrand += (
-                    trans.levelnumberdensity * trans.epsilon_trans_ev * trans.xs_vec / self.depositionratedensity_ev
+                    trans.levelnumberdensity * trans.epsilon_trans_ev * trans.xs_vec / self.deposition_ev_per_s_per_cm3
                 )
 
         return self.yvec * part_integrand
@@ -2387,7 +2443,7 @@ class SpencerFanoSolver:
             n_ion = self.ionpopdict[(Z, ion_stage)]
 
             for channel in channels:
-                part_integrand += n_ion * channel.ionpot_ev * channel.xs_grid / self.depositionratedensity_ev
+                part_integrand += n_ion * channel.ionpot_ev * channel.xs_grid / self.deposition_ev_per_s_per_cm3
 
         return self.yvec * part_integrand
 

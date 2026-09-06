@@ -42,7 +42,7 @@ def test_ionpot_below_emin_rejected() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=7.9, emax_ev=3000, npts=4000) as sf:
         sf.add_ionisation(26, 1, n_ion=0.99)
         sf.add_ionisation(26, 2, n_ion=0.01)
-        sf.solve(depositionratedensity_ev=1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e6)
         assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.05)
 
 
@@ -52,14 +52,14 @@ def test_zero_free_electron_density() -> None:
         sf.add_ionisation(2, 1, n_ion=1.0)
         assert sf.get_n_e() == 0.0
         with pytest.raises(ValueError, match="free electron density is zero"):
-            sf.solve(depositionratedensity_ev=100)
+            sf.solve(deposition_ev_per_s_per_cm3=100)
 
         # override_n_e is the documented way out, but must be a usable density
         for badvalue in (0.0, -1.0):
             with pytest.raises(ValueError, match="override_n_e must be greater than zero"):
-                sf.solve(depositionratedensity_ev=100, override_n_e=badvalue)
+                sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=badvalue)
 
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
         assert sf.get_n_e() == 1e-4
 
     # the loss function itself also rejects a non-positive density
@@ -75,10 +75,10 @@ def test_deposition_rate_validated() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=300, npts=100) as sf:
         sf.add_ionisation(8, 2, n_ion=1e8)
         for badvalue in (0.0, -100.0):
-            with pytest.raises(ValueError, match="depositionratedensity_ev must be greater than zero"):
-                sf.solve(depositionratedensity_ev=badvalue)
+            with pytest.raises(ValueError, match="deposition_ev_per_s_per_cm3 must be greater than zero"):
+                sf.solve(deposition_ev_per_s_per_cm3=badvalue)
 
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert (sf.yvec > 0.0).all()
         assert sf.get_ionisation_ratecoeff(8, 2) > 0.0
 
@@ -89,10 +89,10 @@ def test_solve_inputs_reject_nonfinite() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=300, npts=100) as sf:
         sf.add_ionisation(8, 2, n_ion=1e8)
         for badvalue in (math.nan, math.inf):
-            with pytest.raises(ValueError, match="depositionratedensity_ev must be greater than zero and finite"):
-                sf.solve(depositionratedensity_ev=badvalue)
+            with pytest.raises(ValueError, match="deposition_ev_per_s_per_cm3 must be greater than zero and finite"):
+                sf.solve(deposition_ev_per_s_per_cm3=badvalue)
             with pytest.raises(ValueError, match="override_n_e must be greater than zero and finite"):
-                sf.solve(depositionratedensity_ev=1e8, override_n_e=badvalue)
+                sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=badvalue)
 
 
 def test_solve_upper_triangular_guards() -> None:
@@ -158,7 +158,7 @@ def test_N_e_excitation_above_grid() -> None:
             xs_vec=np.where(sf.engrid >= epsilon_trans_ev, 1e-16, 0.0),
             epsilon_trans_ev=epsilon_trans_ev,
         )
-        sf.solve(depositionratedensity_ev=1e8, override_n_e=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e8)
 
         # at 0.5 eV the excited electron is exactly at emax_ev and the term is real
         assert sf.calculate_N_e(emax - epsilon_trans_ev) > 0.0
@@ -174,11 +174,11 @@ def test_override_n_e_not_confused_with_cache() -> None:
         sf.add_ionisation(8, 3, n_ion=1e8)
         assert sf.calculate_free_electron_density() == 3e8
 
-        sf.solve(depositionratedensity_ev=1e8, override_n_e=1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e6)
         assert sf.get_n_e() == 1e6
 
         # omitting the override falls back to the ion populations
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf.get_n_e() == 3e8
 
 
@@ -202,7 +202,7 @@ def test_N_e_empty_second_integral_domain() -> None:
     # grid makes the domain empty for every E > 767.5 eV.
     with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=400) as sf:
         sf.add_ionisation(11, 10, n_ion=1e8)
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         shell = (
             pynonthermal.collion.read_colliondata()
@@ -286,7 +286,7 @@ def test_N_e_epsilon_integral_not_keyed_to_the_grid() -> None:
         ):
             warnings.simplefilter("ignore", UserWarning)
             sf.add_ionisation(13, 1, n_ion=1.0)
-            sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+            sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
             fracsums[npts] = sf.get_frac_sum()
 
     for npts_onthreshold, npts_neighbour in pairs:
@@ -305,7 +305,7 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
     # makes the domain [I, E + I] at most 1 eV wide, narrower than the 0.75 eV grid spacing here.
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4000) as sf:
         sf.add_ionisation(13, 1, n_ion=1.0)
-        sf.solve(depositionratedensity_ev=100, override_n_e=1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
 
         shells = (
             pynonthermal.collion.read_colliondata().filter((pl.col("Z") == 13) & (pl.col("ion_stage") == 1)).to_dicts()
@@ -359,7 +359,7 @@ def test_quadrature_resolution_constants_are_adequate() -> None:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=2000) as sf:
             sf.add_ionisation(Z, 1, n_ion=0.99)
             sf.add_ionisation(Z, 2, n_ion=0.01)
-            sf.solve(depositionratedensity_ev=1e6)
+            sf.solve(deposition_ev_per_s_per_cm3=1e6)
             return sf.get_frac_heating()
 
     # emin_ev has to cover the large values add_ionisation's own error message steers users towards
@@ -426,7 +426,7 @@ def test_ionisation_ratecoeff_matches_eff_ionpot_form() -> None:
         sf.add_ionisation(8, 1, n_ion=9e8)
         sf.add_ionisation(8, 2, n_ion=1e8)
         sf.add_ionisation(26, 2, n_ion=2e7)
-        sf.solve(depositionratedensity_ev=1e9)
+        sf.solve(deposition_ev_per_s_per_cm3=1e9)
         n_ion_tot = sf.get_n_ion_tot()
         for Z, ion_stage in sf.ionpopdict:
             ratecoeff = sf.get_ionisation_ratecoeff(Z, ion_stage)
@@ -443,7 +443,7 @@ def test_excitation_only_ion_counted() -> None:
         sf.add_ionisation(8, 2, n_ion=1e8)
         xs_vec = np.where(sf.engrid >= 20.0, 1e-16, 0.0)
         sf.add_excitation(26, 2, levelnumberdensity=1e8, xs_vec=xs_vec, epsilon_trans_ev=20.0)
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         assert sf.get_frac_excitation_tot() > 0.3
         assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.01)
@@ -462,7 +462,7 @@ def test_ltepopexcitation_registers_population() -> None:
         assert sf.get_n_e() == 1e8 * 1 + 5e7 * 2
         assert sf.get_n_ion_tot() == 1.5e8
 
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf.get_frac_excitation_tot() > 0.0
         assert sf.get_ionisation_ratecoeff(26, 3) == 0.0
         assert sf.get_eff_ionpot(26, 3) == float("inf")
@@ -500,7 +500,7 @@ def test_conservation_warning_on_coarse_grid() -> None:
         for Z, ion_stage, n_ion in ((2, 1, 1.0 - x_e), (2, 2, x_e)):
             sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
             sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
-        sf.solve(depositionratedensity_ev=100)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         with pytest.warns(UserWarning, match="energy fractions sum to"):
             frac_sum = sf.get_frac_sum()
@@ -545,7 +545,7 @@ def test_n_e_nt_relativistic() -> None:
     # already 2.5 per cent fast at the 16 keV emax_ev that the iron benchmark uses
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=16000, npts=400) as sf:
         sf.add_ionisation(26, 2, n_ion=1.0)
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
         n_e_nt = sf.get_n_e_nt()
         assert n_e_nt > 0.0
 
@@ -768,7 +768,7 @@ def test_custom_ionisation_channel_matches_the_builtin_path() -> None:
         assert sf_custom.sfmatrix.tobytes() == sf_builtin.sfmatrix.tobytes()
 
         for sf in (sf_custom, sf_builtin):
-            sf.solve(depositionratedensity_ev=1e8)
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         assert math.isclose(
             sf_custom.get_frac_ionisation_ion(Z, ion_stage), sf_builtin.get_frac_ionisation_ion(Z, ion_stage)
@@ -784,7 +784,7 @@ def test_custom_ionisation_channel_conserves_energy() -> None:
     ionpot_ev = 35.0
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=2000) as sf:
         sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=ionpot_ev, xs_vec=_bethe_xs_grid(sf.engrid, ionpot_ev))
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         assert sf.get_frac_ionisation_tot() > 0.1  # the channel must carry a real share
         assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.01)
@@ -822,7 +822,7 @@ def test_custom_ionisation_channel_adds_to_the_builtin_shells() -> None:
             == len(sf_builtin._ionisation_channels[(Z, ion_stage)]) + 1
         )
         for sf in (sf_builtin, sf_extra):
-            sf.solve(depositionratedensity_ev=1e8)
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf_extra.get_frac_ionisation_ion(Z, ion_stage) > sf_builtin.get_frac_ionisation_ion(Z, ion_stage)
 
 
@@ -883,7 +883,7 @@ def test_custom_ionisation_channel_validation() -> None:
         with pytest.raises(ValueError, match="different populations"):
             sf.add_ionisation_channel(8, 2, n_ion=2e8, ionpot_ev=42.0, xs_vec=_bethe_xs_grid(sf.engrid, 42.0))
 
-        sf.solve(depositionratedensity_ev=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
         with pytest.raises(RuntimeError, match="after solving"):
             sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=60.0, xs_vec=good)
 
@@ -991,11 +991,11 @@ def test_rejected_solve_keeps_the_last_deposition_rate() -> None:
     # rejected call leaves the value that the last solution used
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.add_ionisation(8, 2, n_ion=1e8)
-        sf.solve(depositionratedensity_ev=100.0)
-        assert sf.depositionratedensity_ev == 100.0
+        sf.solve(deposition_ev_per_s_per_cm3=100.0)
+        assert sf.deposition_ev_per_s_per_cm3 == 100.0
         with pytest.raises(ValueError, match="balance_tol"):
-            sf.solve(depositionratedensity_ev=999.0, balance_tol=0.0)
-        assert sf.depositionratedensity_ev == 100.0
+            sf.solve(deposition_ev_per_s_per_cm3=999.0, balance_tol=0.0)
+        assert sf.deposition_ev_per_s_per_cm3 == 100.0
         with pytest.raises(ValueError, match="override_n_e"):
-            sf.solve(depositionratedensity_ev=999.0, override_n_e=-1.0)
-        assert sf.depositionratedensity_ev == 100.0
+            sf.solve(deposition_ev_per_s_per_cm3=999.0, override_n_e=-1.0)
+        assert sf.deposition_ev_per_s_per_cm3 == 100.0
