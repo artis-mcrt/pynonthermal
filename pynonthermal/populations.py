@@ -23,6 +23,17 @@ class Fixed:
 
     ion_fractions: Mapping[int, float]
 
+    def get_ion_stages(self) -> tuple[int, ...]:
+        """Get the ion stages of the model, or an empty tuple if the input is malformed.
+
+        add_element() reads the stages before it validates the model, to build the excitations
+        without changing the solver. An empty tuple leaves the report of the fault to add_element().
+        """
+        try:
+            return tuple(sorted(self.ion_fractions))
+        except TypeError:
+            return ()
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Saha:
@@ -37,6 +48,13 @@ class Saha:
     ion_stages: Sequence[int]
     partfuncs: Mapping[int, float] | None = None
 
+    def get_ion_stages(self) -> tuple[int, ...]:
+        """Get the ion stages of the model, or an empty tuple if the input is malformed (see Fixed)."""
+        try:
+            return tuple(int(ion_stage) for ion_stage in self.ion_stages)
+        except (TypeError, ValueError):
+            return ()
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class IonBalance:
@@ -50,6 +68,14 @@ class IonBalance:
     """
 
     recomb_ratecoeffs: Mapping[int, float]
+
+    def get_ion_stages(self) -> tuple[int, ...]:
+        """Get the ion stages of the model, or an empty tuple if the input is malformed (see Fixed)."""
+        try:
+            upper_stages = sorted(self.recomb_ratecoeffs)
+            return tuple(range(upper_stages[0] - 1, upper_stages[-1] + 1))
+        except (TypeError, IndexError):
+            return ()
 
 
 PopulationModel = Fixed | Saha | IonBalance

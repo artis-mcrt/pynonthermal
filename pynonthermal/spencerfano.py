@@ -746,7 +746,13 @@ class SpencerFanoSolver:
         self._check_ion_population(Z, ion_stage, n_ion)
 
         templates = self._build_ltepop_excitation_templates(Z, ion_stage, temperature)
+        self._apply_ion_excitation_templates(Z, ion_stage, n_ion, templates)
 
+    def _apply_ion_excitation_templates(
+        self, Z: int, ion_stage: int, n_ion: float, templates: list[tuple[t.Any, _ExcitationTemplate]]
+    ) -> None:
+        # store the transitions of one ion with a population that the balance does not move, and add
+        # their bands to the matrix
         # register the population so that this ion counts towards n_e and n_ion_tot even when
         # add_ionisation() was never called for it. The registration comes after the templates, so
         # a failed atomic-data lookup leaves the solver unchanged.
@@ -825,21 +831,54 @@ class SpencerFanoSolver:
             self.set_atomic_data(adata_polars=adata_polars, **settings)
         self.add_ion_excitation(Z, ion_stage, n_ion)
 
-    def _add_element_excitation(self, Z: int) -> None:
-        # add_ion_excitation() with n_ion=None for each stage of an element that has level data
-        stages = sorted(ion_stage for (Z_ion, ion_stage) in self.ionpopdict if Z_ion == Z)
+    def _check_excitation_keys(self, Z: int, ion_stage: int, keys: list[t.Any]) -> None:
+        # every transition of an ion needs its own key, as every channel does
+        # (_check_ionisation_channel_keys). This runs before any transition is stored, so a rejected
+        # call leaves the solver unchanged.
+        seen = set(self.excitationlists.get((Z, ion_stage), {}))
+        for key in keys:
+            if key in seen:
+                msg = f"Transition {key} already added for Z={Z} ion_stage={ion_stage}"
+                raise ValueError(msg)
+            seen.add(key)
+
+    def _build_element_excitation_templates(
+        self, Z: int, ion_stages: Sequence[int]
+    ) -> dict[int, list[tuple[t.Any, _ExcitationTemplate]]]:
+        # the excitation templates of every stage of an element that has level data. This reads the
+        # atomic data and checks the transition keys without writing to the solver, so add_element()
+        # can build them before it registers the element.
+        temperature = self._get_temperature()
         stages_with_levels = [
-            ion_stage for ion_stage in stages if ion_stage <= Z and self._get_ion_levels(Z, ion_stage) is not None
+            ion_stage for ion_stage in ion_stages if ion_stage <= Z and self._get_ion_levels(Z, ion_stage) is not None
         ]
         if not stages_with_levels:
             msg = (
-                f"No excitation data for any ion stage {stages[0]}-{stages[-1]} of Z={Z}."
+                f"No excitation data for any ion stage {min(ion_stages)}-{max(ion_stages)} of Z={Z}."
                 " Supply a custom level/transition table with set_atomic_data()."
             )
             raise ValueError(msg)
 
-        for ion_stage in stages_with_levels:
-            self.add_ion_excitation(Z, ion_stage, None)
+        templates_of_stage = {
+            ion_stage: self._build_ltepop_excitation_templates(Z, ion_stage, temperature)
+            for ion_stage in stages_with_levels
+        }
+        for ion_stage, templates in templates_of_stage.items():
+            self._check_excitation_keys(Z, ion_stage, [transitionkey for transitionkey, _ in templates])
+
+        return templates_of_stage
+
+    def _apply_element_excitation_templates(
+        self, Z: int, templates_of_stage: Mapping[int, list[tuple[t.Any, _ExcitationTemplate]]]
+    ) -> None:
+        # add the templates that _build_element_excitation_templates() prepared, as
+        # add_ion_excitation() with n_ion=None does for one ion
+        element = self._balanced_elements.get(Z)
+        for ion_stage, templates in templates_of_stage.items():
+            if element is not None:
+                self._add_balanced_excitation_templates(element, ion_stage, templates)
+            else:
+                self._apply_ion_excitation_templates(Z, ion_stage, self.ionpopdict[(Z, ion_stage)], templates)
 
     def _get_adata_polars(self) -> pl.DataFrame:
         # the levels/transitions table: the one from set_atomic_data(), else the internal database
@@ -1245,36 +1284,27 @@ class SpencerFanoSolver:
         n_elem:
             the number density of the element in cm^-3
         """
-        # the model registration and the excitations write several structures in turn, so an error
-        # in a later step (for example missing level data for the excitations) restores all of them.
-        # A rejected call then leaves the solver unchanged, and the caller can repeat it.
-        saved_ionpopdict = dict(self.ionpopdict)
-        saved_channels = {key: list(channels) for key, channels in self._ionisation_channels.items()}
-        saved_excitationlists = {key: dict(transitions) for key, transitions in self.excitationlists.items()}
-        saved_balanced_elements = dict(self._balanced_elements)
-        saved_sfmatrix = self.sfmatrix.copy()
-        saved_n_e = self._n_e
-        try:
-            if isinstance(populations, IonBalance):
-                self._add_element_ionbalance(Z, n_elem, populations.recomb_ratecoeffs, builtin_channels)
-            elif isinstance(populations, Saha):
-                self._add_element_saha(Z, n_elem, populations.ion_stages, populations.partfuncs, builtin_channels)
-            elif isinstance(populations, Fixed):
-                self._add_element_fixed(Z, n_elem, populations.ion_fractions, builtin_channels)
-            else:
-                msg = f"populations must be a Fixed, Saha, or IonBalance model but is {type(populations).__name__}"
-                raise TypeError(msg)  # noqa: TRY301
+        # the excitation templates are built before the model is registered, and each model checks
+        # every stage before it writes the first one, so a rejected call leaves the solver unchanged
+        # and the caller can repeat it. Nothing above the registration writes to the solver.
+        templates_of_stage = None
+        if excitation and isinstance(populations, Fixed | Saha | IonBalance):
+            ion_stages = populations.get_ion_stages()
+            if ion_stages:
+                templates_of_stage = self._build_element_excitation_templates(Z, ion_stages)
 
-            if excitation:
-                self._add_element_excitation(Z)
-        except Exception:
-            self.ionpopdict = saved_ionpopdict
-            self._ionisation_channels = saved_channels
-            self.excitationlists = saved_excitationlists
-            self._balanced_elements = saved_balanced_elements
-            np.copyto(self.sfmatrix, saved_sfmatrix)
-            self._n_e = saved_n_e
-            raise
+        if isinstance(populations, IonBalance):
+            self._add_element_ionbalance(Z, n_elem, populations.recomb_ratecoeffs, builtin_channels)
+        elif isinstance(populations, Saha):
+            self._add_element_saha(Z, n_elem, populations.ion_stages, populations.partfuncs, builtin_channels)
+        elif isinstance(populations, Fixed):
+            self._add_element_fixed(Z, n_elem, populations.ion_fractions, builtin_channels)
+        else:
+            msg = f"populations must be a Fixed, Saha, or IonBalance model but is {type(populations).__name__}"
+            raise TypeError(msg)
+
+        if templates_of_stage is not None:
+            self._apply_element_excitation_templates(Z, templates_of_stage)
 
     def _add_element_fixed(
         self, Z: int, n_elem: float, ion_fractions: Mapping[int, float], builtin_channels: bool
@@ -1310,14 +1340,35 @@ class SpencerFanoSolver:
             msg = f"Z={Z} already has ions, so add_element() cannot add it"
             raise ValueError(msg)
 
+        # build and check the channels of every stage before the first one is stored, so a stage
+        # whose shells the built-in table does not hold, or whose potential lies below emin_ev,
+        # leaves the solver unchanged
+        channels_of_stage: dict[int, list[IonisationChannel]] = {}
         for ion_stage, fraction in sorted(ion_fractions.items()):
-            n_ion = n_elem * fraction
-            if ion_stage == Z + 1 or not builtin_channels or n_ion == 0.0:
-                # the population counts towards n_e and n_ion_tot even without a channel, and a
-                # registered population lets the per-ion methods take n_ion=None for the stage
-                self._register_ion_population(Z, ion_stage, n_ion)
-            else:
-                self.add_ionisation(Z, ion_stage, n_ion)
+            # a bare nucleus has no electrons to remove, and a stage with no ions or without the
+            # built-in channels gets a population only
+            if ion_stage == Z + 1 or not builtin_channels or n_elem * fraction == 0.0:
+                channels_of_stage[ion_stage] = []
+                continue
+            channels = pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
+            self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
+            self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
+            channels_of_stage[ion_stage] = channels
+
+        for ion_stage, channels in channels_of_stage.items():
+            n_ion = n_elem * ion_fractions[ion_stage]
+            if self.verbose and channels:
+                print(
+                    f"  including Z={Z} ion_stage"
+                    f" {ion_stage} ({at.get_ionstring(Z, ion_stage)}) ionisation with n_ion"
+                    f" {n_ion:.1e} [/cm3]"
+                )
+            # the population counts towards n_e and n_ion_tot even without a channel, and a
+            # registered population lets the per-ion methods take n_ion=None for the stage
+            self._register_ion_population(Z, ion_stage, n_ion)
+            for channel in channels:
+                self._store_ionisation_channel(Z, ion_stage, channel)
+                self._add_ionisation_channel_to_matrix(n_ion, channel)
 
     def _add_element_ionbalance(
         self, Z: int, n_elem: float, recomb_ratecoeffs: Mapping[int, float], builtin_channels: bool = True

@@ -724,21 +724,26 @@ def test_deprecated_excitation_name_keeps_its_old_parameters() -> None:
 
 
 def test_add_element_is_atomic() -> None:
-    # an error in a later step of add_element() leaves the solver unchanged, so the call can be repeated
+    # every step of add_element() is checked before the first one writes, so a rejected call leaves
+    # the solver unchanged and can be repeated
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.set_temperature(5000)
         sf.add_ionisation(8, 2, n_ion=1e8)
         matrix_before = sf.sfmatrix.copy()
         n_e_before = sf.get_n_e()
 
-        # Ba has no level data, so the excitations fail after the Saha element was registered
-        with pytest.raises(ValueError, match="No excitation data"):
-            sf.add_element(56, 1e8, pynonthermal.Saha([1, 2], partfuncs={1: 1.0, 2: 2.0}), excitation=True)
-        assert 56 not in sf._balanced_elements
-        assert sf.ionpopdict == {(8, 2): 1e8}
-        assert not sf.excitationlists
-        assert np.array_equal(sf.sfmatrix, matrix_before)
-        assert sf.get_n_e() == n_e_before
+        # Ba has no level data, so the excitations of either balanced model cannot be built
+        for model in (
+            pynonthermal.Saha([1, 2], partfuncs={1: 1.0, 2: 2.0}),
+            pynonthermal.IonBalance({2: 1e-12}),
+        ):
+            with pytest.raises(ValueError, match="No excitation data"):
+                sf.add_element(56, 1e8, model, excitation=True)
+            assert 56 not in sf._balanced_elements
+            assert sf.ionpopdict == {(8, 2): 1e8}
+            assert not sf.excitationlists
+            assert np.array_equal(sf.sfmatrix, matrix_before)
+            assert sf.get_n_e() == n_e_before
 
         # a Fixed element whose second stage has a shell below emin_ev fails after the first stage
         with pynonthermal.SpencerFanoSolver(emin_ev=12.0, emax_ev=3000, npts=300) as sf_emin:
