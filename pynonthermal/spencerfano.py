@@ -1743,8 +1743,8 @@ class SpencerFanoSolver:
     def get_ion_fractions(self, Z: int) -> dict[int, float]:
         """Get the fraction of element Z in each ion stage that the solver holds, keyed by ion stage.
 
-        The fractions are the populations in ionpopdict divided by their sum. For a Saha or
-        IonBalance element they are provisional until solve() runs.
+        The fractions are the populations in ionpopdict divided by their sum. For an element with
+        saha_ion_stages or recomb_ratecoeffs they are provisional until solve() runs.
         """
         populations = {ion_stage: n_ion for (Z_ion, ion_stage), n_ion in self.ionpopdict.items() if Z_ion == Z}
         if not populations:
@@ -1775,11 +1775,11 @@ class SpencerFanoSolver:
 
         override_n_e:
             a free electron density [cm^-3] to use in place of the one from the ion populations.
-            It cannot be combined with a Saha or IonBalance element, whose populations set the
-            free electron density through charge neutrality.
+            It cannot be combined with an element that has saha_ion_stages or recomb_ratecoeffs,
+            whose populations set the free electron density through charge neutrality.
         balance_tol:
             the relative tolerance of the ratio n_{i+1} n_e / n_i of every pair of adjacent stages
-            of an IonBalance element. The iteration stops when the ratios
+            of an element with recomb_ratecoeffs. The iteration stops when the ratios
             from the solution agree with the ratios that gave the populations to this tolerance. A
             RuntimeError reports a balance that did not converge within BALANCE_MAXITER iterations.
             After solve(), balance_iterations holds the number of iterations that the balance took
@@ -1821,7 +1821,8 @@ class SpencerFanoSolver:
             # the balance would give populations that are not charge neutral with this density,
             # and the loss term would disagree with the ionisation state
             msg = (
-                "override_n_e cannot be combined with a Saha or IonBalance element, because the balance sets the"
+                "override_n_e cannot be combined with an element that has saha_ion_stages or"
+                " recomb_ratecoeffs, because the balance sets the"
                 f" free electron density from charge neutrality (balanced elements: {sorted(self._balanced_elements)})"
             )
             raise ValueError(msg)
