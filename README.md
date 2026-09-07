@@ -73,7 +73,7 @@ with pynonthermal.SpencerFanoSolver() as sf:
     print("ionisation rate coeff [s^-1]:", sf.get_ionisation_ratecoeff(Z=8, ion_stage=2))
 ```
 
-The solver is a builder: each call adds ions, channels, or transitions to the matrix, and `solve()`
+The solver is a builder: each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
 solves it. The `with` block is optional and only scopes the solver.
 
 The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example, and can be launched on Binder:
@@ -94,7 +94,7 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   to match Kozma & Fransson (1992).
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time; check
   `get_frac_sum()`.
-- `verbose`: print the setup, each added channel, and a per-ion, per-shell breakdown.
+- `verbose`: print the setup, each added ionisation channel, and a per-ion, per-shell breakdown.
 - `use_ar1985`: use the original Arnaud & Rothenflug (1985) ionisation cross sections
   (see [Cross-section datasets](#cross-section-datasets)).
 - `heating_only_approximation`: leave the excitation and ionisation loss terms out of the matrix and solve
@@ -174,7 +174,7 @@ Energy fractions, as shares of the deposited energy:
 sf.get_frac_heating()  # to heating of the thermal electrons
 sf.get_frac_ionisation_tot()  # to ionisation, over all ions
 sf.get_frac_excitation_tot()  # to excitation, over all ions
-sf.get_frac_sum()  # the sum; ~1.0 when the grid resolves every channel
+sf.get_frac_sum()  # the sum; ~1.0 when the grid resolves every ionisation and excitation
 sf.get_frac_ionisation_ion(Z, ion_stage)  # one ion's share
 sf.get_frac_excitation_ion(Z, ion_stage)
 ```
