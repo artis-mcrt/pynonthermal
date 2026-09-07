@@ -59,12 +59,12 @@ BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 # is 1e-6 of the same coefficient in cm^3 s^-1) or a rate in place of a rate coefficient, so
 # add_element() warns. It is a warning and not an error, because the balance itself accepts any
 # positive value.
+RECOMB_RATECOEFF_MIN_WARN: float = 1e-16
+RECOMB_RATECOEFF_MAX_WARN: float = 1e-8
+
 # ion_stage is one more than the charge. A caller who uses the charge gives a stage of 0 for a
 # neutral atom, so the messages that reject a stage below 1 give this hint.
 ION_STAGE_HINT: str = "ion_stage is one more than the charge, so a neutral atom is ion_stage 1"
-
-RECOMB_RATECOEFF_MIN_WARN: float = 1e-16
-RECOMB_RATECOEFF_MAX_WARN: float = 1e-8
 
 
 def _rule_ion_stages(
@@ -1478,8 +1478,9 @@ class SpencerFanoSolver:
         coefficient [s^-1] of stage i from the Spencer-Fano solution and alpha_{i+1} the
         recombination rate coefficient of stage i+1. The solution depends on the populations, so
         solve() iterates until the populations converge, and it finds the free electron density
-        from charge neutrality. Thermal collisional ionisation, photoionisation, and charge
-        exchange are not included, so the populations depend on deposition_ev_per_s_per_cm3.
+        from charge neutrality or from override_n_e(). Thermal collisional ionisation,
+        photoionisation, and charge exchange are not included, so the populations depend on
+        deposition_ev_per_s_per_cm3.
 
         The chain of ion stages runs from one below the lowest key to the highest key. The top
         stage is a sink: its ionisation is an energy loss in the matrix, but the ions it makes have
@@ -1562,7 +1563,8 @@ class SpencerFanoSolver:
         )
 
     def _check_new_balanced_element(self, Z: int, n_elem: float, ion_stages: tuple[int, ...]) -> None:
-        # the checks of both add_element methods that need no atomic data
+        # the checks of a balanced element that need no atomic data. The keys of recomb_ratecoeffs
+        # are contiguous and at least 2, so the stages are contiguous and the lowest is at least 1.
         self._require_not_solved("add element")
         if Z < 1:
             msg = f"Z must be at least 1 but is {Z}"
@@ -1571,13 +1573,8 @@ class SpencerFanoSolver:
         if not 0.0 < n_elem < math.inf:
             msg = f"n_elem must be greater than zero and finite but is {n_elem}"
             raise ValueError(msg)
-        if len(ion_stages) < 2 or list(ion_stages) != list(range(ion_stages[0], ion_stages[-1] + 1)):
-            msg = f"the ion stages of Z={Z} must be at least two contiguous stages but are {list(ion_stages)}"
-            raise ValueError(msg)
-        if ion_stages[0] < 1 or ion_stages[-1] > Z + 1:
+        if ion_stages[-1] > Z + 1:
             msg = f"the ion stages of Z={Z} must lie between 1 and {Z + 1} but are {list(ion_stages)}"
-            if ion_stages[0] < 1:
-                msg = f"{msg}. {ION_STAGE_HINT}"
             raise ValueError(msg)
         if Z in self._balanced_elements:
             msg = f"Z={Z} was already added as a balanced element"
@@ -1854,7 +1851,6 @@ class SpencerFanoSolver:
         # find the populations of the balanced elements and the free electron density, and solve the
         # matrix equation at them. On return, yvec, ionpopdict, and the matrix agree with each other.
         elements = list(self._balanced_elements.values())
-        deposition = self.deposition_ev_per_s_per_cm3
 
         # a stage without an ionisation channel has no ionisation rate, so the balance would leave every
         # ion in that stage or below. That is a missing add_ionisation() or add_ionisation_channel()
@@ -1879,13 +1875,7 @@ class SpencerFanoSolver:
                     element.ratecoeffs_per_deposition = self._balanced_ratecoeffs_per_deposition(element)
 
         # the ratio coefficients n_{i+1} n_e / n_i of every element, keyed by Z
-        ratio_coeffs: dict[int, list[float]] = {}
-        for element in elements:
-            assert element.ratecoeffs_per_deposition is not None
-            ratio_coeffs[element.Z] = [
-                element.ratecoeffs_per_deposition[ion_stage] * deposition / element.recomb_ratecoeffs[ion_stage + 1]
-                for ion_stage in element.ion_stages[:-1]
-            ]
+        ratio_coeffs = {element.Z: self._balanced_ratio_coeffs(element) for element in elements}
 
         max_residual = math.inf
         for iteration in range(1, BALANCE_MAXITER + 1):
@@ -1925,15 +1915,8 @@ class SpencerFanoSolver:
             new_ratio_coeffs: dict[int, list[float]] = {}
             for element in elements:
                 element.ratecoeffs_per_deposition = self._balanced_ratecoeffs_per_deposition(element)
-                new_ratio_coeffs[element.Z] = []
-                for index, ion_stage in enumerate(element.ion_stages[:-1]):
-                    c_new = (
-                        element.ratecoeffs_per_deposition[ion_stage]
-                        * deposition
-                        / element.recomb_ratecoeffs[ion_stage + 1]
-                    )
-                    c_old = ratio_coeffs[element.Z][index]
-                    new_ratio_coeffs[element.Z].append(c_new)
+                new_ratio_coeffs[element.Z] = self._balanced_ratio_coeffs(element)
+                for c_new, c_old in zip(new_ratio_coeffs[element.Z], ratio_coeffs[element.Z], strict=True):
                     if c_new != c_old:
                         max_residual = max(max_residual, abs(c_new - c_old) / max(c_new, c_old))
 
@@ -1967,6 +1950,17 @@ class SpencerFanoSolver:
 
         for element in elements:
             self._warn_top_stage_leak(element)
+
+    def _balanced_ratio_coeffs(self, element: _BalancedElement) -> list[float]:
+        # the ratio coefficient c_i = n_{i+1} n_e / n_i = Gamma_i / alpha_{i+1} of each pair of
+        # adjacent stages, at the deposition rate density of the solution
+        assert element.ratecoeffs_per_deposition is not None
+        return [
+            element.ratecoeffs_per_deposition[ion_stage]
+            * self.deposition_ev_per_s_per_cm3
+            / element.recomb_ratecoeffs[ion_stage + 1]
+            for ion_stage in element.ion_stages[:-1]
+        ]
 
     def _balanced_ratecoeffs_per_deposition(self, element: _BalancedElement) -> dict[int, float]:
         # the ionisation rate coefficient per unit deposition rate density of each stage below the top
@@ -2175,9 +2169,6 @@ class SpencerFanoSolver:
 
         frac_heating += frac_heating_E_0_part
 
-        # if self.verbose:
-        #     print(f"            frac_heating E_0 * y * l(E_0) part: {frac_heating_E_0_part:.5f}")
-
         # the heating-only matrix routes all deposited energy through the loss function, so the
         # N_e term below E_0 would count the same energy twice. calculate_N_e() itself still
         # gives the secondary-electron rate of the approximate solution.
@@ -2289,10 +2280,6 @@ class SpencerFanoSolver:
                 else float("inf")
             )
             self._eff_ionpot[(Z, ion_stage)] = eff_ionpot
-
-            # eff_ionpot_usevalence = (
-            #     ionpot_valence * X_ion / self._frac_ionisation_ion[(Z, ion_stage)]
-            #     if self._frac_ionisation_ion[(Z, ion_stage)] > 0. else float('inf'))
 
             if self.verbose:
                 print(f"     frac_ionisation: {self._frac_ionisation_ion[(Z, ion_stage)]:.4f}")
@@ -2634,14 +2621,6 @@ class SpencerFanoSolver:
         engrid_low = np.arange(0.0, E_0, E_0 / 20.0, dtype=float)
         npts_low = len(engrid_low)
         engridfull = np.append(engrid_low, self.engrid)
-
-        # delta_E_y_on_dE = np.zeros(npts)
-        # for i in range(len(engrid) - 1):
-        #     # delta_E_y_on_dE[i] = ((yvec[i + 1] * engrid[i + 1]) - (yvec[i] * engrid[i]))
-        #     #     / (engrid[i + 1] - engrid[i])
-        #     delta_E_y_on_dE[i] = yvec[i] * engrid[i]
-        # axes[0].plot(engrid, np.log10(delta_E_y_on_dE), marker="None", lw=1.5, color='black', label='')
-        # axes[0].set_ylabel(r'log d(E y(E)) / dE', fontsize=fs)
 
         detaymax = max(
             [

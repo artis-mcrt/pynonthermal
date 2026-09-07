@@ -82,8 +82,6 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # Fransson 1992: their equation 1 above 14 eV and equation 2 below it, with the plasma
     # energy zeta_e of their equation 3 in the high-energy Coulomb logarithm
     # returns a positive number
-
-    # return math.log(energy_ev) / energy_ev
     if n_e_cgs <= 0.0:
         # the plasma frequency would be zero, making the Coulomb logarithm infinite
         msg = f"the free-electron loss function requires a positive free electron density but n_e is {n_e_cgs}"

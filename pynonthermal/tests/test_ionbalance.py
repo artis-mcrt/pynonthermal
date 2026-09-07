@@ -8,8 +8,10 @@ import math
 import typing as t
 import warnings
 
+import artistools as at
 import numpy as np
 import numpy.typing as npt
+import polars as pl
 import pytest
 
 import pynonthermal
@@ -245,7 +247,7 @@ def test_saha_ion_fractions() -> None:
     assert list(fractions) == [1, 2, 3]
     assert math.isclose(sum(fractions.values()), 1.0, rel_tol=1e-12)
     n_e = n_oxygen * sum((ion_stage - 1) * frac for ion_stage, frac in fractions.items())
-    adata = at_get_adata()
+    adata = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
     for lower in (1, 2):
         partfuncs = [at_get_lte_partfunc(adata, 8, ion_stage, temperature) for ion_stage in (lower, lower + 1)]
         saha_factor = pynonthermal.ionbalance.get_saha_factor(
@@ -298,17 +300,8 @@ def test_saha_ion_fractions_validation() -> None:
         get_fractions(8, [1, 2], 0.0, n_e=1e8)
 
 
-def at_get_adata() -> object:
-    import artistools as at  # noqa: PLC0415
-
-    return at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
-
-
-def at_get_lte_partfunc(adata: object, Z: int, ion_stage: int, temperature: float) -> float:
-    import artistools as at  # noqa: PLC0415
-    import polars as pl  # noqa: PLC0415
-
-    assert isinstance(adata, pl.DataFrame)
+def at_get_lte_partfunc(adata: pl.DataFrame, Z: int, ion_stage: int, temperature: float) -> float:
+    # the LTE partition function of one ion straight from the level data of artistools
     ion = adata.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
     return at.transitions.get_lte_partfunc(ion["levels"].item(), temperature)
 
@@ -683,7 +676,7 @@ def test_add_element_models_match_the_explicit_methods() -> None:
         assert np.array_equal(sf_model.yvec, sf_explicit.yvec)
         assert sf_model.ionpopdict == sf_explicit.ionpopdict
 
-    # the bare nucleus in a Fixed model gets a population but no channel, and excitation=False adds none
+    # the bare nucleus of ion_fractions gets a population but no channel, and excitation=False adds none
     with new_solver() as sf:
         sf.add_element(2, 1e8, ion_fractions={1: 0.5, 2: 0.3, 3: 0.2})
         assert sf.ionpopdict == {(2, 1): 0.5e8, (2, 2): 0.3e8, (2, 3): 0.2e8}
