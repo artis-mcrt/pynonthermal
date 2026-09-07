@@ -163,7 +163,9 @@ sf.override_n_e(2.5e6)  # cm^-3; None takes it from the ion charges again
 It works with every population rule. With `saha_ion_stages` or `recomb_ratecoeffs` it replaces charge
 neutrality: `solve()` then finds the populations at your density, and they do not have to be neutral
 with it. The value holds until another call changes it, and a call after `solve()` discards the
-solution, so `solve()` must run again. (The `override_n_e` argument of `solve()` is deprecated.)
+solution, so `solve()` must run again. (The `override_n_e` argument of `solve()` is deprecated.) The
+[iron notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
+what a given density does to a balance.
 
 ### 5. Read the results
 
@@ -186,6 +188,7 @@ sf.ionpopdict  # {(Z, ion_stage): number density [cm^-3]}
 sf.get_n_e()  # free (thermal) electron density [cm^-3]
 sf.get_n_e_nt()  # non-thermal electron density [cm^-3]
 sf.get_n_ion_tot()  # total nuclei [cm^-3]
+sf.balance_iterations  # iterations that a recomb_ratecoeffs balance took
 
 sf.get_ionisation_ratecoeff(Z, ion_stage)  # [s^-1]
 sf.get_excitation_ratecoeff(Z, ion_stage, transitionkey)  # [s^-1]
