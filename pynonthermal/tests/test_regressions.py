@@ -1009,3 +1009,22 @@ def test_rejected_solve_keeps_the_last_deposition_rate() -> None:
         ):
             sf.solve(deposition_ev_per_s_per_cm3=999.0, override_n_e=-1.0)
         assert sf.deposition_ev_per_s_per_cm3 == 100.0
+
+
+def test_solution_arrays_are_read_only() -> None:
+    # the fractions and the rate coefficients integrate yvec, so an in-place write by the caller
+    # would silently change every one of them. The write must raise instead.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        frac_heating = sf.get_frac_heating()
+
+        for arr in (sf.yvec, sf.engrid):
+            assert not arr.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                arr[0] = 1.0
+
+        # a second solve gives a new array that is read-only as well
+        sf.solve(deposition_ev_per_s_per_cm3=2e8)
+        assert not sf.yvec.flags.writeable
+        assert math.isclose(sf.get_frac_heating(), frac_heating, rel_tol=1e-12)

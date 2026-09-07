@@ -74,7 +74,7 @@ with pynonthermal.SpencerFanoSolver() as sf:
 ```
 
 The solver is a builder: each call adds ions, channels, or transitions to the matrix, and `solve()`
-solves it. The context manager is optional; it closes the figures that the plot methods open.
+solves it. The `with` block is optional and only scopes the solver.
 
 The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example, and can be launched on Binder:
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/lukeshingles/pynonthermal/HEAD?filepath=quickstart.ipynb)

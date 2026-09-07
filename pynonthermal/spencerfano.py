@@ -1850,6 +1850,9 @@ class SpencerFanoSolver:
         # faster than a general LU solve.
         yvec_reference = solve_upper_triangular(self.sfmatrix, self.rhsvec, diag_add=lossvec)
         self.yvec = np.array(yvec_reference * self.deposition_ev_per_s_per_cm3 / self.E_init_ev, dtype=np.float64)
+        # the caller reads the solution, and every fraction and rate coefficient integrates it, so an
+        # in-place write would silently change them. A write must raise at the mutation site, as for engrid.
+        self.yvec.flags.writeable = False
 
     def _solve_ion_balance(self, balance_tol: float) -> None:
         # find the populations of the balanced elements and the free electron density, and solve the
