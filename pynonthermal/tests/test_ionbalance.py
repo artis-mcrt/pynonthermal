@@ -405,7 +405,7 @@ def test_override_n_e_discards_the_solution() -> None:
         assert sf.get_frac_heating() > 0.0
 
         sf.override_n_e(1e6)
-        with pytest.raises(RuntimeError, match="must be solved first"):
+        with pytest.raises(RuntimeError, match=r"override_n_e\(\).*call solve\(\) again"):
             sf.get_frac_heating()
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf.get_n_e() == 1e6
@@ -563,7 +563,8 @@ def test_balanced_element_input_validation() -> None:
             sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-12, 4: 1e-12})
         with pytest.raises(ValueError, match="between 1 and 9"):
             sf.add_element(8, 1e10, recomb_ratecoeffs={10: 1e-12})
-        with pytest.raises(ValueError, match="between 1 and 9"):
+        # a key of 1 means that the caller keyed the coefficients by the stage that ionises
+        with pytest.raises(ValueError, match="Each key is the ion stage that recombines"):
             sf.add_element(8, 1e10, recomb_ratecoeffs={1: 1e-12})
         for bad in (0.0, -1e-12, math.nan, math.inf):
             with pytest.raises(ValueError, match="greater than zero"):

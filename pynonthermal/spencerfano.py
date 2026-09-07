@@ -60,6 +60,10 @@ BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 # is 1e-6 of the same coefficient in cm^3 s^-1) or a rate in place of a rate coefficient, so
 # add_element() warns. It is a warning and not an error, because the balance itself accepts any
 # positive value.
+# ion_stage is one more than the charge. A caller who uses the charge gives a stage of 0 for a
+# neutral atom, so the messages that reject a stage below 1 give this hint.
+ION_STAGE_HINT: str = "ion_stage is one more than the charge, so a neutral atom is ion_stage 1"
+
 RECOMB_RATECOEFF_MIN_WARN: float = 1e-16
 RECOMB_RATECOEFF_MAX_WARN: float = 1e-8
 
@@ -273,6 +277,7 @@ class SpencerFanoSolver:
     _n_e: float | None
     _n_e_override: float | None
     _n_e_override_from_solve: bool
+    _solution_discarded_by: str | None
     engrid: npt.NDArray[np.float64]
     deltaen: float
     dfcollion: pl.DataFrame
@@ -318,6 +323,7 @@ class SpencerFanoSolver:
         self._n_e = None
         self._n_e_override = None
         self._n_e_override_from_solve = False
+        self._solution_discarded_by = None
         self.reset_solution_analysis()
 
         # key is (Z, ion_stage), value is the list of that ion's ionisation channels
@@ -405,7 +411,12 @@ class SpencerFanoSolver:
 
     def _require_solved(self) -> None:
         if not self._solved:
-            msg = "The Spencer-Fano equation must be solved first. Call solve()."
+            # a caller who has already solved needs to know what discarded that solution
+            msg = (
+                "The Spencer-Fano equation must be solved first. Call solve()."
+                if self._solution_discarded_by is None
+                else f"{self._solution_discarded_by} discarded the last solution, so call solve() again."
+            )
             raise RuntimeError(msg)
 
     def _require_not_solved(self, action: str) -> None:
@@ -439,9 +450,9 @@ class SpencerFanoSolver:
             raise ValueError(msg)
         self.temperature = float(temperature)
 
-    def _get_temperature(self) -> float:
+    def _get_temperature(self, reason: str) -> float:
         if self.temperature is None:
-            msg = "the temperature is not set. Call set_temperature() first."
+            msg = f"{reason} needs the temperature of the solver, which is not set. Call set_temperature() first."
             raise ValueError(msg)
         return self.temperature
 
@@ -520,7 +531,7 @@ class SpencerFanoSolver:
         # ion_stage is one more than the charge, so a value below one gives a negative charge and
         # a negative free electron density
         if ion_stage < 1:
-            msg = f"ion_stage must be at least 1 (neutral) but is {ion_stage}"
+            msg = f"ion_stage must be at least 1 but is {ion_stage}. {ION_STAGE_HINT}"
             raise ValueError(msg)
         # the chained comparison also rejects nan, for which every comparison is False, and inf,
         # which would make the free electron density infinite without ever raising
@@ -770,7 +781,7 @@ class SpencerFanoSolver:
             the ion number density in cm^-3, or None for an ion with a registered population
         """
         self._require_not_solved("add excitation")
-        temperature = self._get_temperature()
+        temperature = self._get_temperature("the LTE population of each lower level")
         if n_ion is None:
             n_ion = self._get_registered_population(Z, ion_stage, "n_ion")
             element = self._balanced_elements.get(Z)
@@ -886,7 +897,7 @@ class SpencerFanoSolver:
         # the excitation templates of every stage of an element that has level data. This reads the
         # atomic data and checks the transition keys without writing to the solver, so add_element()
         # can build them before it registers the element.
-        temperature = self._get_temperature()
+        temperature = self._get_temperature("the LTE population of each lower level of the excitations")
         stages_with_levels = [
             ion_stage for ion_stage in ion_stages if ion_stage <= Z and self._get_ion_levels(Z, ion_stage) is not None
         ]
@@ -1174,10 +1185,9 @@ class SpencerFanoSolver:
         if n_ion is None:
             self._get_registered_population(Z, ion_stage, "n_ion")
         else:
-            self._check_not_balanced(Z)
-            if not 0.0 <= n_ion < math.inf:
-                msg = f"n_ion must be non-negative and finite but is {n_ion}"
-                raise ValueError(msg)
+            # the whole population is checked here, so a bad Z or ion_stage fails before the atomic
+            # data is read, where the message would only say that the ion has no cross-section data
+            self._check_ion_population(Z, ion_stage, n_ion)
             if n_ion == 0.0:
                 return
 
@@ -1244,10 +1254,9 @@ class SpencerFanoSolver:
         if n_ion is None:
             self._get_registered_population(Z, ion_stage, "n_ion")
         else:
-            self._check_not_balanced(Z)
-            if not 0.0 <= n_ion < math.inf:
-                msg = f"n_ion must be non-negative and finite but is {n_ion}"
-                raise ValueError(msg)
+            # the whole population is checked here, so a bad Z or ion_stage fails before the atomic
+            # data is read, where the message would only say that the ion has no cross-section data
+            self._check_ion_population(Z, ion_stage, n_ion)
 
         if ionpot_ev > self.engrid[-1]:
             # the matrix fill would write nothing and the channel would be inert. The equivalent
@@ -1439,6 +1448,8 @@ class SpencerFanoSolver:
         for ion_stage, n_ion in ion_densities.items():
             if not isinstance(ion_stage, int) or isinstance(ion_stage, bool) or not 1 <= ion_stage <= Z + 1:
                 msg = f"the ion stages of Z={Z} must be integers between 1 and {Z + 1} but one is {ion_stage!r}"
+                if isinstance(ion_stage, int) and ion_stage < 1:
+                    msg = f"{msg}. {ION_STAGE_HINT}"
                 raise ValueError(msg)
             # the chained comparison also rejects nan
             if not 0.0 <= n_ion < math.inf:
@@ -1529,6 +1540,14 @@ class SpencerFanoSolver:
                 raise TypeError(msg)
 
         upper_stages = sorted(recomb_ratecoeffs)
+        if upper_stages[0] < 2:
+            # ion_stage 1 recombines from ion_stage 0, which does not exist
+            msg = (
+                f"the lowest key of the recomb_ratecoeffs of Z={Z} is {upper_stages[0]}, but every key must be at"
+                " least 2. Each key is the ion stage that recombines, which is the upper stage of the pair. For"
+                " example {2: 3e-13} is the recombination of ion_stage 2 to ion_stage 1."
+            )
+            raise ValueError(msg)
         ion_stages = tuple(range(upper_stages[0] - 1, upper_stages[-1] + 1))
         if upper_stages != list(ion_stages[1:]):
             msg = (
@@ -1603,7 +1622,7 @@ class SpencerFanoSolver:
         """
         stages = tuple(int(ion_stage) for ion_stage in ion_stages)
         self._check_new_balanced_element(Z, n_elem, stages)
-        temperature = self._get_temperature()
+        temperature = self._get_temperature("the Saha equation")
         if partfuncs is not None:
             # a partition function for a stage outside the chain is most likely a mistake in the keys
             stages_outside_chain = sorted(ion_stage for ion_stage in partfuncs if ion_stage not in stages)
@@ -1672,6 +1691,8 @@ class SpencerFanoSolver:
             raise ValueError(msg)
         if ion_stages[0] < 1 or ion_stages[-1] > Z + 1:
             msg = f"the ion stages of Z={Z} must lie between 1 and {Z + 1} but are {list(ion_stages)}"
+            if ion_stages[0] < 1:
+                msg = f"{msg}. {ION_STAGE_HINT}"
             raise ValueError(msg)
         if Z in self._balanced_elements:
             msg = f"Z={Z} was already added as a balanced element"
@@ -1776,6 +1797,8 @@ class SpencerFanoSolver:
         self._n_e_override_from_solve = False
         self._n_e = None
         # the last solution used the previous density, so it is no longer a solution of this plasma
+        if self._solved:
+            self._solution_discarded_by = "override_n_e(), which changed the free electron density,"
         self._solved = False
 
     def get_n_e(self) -> float:
@@ -1857,6 +1880,7 @@ class SpencerFanoSolver:
             raise ValueError(msg)
 
         self._solved = False
+        self._solution_discarded_by = None
         self.reset_solution_analysis()
 
         # every fraction and rate coefficient is divided by the deposition rate density. A zero gave a bare
@@ -2512,12 +2536,27 @@ class SpencerFanoSolver:
 
         return self._frac_ionisation_tot
 
+    def _get_ion_result(self, results: dict[tuple[int, int], float], Z: int, ion_stage: int, name: str) -> float:
+        # one ion's entry of a result of the analysis. A bare KeyError gave the caller no way to see
+        # which ions the solver holds, or that ion_stage is one more than the charge.
+        if (Z, ion_stage) not in results:
+            stages_of_element = sorted(stage for Z_ion, stage in results if Z_ion == Z)
+            elements = sorted({Z_ion for Z_ion, _ in results})
+            held = (
+                f"Z={Z} has the ion stages {stages_of_element}"
+                if stages_of_element
+                else f"the solver holds no ion of Z={Z}, but holds the elements {elements}"
+            )
+            msg = f"the solver has no {name} for Z={Z} ion_stage {ion_stage}: {held}. {ION_STAGE_HINT}."
+            raise ValueError(msg)
+        return results[(Z, ion_stage)]
+
     def get_frac_ionisation_ion(self, Z: int, ion_stage: int) -> float:
         self._require_solved()
         if not self._analysed:
             self.analyse_ntspectrum()
 
-        return self._frac_ionisation_ion[(Z, ion_stage)]
+        return self._get_ion_result(self._frac_ionisation_ion, Z, ion_stage, "ionisation fraction")
 
     def get_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
         """Get one ion's share of the excitation fraction (Kozma & Fransson 1992 equation 9)."""
@@ -2525,7 +2564,7 @@ class SpencerFanoSolver:
         if not self._analysed:
             self.analyse_ntspectrum()
 
-        return self._frac_excitation_ion[(Z, ion_stage)]
+        return self._get_ion_result(self._frac_excitation_ion, Z, ion_stage, "excitation fraction")
 
     def get_eff_ionpot(self, Z: int, ion_stage: int) -> float:
         """Get the ion's effective ionisation potential in eV (Kozma & Fransson 1992 equation 12)."""
@@ -2533,7 +2572,7 @@ class SpencerFanoSolver:
         if not self._analysed:
             self.analyse_ntspectrum()
 
-        return self._eff_ionpot[(Z, ion_stage)]
+        return self._get_ion_result(self._eff_ionpot, Z, ion_stage, "effective ionisation potential")
 
     def get_ionisation_ratecoeff(self, Z: int, ion_stage: int) -> float:
         """Get the non-thermal ionisation rate coefficient in s^-1 for one ion.
@@ -2546,7 +2585,7 @@ class SpencerFanoSolver:
         if not self._analysed:
             self.analyse_ntspectrum()
 
-        return self._nt_ionisation_ratecoeff[(Z, ion_stage)]
+        return self._get_ion_result(self._nt_ionisation_ratecoeff, Z, ion_stage, "ionisation rate coefficient")
 
     def get_excitation_ratecoeff(self, Z: int, ion_stage: int, transitionkey: t.Any) -> float:
         """Get the non-thermal excitation rate coefficient in s^-1 for one transition.
@@ -2558,7 +2597,25 @@ class SpencerFanoSolver:
         add_ion_excitation() it is (lower level index, upper level index).
         """
         self._require_solved()
-        trans = self.excitationlists[(Z, ion_stage)][transitionkey]
+        transitions = self.excitationlists.get((Z, ion_stage))
+        if transitions is None:
+            ions_with_excitations = sorted(self.excitationlists)
+            msg = (
+                f"the solver has no excitation of Z={Z} ion_stage {ion_stage}. Its ions with excitations are"
+                f" {ions_with_excitations} as (Z, ion_stage) pairs. Add them with add_element(excitation=True),"
+                f" add_ion_excitation(), or add_excitation(). {ION_STAGE_HINT}."
+            )
+            raise ValueError(msg)
+        if transitionkey not in transitions:
+            keys = list(transitions)
+            shown = keys[:6]
+            msg = (
+                f"Z={Z} ion_stage {ion_stage} has no transition {transitionkey!r}. It has"
+                f" {len(keys)} transitions, which start {shown}."
+                " The key of a transition of add_ion_excitation() is (lower level index, upper level index)."
+            )
+            raise ValueError(msg)
+        trans = transitions[transitionkey]
 
         return float(np.dot(trans.xs_vec, self.yvec) * self.deltaen)
 

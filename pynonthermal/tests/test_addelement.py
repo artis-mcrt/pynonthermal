@@ -127,3 +127,52 @@ def test_deprecated_deposition_argument() -> None:
             sf.solve(1e8, depositionratedensity_ev=1e8)
         with pytest.raises(ValueError, match="needs the deposition rate density"):
             sf.solve()
+
+
+def test_messages_name_the_likely_mistake() -> None:
+    # the messages of the mistakes that a new user makes must say what to do instead
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        # ion_stage 0 means that the caller used the charge
+        with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
+            sf.add_element(26, ion_densities={0: 3e5, 1: 7e5})
+        with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
+            sf.add_ionisation(26, 0, n_ion=1e6)
+        with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
+            sf.add_element(26, 1e6, saha_ion_stages=[0, 1])
+
+        # recomb_ratecoeffs keyed by the stage that ionises, not by the stage that recombines
+        with pytest.raises(ValueError, match="Each key is the ion stage that recombines"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={1: 3e-13, 2: 3e-12})
+
+        # the message names what needs the temperature
+        with pytest.raises(ValueError, match="the Saha equation needs the temperature"):
+            sf.add_element(8, 1e10, saha_ion_stages=[1, 2])
+        with pytest.raises(ValueError, match="the LTE population of each lower level"):
+            sf.add_element(8, 1e10, ion_fractions={1: 1.0}, excitation=True)
+
+
+def test_result_getters_name_the_ions_that_the_solver_holds() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.set_temperature(6000)
+        sf.add_element(8, ion_densities={1: 1e9, 2: 1e8}, excitation=True)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+
+        # an element that the solver does not hold, and a stage that it does not hold
+        for getter in (sf.get_frac_ionisation_ion, sf.get_frac_excitation_ion, sf.get_eff_ionpot):
+            with pytest.raises(ValueError, match=r"holds no ion of Z=26, but holds the elements \[8\]"):
+                getter(26, 2)
+        with pytest.raises(ValueError, match=r"Z=8 has the ion stages \[1, 2\]"):
+            sf.get_ionisation_ratecoeff(8, 5)
+
+        # the transitions of an ion, and the ions that have transitions
+        with pytest.raises(ValueError, match="has no transition"):
+            sf.get_excitation_ratecoeff(8, 2, (0, 9999))
+        with pytest.raises(ValueError, match="Its ions with excitations are"):
+            sf.get_excitation_ratecoeff(26, 2, (0, 1))
+
+        # a changed free electron density says which call discarded the solution
+        sf.override_n_e(1e7)
+        with pytest.raises(RuntimeError, match=r"override_n_e\(\).*call solve\(\) again"):
+            sf.get_frac_heating()
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_frac_heating() > 0.0
