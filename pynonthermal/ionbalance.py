@@ -328,6 +328,11 @@ def get_saha_ion_fractions(
 
     if n_e is None:
         assert n_elem is not None
+        if not any(saha_factors):
+            # every Boltzmann factor has underflowed, so the element is entirely in its lowest stage
+            # at any free electron density, and the density of a neutral gas is zero. The root find
+            # has no bracket there, and it would raise instead of giving these fractions.
+            return {ion_stage: 1.0 if index == 0 else 0.0 for index, ion_stage in enumerate(stages)}
         n_e = solve_charge_neutral_n_e_ratios(0.0, [(n_elem, stages[0], saha_factors)])
 
     return dict(zip(stages, get_ion_fractions(saha_factors, n_e), strict=True))

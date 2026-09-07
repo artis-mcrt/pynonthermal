@@ -839,3 +839,14 @@ def test_add_element_is_atomic() -> None:
         # the repeated call with a usable model succeeds
         sf.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12})
         assert 56 in sf._balanced_elements
+
+
+def test_saha_ion_fractions_of_a_cold_gas() -> None:
+    # below about 200 K every Boltzmann factor of oxygen underflows to zero, so the gas is entirely
+    # neutral and its free electron density is zero. The charge-neutral mode has no root to find
+    # there, and it must give the fractions instead of raising.
+    assert pynonthermal.ionbalance.get_saha_factor(100.0, 13.618, 9.0, 4.0) == 0.0
+    fractions = pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], 100.0, n_elem=1e10)
+    assert fractions == {1: 1.0, 2: 0.0, 3: 0.0}
+    # the same gas at a given free electron density already gave these fractions
+    assert pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], 100.0, n_e=1e6) == fractions

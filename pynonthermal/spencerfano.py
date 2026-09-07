@@ -1331,8 +1331,12 @@ class SpencerFanoSolver:
 
         Every stage gets the built-in ionisation channels, unless builtin_channels is False: then
         add the channels of each stage yourself with add_ionisation() or add_ionisation_channel()
-        and n_ion=None. With excitation=True, every stage with level data also gets its bound-bound
-        excitations, as with add_ion_excitation() per stage with the settings of set_atomic_data().
+        and n_ion=None. A stage of ion_densities or ion_fractions whose density is exactly zero
+        also gets no channels, so get_ionisation_ratecoeff() gives zero for it. Add its channels
+        with add_ionisation(Z, ion_stage, None) to get the rate coefficient of the empty stage.
+
+        With excitation=True, every stage with level data also gets its bound-bound excitations, as
+        with add_ion_excitation() per stage with the settings of set_atomic_data().
         Call set_temperature() first for the excitations.
 
         After this call, ionpopdict holds the populations of the stages. With recomb_ratecoeffs
