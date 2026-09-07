@@ -481,6 +481,13 @@ class SpencerFanoSolver:
         self._maxnlevelslower = maxnlevelslower
         self._maxnlevelsupper = maxnlevelsupper
 
+    def _check_element_absent(self, Z: int, reason: str) -> None:
+        # an element is added as a whole, so none of its ions can be present already
+        ions_present = {*self.ionpopdict, *self._ionisation_channels, *self.excitationlists}
+        if any(Z_present == Z for Z_present, _ in ions_present):
+            msg = f"Z={Z} already has ions{reason}"
+            raise ValueError(msg)
+
     def _check_not_balanced(self, Z: int) -> None:
         # the populations of a balanced element come from solve(), so a caller cannot give one
         if Z in self._balanced_elements:
@@ -557,6 +564,22 @@ class SpencerFanoSolver:
                 msg = f"Ionisation channel {key} already added for Z={Z} ion_stage={ion_stage}"
                 raise ValueError(msg)
             seen.add(key)
+
+    def _build_builtin_channels(self, Z: int, ion_stage: int) -> list[IonisationChannel]:
+        # the checked built-in ionisation channels of one stage. Nothing here writes to the solver,
+        # so a caller can build the channels of every stage before it stores the first one. An ion
+        # without a row in the cross-section table raises, so an element skips its bare nucleus
+        # before it calls this method.
+        channels = pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
+        self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
+        self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
+        return channels
+
+    def _apply_ion_channels(self, Z: int, ion_stage: int, n_ion: float, channels: list[IonisationChannel]) -> None:
+        # store the channels of one ion and add them to the matrix at the ion's population
+        for channel in channels:
+            self._store_ionisation_channel(Z, ion_stage, channel)
+            self._add_ionisation_channel_to_matrix(n_ion, channel)
 
     def _store_ionisation_channel(self, Z: int, ion_stage: int, channel: IonisationChannel) -> None:
         # record one channel for an ion. _check_ionisation_channel_keys() runs first.
@@ -851,23 +874,12 @@ class SpencerFanoSolver:
             self.set_temperature(temperature)
         # the options that this call does not give keep the values that the solver has. An explicit
         # None for a level cutoff disables it, as the old signature documented.
-        settings: dict[str, t.Any] = {
-            "use_collstrengths": self._use_collstrengths,
-            "maxnlevelslower": self._maxnlevelslower,
-            "maxnlevelsupper": self._maxnlevelsupper,
-        }
-        given = {
-            name: value
-            for name, value in (
-                ("use_collstrengths", use_collstrengths),
-                ("maxnlevelslower", maxnlevelslower),
-                ("maxnlevelsupper", maxnlevelsupper),
-            )
-            if not isinstance(value, _Omitted)
-        }
-        if given or adata_polars is not None:
-            settings.update(given)
-            self.set_atomic_data(adata_polars=adata_polars, **settings)
+        self.set_atomic_data(
+            adata_polars=adata_polars,
+            use_collstrengths=self._use_collstrengths if isinstance(use_collstrengths, _Omitted) else use_collstrengths,
+            maxnlevelslower=self._maxnlevelslower if isinstance(maxnlevelslower, _Omitted) else maxnlevelslower,
+            maxnlevelsupper=self._maxnlevelsupper if isinstance(maxnlevelsupper, _Omitted) else maxnlevelsupper,
+        )
         self.add_ion_excitation(Z, ion_stage, n_ion)
 
     def _check_excitation_keys(self, Z: int, ion_stage: int, keys: list[t.Any]) -> None:
@@ -1038,14 +1050,11 @@ class SpencerFanoSolver:
         # the ion's current (provisional) population. _set_balanced_populations() rescales them later.
         Z = element.Z
         stored = element.excitation_templates.setdefault(ion_stage, {})
-        # every check runs before anything is recorded, so a rejected call leaves the solver unchanged
-        seen = set(stored)
-        for transitionkey, template in templates:
+        # every check runs before anything is recorded, so a rejected call leaves the solver
+        # unchanged. The templates of an ion and its excitationlists entry hold the same keys.
+        self._check_excitation_keys(Z, ion_stage, [transitionkey for transitionkey, _ in templates])
+        for _, template in templates:
             self._check_epsilon_trans(template.epsilon_trans_ev)
-            if transitionkey in seen:
-                msg = f"Transition {transitionkey} already added for Z={Z} ion_stage={ion_stage}"
-                raise ValueError(msg)
-            seen.add(transitionkey)
 
         n_ion = self.ionpopdict[(Z, ion_stage)]
         unit_bands = element.excitation_unit_bands.setdefault(ion_stage, {})
@@ -1123,6 +1132,17 @@ class SpencerFanoSolver:
         # with the same comparisons the mask would make. For the second integral the lower
         # limit is constant along the row, so the range start is a searchsorted into the
         # non-decreasing epsilon_uppers.
+        # the second integral's lower limit, and the two indices that place its column range, at
+        # every row at once. All three rise with the row, and the scalar forms of the same three
+        # expressions cost 3 * npts calls into numpy and math from inside the row loop below.
+        epsilon_lowers2 = self.engrid + ionpot_ev
+        int_eps_lowers2 = np.arctan((epsilon_lowers2 - ionpot_ev) / J)
+        # get_energyindex_lteq() of 2 * en + ionpot_ev: floor of the offset in bins, clamped to the grid
+        second_start_indices = np.clip(
+            np.floor((2.0 * self.engrid + ionpot_ev - self.engrid[0]) / deltaen), 0, npts - 1
+        ).astype(np.intp)
+        jstart2_indices = np.maximum(second_start_indices, np.searchsorted(epsilon_uppers, epsilon_lowers2))
+
         cut1 = 0  # end of the first integral's non-empty column range, clamped to jstart per row
         top_en_plus_deltaen = self.engrid[-1] + deltaen
         for i, en in enumerate(self.engrid):
@@ -1142,8 +1162,6 @@ class SpencerFanoSolver:
             )
 
             if 2 * en + ionpot_ev < top_en_plus_deltaen:
-                secondintegralstartindex = self.get_energyindex_lteq(float(2 * en + ionpot_ev))
-
                 # second integral of the KF92 equation 7 ionisation term, subtracted: an
                 # ionisation by a primary above 2 * en + ionpot_ev leaves the secondary with
                 # more energy than en, adding to the electrons that cross en like an extra
@@ -1152,10 +1170,8 @@ class SpencerFanoSolver:
                 # at each endash, the integral in epsilon ranges from
                 # epsilon_lower = en + ionpot_ev
                 # epsilon_upper = min((endash + ionpot_ev) / 2, endash)
-                epsilon_lower2 = float(en + ionpot_ev)
-                int_eps_lower2 = math.atan((epsilon_lower2 - ionpot_ev) / J)
-                jstart2 = max(secondintegralstartindex, int(np.searchsorted(epsilon_uppers, epsilon_lower2)))
-                self.sfmatrix[i, jstart2:] -= prefactors[jstart2:] * (int_eps_uppers[jstart2:] - int_eps_lower2)
+                jstart2 = jstart2_indices[i]
+                self.sfmatrix[i, jstart2:] -= prefactors[jstart2:] * (int_eps_uppers[jstart2:] - int_eps_lowers2[i])
 
     def add_ionisation(self, Z: int, ion_stage: int, n_ion: float | None) -> None:
         """Add collisional ionisation of one ion, contributing every shell with cross-section data.
@@ -1172,8 +1188,10 @@ class SpencerFanoSolver:
             added with builtin_channels=False. The population then comes from the balance.
         """
         self._require_not_solved("add ionisation")
-        if n_ion is None:
-            self._get_registered_population(Z, ion_stage, "n_ion")
+        registered = n_ion is None
+        if registered:
+            # for a balanced ion the population is provisional, and solve() moves it
+            n_ion = self._get_registered_population(Z, ion_stage, "n_ion")
         else:
             # the whole population is checked here, so a bad Z or ion_stage fails before the atomic
             # data is read, where the message would only say that the ion has no cross-section data
@@ -1181,15 +1199,9 @@ class SpencerFanoSolver:
             if n_ion == 0.0:
                 return
 
-        channels = pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
+        channels = self._build_builtin_channels(Z, ion_stage)
 
-        self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
-        self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
-
-        if n_ion is None:
-            # the matrix takes the registered population; for a balanced ion it is provisional and solve() moves it
-            n_ion = self.ionpopdict[(Z, ion_stage)]
-        else:
+        if not registered:
             self._register_ion_population(Z, ion_stage, n_ion)
 
         if self.verbose:
@@ -1199,9 +1211,7 @@ class SpencerFanoSolver:
                 f" {n_ion:.1e} [/cm3]"
             )
 
-        for channel in channels:
-            self._store_ionisation_channel(Z, ion_stage, channel)
-            self._add_ionisation_channel_to_matrix(n_ion, channel)
+        self._apply_ion_channels(Z, ion_stage, n_ion, channels)
 
     def add_ionisation_channel(
         self,
@@ -1241,8 +1251,10 @@ class SpencerFanoSolver:
             that the ion already has.
         """
         self._require_not_solved("add ionisation")
-        if n_ion is None:
-            self._get_registered_population(Z, ion_stage, "n_ion")
+        registered = n_ion is None
+        if registered:
+            # for a balanced ion the population is provisional, and solve() moves it
+            n_ion = self._get_registered_population(Z, ion_stage, "n_ion")
         else:
             # the whole population is checked here, so a bad Z or ion_stage fails before the atomic
             # data is read, where the message would only say that the ion has no cross-section data
@@ -1280,12 +1292,9 @@ class SpencerFanoSolver:
         self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev])
         self._check_ionisation_channel_keys(Z, ion_stage, [channel.key])
 
-        if n_ion is None:
-            # the matrix takes the registered population; for a balanced ion it is provisional and solve() moves it
-            n_ion = self.ionpopdict[(Z, ion_stage)]
-        elif n_ion == 0.0:
-            return
-        else:
+        if not registered:
+            if n_ion == 0.0:
+                return
             self._register_ion_population(Z, ion_stage, n_ion)
 
         if self.verbose:
@@ -1436,26 +1445,21 @@ class SpencerFanoSolver:
         if not 0.0 < sum(ion_densities.values()) < math.inf:
             msg = f"the ion densities of Z={Z} must sum to a number greater than zero and finite"
             raise ValueError(msg)
-        # the whole element is added at once, so none of its ions can be present already
-        ions_present = {*self.ionpopdict, *self._ionisation_channels, *self.excitationlists}
-        if any(Z_present == Z for Z_present, _ in ions_present):
-            msg = f"Z={Z} already has ions, so add_element() cannot add it"
-            raise ValueError(msg)
+        self._check_element_absent(Z, ", so add_element() cannot add it")
 
         # build and check the channels of every stage before the first one is stored, so a stage
         # whose shells the built-in table does not hold, or whose potential lies below emin_ev,
         # leaves the solver unchanged
-        channels_of_stage: dict[int, list[IonisationChannel]] = {}
-        for ion_stage, n_ion in sorted(ion_densities.items()):
-            # a bare nucleus has no electrons to remove, and a stage with no ions or without the
-            # built-in channels gets a population only
-            if ion_stage == Z + 1 or not builtin_channels or n_ion == 0.0:
-                channels_of_stage[ion_stage] = []
-                continue
-            channels = pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
-            self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
-            self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
-            channels_of_stage[ion_stage] = channels
+        # a bare nucleus has no electrons to remove, and a stage with no ions or without the
+        # built-in channels gets a population only
+        channels_of_stage = {
+            ion_stage: (
+                []
+                if ion_stage == Z + 1 or not builtin_channels or n_ion == 0.0
+                else self._build_builtin_channels(Z, ion_stage)
+            )
+            for ion_stage, n_ion in sorted(ion_densities.items())
+        }
 
         for ion_stage, channels in channels_of_stage.items():
             n_ion = ion_densities[ion_stage]
@@ -1468,9 +1472,7 @@ class SpencerFanoSolver:
             # the population counts towards n_e and n_ion_tot even without a channel, and a
             # registered population lets the per-ion methods take n_ion=None for the stage
             self._register_ion_population(Z, ion_stage, n_ion)
-            for channel in channels:
-                self._store_ionisation_channel(Z, ion_stage, channel)
-                self._add_ionisation_channel_to_matrix(n_ion, channel)
+            self._apply_ion_channels(Z, ion_stage, n_ion, channels)
 
     def _add_element_ionbalance(
         self, Z: int, n_elem: float, recomb_ratecoeffs: Mapping[int, float], builtin_channels: bool = True
@@ -1527,13 +1529,14 @@ class SpencerFanoSolver:
                 " example {2: 3e-13} is the recombination of ion_stage 2 to ion_stage 1."
             )
             raise ValueError(msg)
-        ion_stages = tuple(range(upper_stages[0] - 1, upper_stages[-1] + 1))
+        # the same chain that add_element() reads to build the excitations
+        ion_stages = _rule_ion_stages(None, recomb_ratecoeffs)
         if upper_stages != list(ion_stages[1:]):
             msg = (
                 f"the recombination rate coefficient keys of Z={Z} must be contiguous ion stages but are {upper_stages}"
             )
             raise ValueError(msg)
-        self._check_new_balanced_element(Z, n_elem, ion_stages)
+        self._check_new_balanced_element(Z, ion_stages)
 
         for ion_stage, alpha in recomb_ratecoeffs.items():
             # the chained comparison also rejects nan. A zero would divide the balance by zero.
@@ -1566,16 +1569,13 @@ class SpencerFanoSolver:
             builtin_channels,
         )
 
-    def _check_new_balanced_element(self, Z: int, n_elem: float, ion_stages: tuple[int, ...]) -> None:
-        # the checks of a balanced element that need no atomic data. The keys of recomb_ratecoeffs
-        # are contiguous and at least 2, so the stages are contiguous and the lowest is at least 1.
+    def _check_new_balanced_element(self, Z: int, ion_stages: tuple[int, ...]) -> None:
+        # the checks of a balanced element that need no atomic data. add_element() has checked
+        # n_elem, and the keys of recomb_ratecoeffs are contiguous and at least 2, so the stages
+        # are contiguous and the lowest is at least 1.
         self._require_not_solved("add element")
         if Z < 1:
             msg = f"Z must be at least 1 but is {Z}"
-            raise ValueError(msg)
-        # the chained comparison also rejects nan
-        if not 0.0 < n_elem < math.inf:
-            msg = f"n_elem must be greater than zero and finite but is {n_elem}"
             raise ValueError(msg)
         if ion_stages[-1] > Z + 1:
             msg = f"the ion stages of Z={Z} must lie between 1 and {Z + 1} but are {list(ion_stages)}"
@@ -1583,11 +1583,7 @@ class SpencerFanoSolver:
         if Z in self._balanced_elements:
             msg = f"Z={Z} was already added as a balanced element"
             raise ValueError(msg)
-        # an element is balanced as a whole, so none of its ions can have a given population
-        ions_present = {*self.ionpopdict, *self._ionisation_channels, *self.excitationlists}
-        if any(Z_present == Z for Z_present, _ in ions_present):
-            msg = f"Z={Z} already has ions with given populations or channels, so it cannot become a balanced element"
-            raise ValueError(msg)
+        self._check_element_absent(Z, " with given populations or channels, so it cannot become a balanced element")
 
     def _add_balanced_element(self, element: _BalancedElement, builtin_channels: bool) -> None:
         # record a checked element, give its stages a provisional population of equal fractions, and
@@ -1595,17 +1591,13 @@ class SpencerFanoSolver:
         # channels, the caller adds the channels of each stage with add_ionisation() or
         # add_ionisation_channel() and n_ion=None.
         Z = element.Z
+        # a bare nucleus has no electrons to remove, and no row in the cross-section table
         channels_of_stage = {
             ion_stage: (
-                # a bare nucleus has no electrons to remove, and no row in the cross-section table
-                []
-                if ion_stage == Z + 1 or not builtin_channels
-                else pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
+                [] if ion_stage == Z + 1 or not builtin_channels else self._build_builtin_channels(Z, ion_stage)
             )
             for ion_stage in element.ion_stages
         }
-        for ion_stage, channels in channels_of_stage.items():
-            self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
 
         if self.verbose:
             print(
@@ -1617,9 +1609,7 @@ class SpencerFanoSolver:
         n_ion_guess = element.n_elem / len(element.ion_stages)
         for ion_stage, channels in channels_of_stage.items():
             self.ionpopdict[(Z, ion_stage)] = n_ion_guess
-            for channel in channels:
-                self._store_ionisation_channel(Z, ion_stage, channel)
-                self._add_ionisation_channel_to_matrix(n_ion_guess, channel)
+            self._apply_ion_channels(Z, ion_stage, n_ion_guess, channels)
         self._n_e = None
 
     def _set_balanced_populations(self, element: _BalancedElement, populations: Mapping[int, float]) -> None:
@@ -1629,6 +1619,9 @@ class SpencerFanoSolver:
         # no copy of the matrix. The rounding residue is of the order of the machine precision
         # times the largest population that was applied.
         Z = element.Z
+        # the stages of an element share their band widths, and a band write sweeps a strip of the
+        # whole matrix, so the changes of every stage are summed per band width and written once
+        bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
         for ion_stage in element.ion_stages:
             n_new = populations[ion_stage]
             delta = n_new - self.ionpopdict[(Z, ion_stage)]
@@ -1636,13 +1629,20 @@ class SpencerFanoSolver:
             if delta != 0.0:
                 for channel in self._ionisation_channels.get((Z, ion_stage), []):
                     self._add_ionisation_channel_to_matrix(delta, channel)
-                for k, (unitvec, unitfracvec) in sorted(element.excitation_unit_bands.get(ion_stage, {}).items()):
-                    self._add_excitation_band(delta * unitvec, delta * unitfracvec, k)
+                for k, (unitvec, unitfracvec) in element.excitation_unit_bands.get(ion_stage, {}).items():
+                    if k in bands:
+                        bands[k][0][:] += delta * unitvec
+                        bands[k][1][:] += delta * unitfracvec
+                    else:
+                        bands[k] = (delta * unitvec, delta * unitfracvec)
             templates = element.excitation_templates.get(ion_stage)
             if templates:
                 self.excitationlists[(Z, ion_stage)] = {
                     transitionkey: template.at_population(n_new) for transitionkey, template in templates.items()
                 }
+
+        for k, (bandvec, bandfracvec) in sorted(bands.items()):
+            self._add_excitation_band(bandvec, bandfracvec, k)
         self._n_e = None
 
     def calculate_free_electron_density(self) -> float:
@@ -1884,6 +1884,14 @@ class SpencerFanoSolver:
         # the ratio coefficients n_{i+1} n_e / n_i of every element, keyed by Z
         ratio_coeffs = {element.Z: self._balanced_ratio_coeffs(element) for element in elements}
 
+        # only the balanced ions move in the loop below, so the charge of the fixed ions is
+        # the same at every iteration
+        n_e_fixed = sum(
+            (ion_stage - 1) * n_ion
+            for (Z, ion_stage), n_ion in self.ionpopdict.items()
+            if Z not in self._balanced_elements
+        )
+
         max_residual = math.inf
         for iteration in range(1, BALANCE_MAXITER + 1):
             self.balance_iterations = iteration
@@ -1892,11 +1900,6 @@ class SpencerFanoSolver:
                 # coefficients at that density and charge neutrality does not have to hold
                 n_e = self._n_e_override
             else:
-                n_e_fixed = sum(
-                    (ion_stage - 1) * n_ion
-                    for (Z, ion_stage), n_ion in self.ionpopdict.items()
-                    if Z not in self._balanced_elements
-                )
                 n_e = solve_charge_neutral_n_e_ratios(
                     n_e_fixed,
                     [(element.n_elem, element.ion_stages[0], ratio_coeffs[element.Z]) for element in elements],
@@ -1981,8 +1984,17 @@ class SpencerFanoSolver:
         # compared with the total ionisation rate of the element (see BALANCE_TOP_STAGE_LEAK_WARN_FRACTION)
         Z = element.Z
         top = element.ion_stages[-1]
+        # the balance already holds the rate coefficient per unit deposition of every stage below
+        # the top, from the same solution, so only the top stage needs a new integral
+        assert element.ratecoeffs_per_deposition is not None
+        deposition = self.deposition_ev_per_s_per_cm3
         rates = {
-            ion_stage: self.ionpopdict[(Z, ion_stage)] * self._calculate_ionisation_ratecoeff(Z, ion_stage)
+            ion_stage: self.ionpopdict[(Z, ion_stage)]
+            * (
+                self._calculate_ionisation_ratecoeff(Z, ion_stage)
+                if ion_stage == top
+                else element.ratecoeffs_per_deposition[ion_stage] * deposition
+            )
             for ion_stage in element.ion_stages
         }
         rate_total = sum(rates.values())

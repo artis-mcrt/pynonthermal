@@ -288,11 +288,6 @@ def get_saha_ion_fractions(
             msg = f"partfuncs has ion stages {stages_outside_chain} that are not in the chain {list(stages)} of Z={Z}"
             raise ValueError(msg)
 
-    if adata_polars is None and any(
-        partfuncs is None or ion_stage not in partfuncs for ion_stage in stages if ion_stage <= Z
-    ):
-        adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
-
     partfunc_of_stage: dict[int, float] = {}
     for ion_stage in stages:
         if partfuncs is not None and ion_stage in partfuncs:
@@ -301,7 +296,9 @@ def get_saha_ion_fractions(
             # a bare nucleus has one state
             partfunc = 1.0
         else:
-            assert adata_polars is not None
+            if adata_polars is None:
+                # the internal database, read once and only for a stage that needs it
+                adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
             ion = adata_polars.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
             if ion.is_empty():
                 msg = (
