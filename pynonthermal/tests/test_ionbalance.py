@@ -313,19 +313,124 @@ def test_mixed_fixed_saha_and_recombination() -> None:
         assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.02)
 
 
-def test_override_n_e_with_balance_is_rejected() -> None:
-    # a balance sets n_e from charge neutrality, so an override would give populations that are not
-    # neutral with the loss term
+def test_charge_neutral_n_e_without_an_override() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
-        with pytest.raises(ValueError, match="override_n_e cannot be combined"):
-            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e5)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
         fractions = sf.get_ion_fractions(2)
         assert set(fractions) == {1, 2, 3}
         assert math.isclose(sum(fractions.values()), 1.0, rel_tol=1e-12)
         assert fractions[2] == sf.ionpopdict[(2, 2)] / 1e8
+
+
+def test_override_n_e_with_balance() -> None:
+    # the caller gives the free electron density, so the balance holds at that density and the
+    # populations do not have to be neutral with it
+    n_e_given = 3e8
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        sf.override_n_e(n_e_given)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, balance_tol=1e-8)
+
+        assert sf.get_n_e() == n_e_given
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=1e-7)
+        assert math.isclose(sum(sf.get_ion_fractions(2).values()), 1.0, rel_tol=1e-12)
+        assert math.isclose(sum(sf.ionpopdict.values()), 1e8, rel_tol=1e-12)
+        # the given density is more than the ion charges give, so the gas is not neutral by itself
+        assert sf.calculate_free_electron_density() < n_e_given
+
+        # a higher free electron density recombines the ions faster, so the gas is less ionised
+        fractions_high = sf.get_ion_fractions(2)
+        sf.override_n_e(1e7)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, balance_tol=1e-8)
+        assert sf.get_n_e() == 1e7
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=1e-7)
+        assert sf.get_ion_fractions(2)[1] < fractions_high[1]
+
+        # None takes the free electron density from the ion charges again
+        sf.override_n_e(None)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+
+
+def test_override_n_e_with_saha() -> None:
+    # the Saha ratio n_{i+1}/n_i is the Saha factor divided by the free electron density, so a
+    # density that is twice as high halves every ratio of adjacent stages
+    ratios: dict[float, list[float]] = {}
+    for n_e_given in (1e6, 2e6):
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+            sf.set_temperature(12000)
+            sf.add_element(2, 1e8, saha_ion_stages=[1, 2, 3])
+            sf.override_n_e(n_e_given)
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
+
+            assert sf.get_n_e() == n_e_given
+            fractions = sf.get_ion_fractions(2)
+            assert math.isclose(sum(fractions.values()), 1.0, rel_tol=1e-12)
+            ratios[n_e_given] = [fractions[2] / fractions[1], fractions[3] / fractions[2]]
+
+    for ratio_low, ratio_high in zip(ratios[1e6], ratios[2e6], strict=True):
+        assert ratio_low > 0.0
+        assert math.isclose(ratio_high, ratio_low / 2.0, rel_tol=1e-9)
+
+
+def test_override_n_e_solve_argument_is_deprecated() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        with pytest.warns(DeprecationWarning, match="override_n_e"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e6)
+        assert sf.get_n_e() == 1e6
+
+        # the deprecated argument applies to one call
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+
+        # but the method holds until it is cleared
+        sf.override_n_e(1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=2e8)
+        assert sf.get_n_e() == 1e6
+
+        for badvalue in (0.0, -1.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="override_n_e must be greater than zero and finite"):
+                sf.override_n_e(badvalue)
+
+
+def test_override_n_e_discards_the_solution() -> None:
+    # the solution used the previous free electron density, so the getters need a new solve()
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_frac_heating() > 0.0
+
+        sf.override_n_e(1e6)
+        with pytest.raises(RuntimeError, match="must be solved first"):
+            sf.get_frac_heating()
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_n_e() == 1e6
+
+
+def test_recomb_ratecoeff_out_of_range_warns() -> None:
+    # a coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1, which is the usual
+    # unit error. The value is accepted, because the balance takes any positive value.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        with pytest.warns(UserWarning, match="outside the range"):
+            sf.add_element(2, 1e8, recomb_ratecoeffs={2: 4e-19, 3: 2e-18})
+        assert sf.ionpopdict[(2, 1)] > 0.0
+
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf,
+        pytest.warns(UserWarning, match="ion_stage 3 is 1.000e-07"),
+    ):
+        sf.add_element(2, 1e8, recomb_ratecoeffs={2: 4e-13, 3: 1e-7})
+
+    # the plausible values of the other tests are silent, and a rejected call warns about nothing
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf, warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        with pytest.raises(ValueError, match="must be greater than zero"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-30, 3: -1.0})
 
 
 def test_heating_only_approximation_with_balance() -> None:

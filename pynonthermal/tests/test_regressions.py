@@ -54,12 +54,13 @@ def test_zero_free_electron_density() -> None:
         with pytest.raises(ValueError, match="free electron density is zero"):
             sf.solve(deposition_ev_per_s_per_cm3=100)
 
-        # override_n_e is the documented way out, but must be a usable density
+        # override_n_e() is the documented way out, but must be a usable density
         for badvalue in (0.0, -1.0):
             with pytest.raises(ValueError, match="override_n_e must be greater than zero"):
-                sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=badvalue)
+                sf.override_n_e(badvalue)
 
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
         assert sf.get_n_e() == 1e-4
 
     # the loss function itself also rejects a non-positive density
@@ -92,7 +93,7 @@ def test_solve_inputs_reject_nonfinite() -> None:
             with pytest.raises(ValueError, match="deposition_ev_per_s_per_cm3 must be greater than zero and finite"):
                 sf.solve(deposition_ev_per_s_per_cm3=badvalue)
             with pytest.raises(ValueError, match="override_n_e must be greater than zero and finite"):
-                sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=badvalue)
+                sf.override_n_e(badvalue)
 
 
 def test_solve_upper_triangular_guards() -> None:
@@ -158,7 +159,8 @@ def test_N_e_excitation_above_grid() -> None:
             xs_vec=np.where(sf.engrid >= epsilon_trans_ev, 1e-16, 0.0),
             epsilon_trans_ev=epsilon_trans_ev,
         )
-        sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e8)
+        sf.override_n_e(1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         # at 0.5 eV the excited electron is exactly at emax_ev and the term is real
         assert sf.calculate_N_e(emax - epsilon_trans_ev) > 0.0
@@ -174,10 +176,12 @@ def test_override_n_e_not_confused_with_cache() -> None:
         sf.add_ionisation(8, 3, n_ion=1e8)
         assert sf.calculate_free_electron_density() == 3e8
 
-        sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e6)
+        sf.override_n_e(1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf.get_n_e() == 1e6
 
-        # omitting the override falls back to the ion populations
+        # clearing the override falls back to the ion populations
+        sf.override_n_e(None)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf.get_n_e() == 3e8
 
@@ -286,7 +290,8 @@ def test_N_e_epsilon_integral_not_keyed_to_the_grid() -> None:
         ):
             warnings.simplefilter("ignore", UserWarning)
             sf.add_ionisation(13, 1, n_ion=1.0)
-            sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+            sf.override_n_e(1e-4)
+            sf.solve(deposition_ev_per_s_per_cm3=100)
             fracsums[npts] = sf.get_frac_sum()
 
     for npts_onthreshold, npts_neighbour in pairs:
@@ -305,7 +310,8 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
     # makes the domain [I, E + I] at most 1 eV wide, narrower than the 0.75 eV grid spacing here.
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4000) as sf:
         sf.add_ionisation(13, 1, n_ion=1.0)
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         shells = (
             pynonthermal.collion.read_colliondata().filter((pl.col("Z") == 13) & (pl.col("ion_stage") == 1)).to_dicts()
@@ -996,6 +1002,10 @@ def test_rejected_solve_keeps_the_last_deposition_rate() -> None:
         with pytest.raises(ValueError, match="balance_tol"):
             sf.solve(deposition_ev_per_s_per_cm3=999.0, balance_tol=0.0)
         assert sf.deposition_ev_per_s_per_cm3 == 100.0
-        with pytest.raises(ValueError, match="override_n_e"):
+        # the deprecated override_n_e argument is checked there as well
+        with (
+            pytest.warns(DeprecationWarning, match="override_n_e"),
+            pytest.raises(ValueError, match="override_n_e"),
+        ):
             sf.solve(deposition_ev_per_s_per_cm3=999.0, override_n_e=-1.0)
         assert sf.deposition_ev_per_s_per_cm3 == 100.0

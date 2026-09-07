@@ -149,11 +149,21 @@ sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
 - `deposition_ev_per_s_per_cm3`: the rate of energy deposition per volume in eV s^-1 cm^-3 (positive and
   finite). With fixed populations the energy *fractions* do not depend on it and the *rate coefficients*
   scale linearly with it; with `recomb_ratecoeffs` the populations depend on it too.
-- `override_n_e`: a free electron density in cm^-3, in place of the one that the ion charges give. It
-  cannot be combined with `saha_ion_stages` or `recomb_ratecoeffs`, which set it through charge
-  neutrality.
 - `balance_tol`: the relative tolerance of the population ratios of an element with
   `recomb_ratecoeffs` (default `1e-4`).
+
+The free electron density comes from the ion charges of `ionpopdict`, so it counts only the electrons
+of the ions that the solver holds. Give it yourself with `sf.override_n_e(n_e)` before `solve()`, for
+example when species that are not in the solver also give electrons:
+
+```python
+sf.override_n_e(2.5e6)  # cm^-3; None takes it from the ion charges again
+```
+
+It works with every population rule. With `saha_ion_stages` or `recomb_ratecoeffs` it replaces charge
+neutrality: `solve()` then finds the populations at your density, and they do not have to be neutral
+with it. The value holds until another call changes it, and a call after `solve()` discards the
+solution, so `solve()` must run again. (The `override_n_e` argument of `solve()` is deprecated.)
 
 ### 5. Read the results
 
@@ -251,6 +261,11 @@ pair of adjacent stages `i` and `i+1` the balance is `n_i Gamma_i = n_{i+1} n_e 
 and `alpha_{i+1}` is the coefficient you give. The chain runs from one below the lowest key to the
 highest key, so the example is O I to O IV.
 
+A coefficient outside `1e-16` to `1e-8` cm^3 s^-1 raises a warning
+(`RECOMB_RATECOEFF_MIN_WARN` and `RECOMB_RATECOEFF_MAX_WARN`). The published radiative and
+dielectronic fits stay inside that range, so a value outside it is nearly always a unit error: a
+coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1. The value is still used.
+
 The solution depends on the ion densities, so `solve()` iterates: it solves the equation, updates the
 densities from the balance and the free electron density from charge neutrality, and repeats until the
 population ratios agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations; a
@@ -266,6 +281,7 @@ Points to note:
   it makes have no stage to go to. A warning is raised if the ionisation rate out of the top stage
   exceeds 1 % of the total ionisation rate of the element, because about that fraction of the element
   then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
+- The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
 The functions behind the two balance rules are in `pynonthermal.ionbalance`: `get_saha_factor()`,
 `get_ion_fractions()`, `solve_charge_neutral_n_e_ratios()`, and the general root find

@@ -16,7 +16,8 @@ def test_lotz_heavy_element() -> None:
     # elements heavier than Ni (Z>28) use the Axelrod 1980/Lotz 1967 cross section approximation
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400, verbose=True) as sf:
         sf.add_ionisation(56, 2, n_ion=1.0)
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1.0)
+        sf.override_n_e(1.0)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         # per-ion getter triggers the analysis lazily
         assert sf.get_frac_ionisation_ion(56, 2) > 0.0
@@ -80,7 +81,8 @@ def test_api_guards() -> None:
         # second ion with no excitation channels (exercises the zero-excitation analysis path)
         sf.add_ionisation(8, 2, n_ion=0.1)
 
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         # a legitimately-zero excitation fraction must not trigger repeated re-analysis
         assert sf.get_frac_excitation_tot() == 0.0
@@ -90,13 +92,17 @@ def test_api_guards() -> None:
         assert sf.analyse_count == count_after_first_call
 
         # each getter triggers the analysis lazily from a freshly-solved (un-analysed) state
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
         assert sf.get_frac_ionisation_tot() > 0.0
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
         assert sf.get_frac_ionisation_ion(2, 1) > 0.0
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
         assert sf.get_eff_ionpot(2, 1) > 0.0
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
         assert sf.get_ionisation_ratecoeff(2, 1) > 0.0
 
         # additions are locked after solving
@@ -111,7 +117,8 @@ def test_invalid_excitation_fraction_reported() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=100) as sf:
         sf.add_ionisation(2, 1, n_ion=1.0)
         sf.add_excitation(2, 1, levelnumberdensity=1e30, xs_vec=np.full(100, 1e-10), epsilon_trans_ev=25.0)
-        sf.solve(deposition_ev_per_s_per_cm3=100, override_n_e=1e-4)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
 
         with pytest.warns(UserWarning, match="invalid frac_excitation_ion"):
             frac_excitation_tot = sf.get_frac_excitation_tot()

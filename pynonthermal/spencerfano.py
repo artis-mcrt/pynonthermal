@@ -53,6 +53,16 @@ BALANCE_MAXITER: int = 100
 # this value, because the chain then needs a higher stage.
 BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 
+# The plausible range of a recombination rate coefficient [cm^3 s^-1] of an atomic ion. The published
+# radiative and dielectronic fits give about 1e-13 to 1e-11 for the ions of the first rows at nebular
+# temperatures, and they stay inside the range below over the temperatures and the charges of a
+# supernova or a nebula. A value outside it is nearly always a unit error (a coefficient in m^3 s^-1
+# is 1e-6 of the same coefficient in cm^3 s^-1) or a rate in place of a rate coefficient, so
+# add_element() warns. It is a warning and not an error, because the balance itself accepts any
+# positive value.
+RECOMB_RATECOEFF_MIN_WARN: float = 1e-16
+RECOMB_RATECOEFF_MAX_WARN: float = 1e-8
+
 
 def _rule_ion_stages(
     ion_densities: Mapping[int, float] | None,
@@ -241,8 +251,8 @@ class SpencerFanoSolver:
     from the caller. add_element() takes recombination rate coefficients, and
     solve() then iterates the non-thermal ionisation rates against recombination until the
     populations converge. add_element() takes a temperature and uses the Saha equation.
-    In both cases solve() finds the charge-neutral free electron density, and the converged
-    populations are in ionpopdict after solve().
+    In both cases solve() finds the charge-neutral free electron density, or uses the density of
+    override_n_e(), and the converged populations are in ionpopdict after solve().
     """
 
     _solved: bool
@@ -262,6 +272,7 @@ class SpencerFanoSolver:
     heating_only_approximation: bool
     _n_e: float | None
     _n_e_override: float | None
+    _n_e_override_from_solve: bool
     engrid: npt.NDArray[np.float64]
     deltaen: float
     dfcollion: pl.DataFrame
@@ -306,6 +317,7 @@ class SpencerFanoSolver:
         self._solved = False
         self._n_e = None
         self._n_e_override = None
+        self._n_e_override_from_solve = False
         self.reset_solution_analysis()
 
         # key is (Z, ion_stage), value is the list of that ion's ionisation channels
@@ -1315,13 +1327,15 @@ class SpencerFanoSolver:
             Saha equation at the temperature of set_temperature(). For each pair of adjacent stages,
             n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T)),
             with the ionisation potentials chi_i from the NIST table. solve() finds the free
-            electron density from charge neutrality in one pass.
+            electron density from charge neutrality in one pass, or uses the density of
+            override_n_e().
         recomb_ratecoeffs:
             the recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that
             recombines. For each pair of adjacent stages the balance is
             n_i Gamma_i = n_{i+1} n_e alpha_{i+1}, with Gamma_i the non-thermal ionisation rate
             coefficient [s^-1] of stage i from the Spencer-Fano solution. The chain of stages runs
-            from one below the lowest key to the highest key, and solve() iterates it. Thermal
+            from one below the lowest key to the highest key, and solve() iterates it. A
+            coefficient outside the plausible range of an atomic ion raises a warning. Thermal
             collisional ionisation, photoionisation, and charge exchange are not included, so these
             populations depend on the deposition rate density.
 
@@ -1496,7 +1510,8 @@ class SpencerFanoSolver:
         recomb_ratecoeffs:
             the recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that
             recombines (the upper stage of each pair). The keys must be contiguous and lie between
-            2 and Z + 1.
+            2 and Z + 1. A value outside the plausible range of an atomic ion raises a warning
+            (see RECOMB_RATECOEFF_MIN_WARN and RECOMB_RATECOEFF_MAX_WARN).
         """
         # a sequence would be iterated as keys, which gives a misleading message about the ion stages
         if not isinstance(recomb_ratecoeffs, Mapping):
@@ -1530,6 +1545,18 @@ class SpencerFanoSolver:
                     f" and finite but is {alpha}"
                 )
                 raise ValueError(msg)
+
+        # every value is valid here, so a rejected call warns about nothing
+        for ion_stage, alpha in sorted(recomb_ratecoeffs.items()):
+            if not RECOMB_RATECOEFF_MIN_WARN <= alpha <= RECOMB_RATECOEFF_MAX_WARN:
+                warnings.warn(
+                    f"the recombination rate coefficient of Z={Z} ion_stage {ion_stage} is {alpha:.3e} cm^3 s^-1,"
+                    f" outside the range {RECOMB_RATECOEFF_MIN_WARN:.0e} to {RECOMB_RATECOEFF_MAX_WARN:.0e} cm^3 s^-1"
+                    " of an atomic ion. Check the units: a coefficient in m^3 s^-1 is 1e-6 of the same coefficient"
+                    " in cm^3 s^-1.",
+                    UserWarning,
+                    stacklevel=3,
+                )
 
         self._add_balanced_element(
             _BalancedElement(
@@ -1721,6 +1748,36 @@ class SpencerFanoSolver:
             n_e += charge * self.ionpopdict[(Z, ion_stage)]
         return n_e
 
+    def override_n_e(self, n_e: float | None) -> None:
+        """Use n_e [cm^-3] as the free electron density in place of the one the ion charges give.
+
+        The free electron density enters the thermal-electron loss function (Kozma & Fransson 1992
+        equations 1 and 2) and the balance of an element with recomb_ratecoeffs or saha_ion_stages.
+        Without this call, it is the sum of the ion charges of ionpopdict, so it counts only the
+        electrons of the ions that the solver holds. Give the density of your model here when other
+        species that are not in the solver also give electrons.
+
+        With a balanced element, this replaces charge neutrality: solve() then finds the
+        populations at this density, and they do not have to be neutral with it. The balance of
+        every pair of adjacent stages, n_i Gamma_i = n_{i+1} n_e alpha_{i+1}, still holds.
+
+        The value stays until another call changes it, and None restores the density from the ion
+        charges. A call after solve() discards the solution, because the solution used the previous
+        density, so call solve() again.
+
+        n_e:
+            the free electron density in cm^-3, or None to take it from the ion charges again
+        """
+        # the chained comparison also rejects nan
+        if n_e is not None and not 0.0 < n_e < math.inf:
+            msg = f"override_n_e must be greater than zero and finite but is {n_e}"
+            raise ValueError(msg)
+        self._n_e_override = None if n_e is None else float(n_e)
+        self._n_e_override_from_solve = False
+        self._n_e = None
+        # the last solution used the previous density, so it is no longer a solution of this plasma
+        self._solved = False
+
     def get_n_e(self) -> float:
         if self._n_e_override is not None:
             return self._n_e_override
@@ -1774,9 +1831,8 @@ class SpencerFanoSolver:
         with a DeprecationWarning, and a later release removes it.
 
         override_n_e:
-            a free electron density [cm^-3] to use in place of the one from the ion populations.
-            It cannot be combined with an element that has saha_ion_stages or recomb_ratecoeffs,
-            whose populations set the free electron density through charge neutrality.
+            deprecated: call the override_n_e() method before solve() instead. It still works, with
+            a DeprecationWarning, and it applies to this call only. A later release removes it.
         balance_tol:
             the relative tolerance of the ratio n_{i+1} n_e / n_i of every pair of adjacent stages
             of an element with recomb_ratecoeffs. The iteration stops when the ratios
@@ -1814,29 +1870,29 @@ class SpencerFanoSolver:
             )
             raise ValueError(msg)
 
-        if override_n_e is not None and not 0.0 < override_n_e < math.inf:
-            msg = f"override_n_e must be greater than zero and finite but is {override_n_e}"
-            raise ValueError(msg)
-        if override_n_e is not None and self._balanced_elements:
-            # the balance would give populations that are not charge neutral with this density,
-            # and the loss term would disagree with the ionisation state
-            msg = (
-                "override_n_e cannot be combined with an element that has saha_ion_stages or"
-                " recomb_ratecoeffs, because the balance sets the"
-                f" free electron density from charge neutrality (balanced elements: {sorted(self._balanced_elements)})"
-            )
-            raise ValueError(msg)
-
         if not 0.0 < balance_tol < 1.0:
             msg = f"balance_tol must be between zero and one but is {balance_tol}"
             raise ValueError(msg)
+
+        if override_n_e is not None:
+            warnings.warn(
+                "the override_n_e argument of solve() is deprecated. Call the override_n_e() method before"
+                " solve() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # the method validates the value, so a bad one raises before anything below is applied
+            self.override_n_e(override_n_e)
+            self._n_e_override_from_solve = True
+        elif self._n_e_override_from_solve:
+            # the deprecated argument applies to one call, so an omitted value takes the free
+            # electron density from the ion charges again. The method does not clear itself.
+            self.override_n_e(None)
 
         # every check of the arguments runs first, so a rejected call leaves the deposition rate
         # density of the last solution in place instead of a rate that no solution used
         self.deposition_ev_per_s_per_cm3 = deposition_ev_per_s_per_cm3
 
-        # None clears any previously-set override, so that n_e is calculated on demand from ion populations
-        self._n_e_override = override_n_e
         self._n_e = None
 
         if self._balanced_elements:
@@ -1867,7 +1923,7 @@ class SpencerFanoSolver:
             msg = (
                 f"the free electron density is zero because {reason}. The Spencer-Fano"
                 " equation is singular without a thermal electron loss channel, so add an ionised stage"
-                " with add_ionisation() or pass override_n_e to solve()."
+                " with add_ionisation() or call override_n_e()."
             )
             raise ValueError(msg)
 
@@ -1931,17 +1987,23 @@ class SpencerFanoSolver:
         max_residual = math.inf
         for iteration in range(1, BALANCE_MAXITER + 1):
             self.balance_iterations = iteration
-            n_e_fixed = sum(
-                (ion_stage - 1) * n_ion
-                for (Z, ion_stage), n_ion in self.ionpopdict.items()
-                if Z not in self._balanced_elements
-            )
-            # solve() rejects override_n_e together with a balanced element, so the free electron
-            # density here always comes from charge neutrality
-            n_e = solve_charge_neutral_n_e_ratios(
-                n_e_fixed,
-                [(element.n_elem, element.ion_stages[0], get_element_ratio_coeffs(element)) for element in elements],
-            )
+            if self._n_e_override is not None:
+                # the caller gives the free electron density, so the populations follow the ratio
+                # coefficients at that density and charge neutrality does not have to hold
+                n_e = self._n_e_override
+            else:
+                n_e_fixed = sum(
+                    (ion_stage - 1) * n_ion
+                    for (Z, ion_stage), n_ion in self.ionpopdict.items()
+                    if Z not in self._balanced_elements
+                )
+                n_e = solve_charge_neutral_n_e_ratios(
+                    n_e_fixed,
+                    [
+                        (element.n_elem, element.ion_stages[0], get_element_ratio_coeffs(element))
+                        for element in elements
+                    ],
+                )
             for element in elements:
                 fractions = get_ion_fractions(get_element_ratio_coeffs(element), n_e)
                 self._set_balanced_populations(
