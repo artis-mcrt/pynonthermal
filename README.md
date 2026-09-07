@@ -104,12 +104,12 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 ### 2. Set the temperature and the atomic data
 
 ```python
-sf.set_temperature(6000)  # K, for the LTE level populations and the Saha equation
+sf.set_temperature(6000)  # K, for the LTE populations of the excitation levels
 sf.set_atomic_data(use_collstrengths=True, maxnlevelslower=5, maxnlevelsupper=250)
 ```
 
-The solver has one temperature. Set it before any excitation with LTE level populations and before
-`saha_ion_stages`; it is not needed otherwise.
+The solver has one temperature. Set it before any excitation with LTE level populations; it is not
+needed otherwise.
 
 `set_atomic_data()` chooses the level data for the excitations and how to build their cross sections.
 `adata_polars` takes your own level/transition table in the format of `artistools.atomic.get_levels()`;
@@ -121,15 +121,15 @@ those defaults.
 
 ```python
 sf.add_element(8, 1.0e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True)
-sf.add_element(26, 1.0e6, saha_ion_stages=[1, 2, 3])
+sf.add_element(26, 1.0e6, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11})
 ```
 
 `add_element()` takes:
 
 - `Z`: the atomic number, and `n_elem`: the number density of the element in cm^-3, summed over its ion
   stages. Every rule needs `n_elem` except `ion_densities`, which gives the densities themselves.
-- the population rule: exactly one of `ion_densities`, `ion_fractions`, `saha_ion_stages`, or
-  `recomb_ratecoeffs` — see [the next section](#where-the-ion-populations-come-from).
+- the population rule: exactly one of `ion_densities`, `ion_fractions`, or `recomb_ratecoeffs` —
+  see [the next section](#where-the-ion-populations-come-from).
 - `excitation`: also add the bound-bound excitations of every ion stage that has level data, with LTE
   level populations at the temperature of the solver. Every stage gets the built-in ionisation cross
   sections either way.
@@ -160,8 +160,7 @@ example when species that are not in the solver also give electrons:
 sf.override_n_e(2.5e6)  # cm^-3; None takes it from the ion charges again
 ```
 
-It works with every population rule. With `saha_ion_stages` or `recomb_ratecoeffs` it replaces charge
-neutrality: `solve()` then finds the populations at your density, and they do not have to be neutral
+It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality: `solve()` then finds the populations at your density, and they do not have to be neutral
 with it. The value holds until another call changes it, and a call after `solve()` discards the
 solution, so `solve()` must run again. (The `override_n_e` argument of `solve()` is deprecated.) The
 [iron notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
@@ -217,7 +216,7 @@ Each method shows the figure interactively, or saves it when `outputfilename` is
 
 ## Where the ion populations come from
 
-Every `add_element()` call gives exactly one of four rules. A future non-LTE rule will be a fifth
+Every `add_element()` call gives exactly one of three rules. A future non-LTE rule will be a fourth
 keyword.
 
 ### ion_densities
@@ -236,21 +235,6 @@ sf.add_element(26, 1.0e6, ion_fractions={2: 0.3, 3: 0.7})
 ```
 
 The same populations as a share of `n_elem`. The fractions must lie between 0 and 1 and sum to one.
-
-### saha_ion_stages
-
-```python
-sf.add_element(8, 1.0e10, saha_ion_stages=[1, 2, 3])
-```
-
-At least two contiguous ion stages, whose populations come from the Saha equation. For each pair of
-adjacent stages,
-`n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T))`, with the
-temperature `T` of `set_temperature()` and the ionisation potentials `chi_i` from the NIST table. The
-partition functions `U_i` come from the LTE level populations of the level data; the built-in data
-covers He, O, and Fe. For other elements give them as `add_element(..., partfuncs={ion_stage: U, ...})`,
-or supply a level table as `set_atomic_data(adata_polars=...)`. The bare nucleus (`ion_stage = Z + 1`)
-has a partition function of 1. The free electron density follows from charge neutrality in one pass.
 
 ### recomb_ratecoeffs
 
@@ -286,10 +270,28 @@ Points to note:
   then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
-The functions behind the two balance rules are in `pynonthermal.ionbalance`: `get_saha_factor()`,
-`get_ion_fractions()`, `solve_charge_neutral_n_e_ratios()`, and the general root find
-`solve_charge_neutral_n_e()`, which takes any charge density function that does not increase with the
-free electron density.
+The functions behind the balance are in `pynonthermal.ionbalance`: `get_ion_fractions()`,
+`solve_charge_neutral_n_e_ratios()`, and the general root find `solve_charge_neutral_n_e()`, which
+takes any charge density function that does not increase with the free electron density.
+
+### The Saha equation as a comparison
+
+The Saha equation is not a population rule, because it describes a gas whose ionisation is thermal,
+and a gas with non-thermal ionisation is not in local thermodynamic equilibrium. It is still worth
+comparing against, so `pynonthermal.ionbalance` gives it as a function of its own:
+
+```python
+fractions = pynonthermal.ionbalance.get_saha_ion_fractions(26, [1, 2, 3, 4, 5], 6000.0, n_elem=1.0e6)
+```
+
+This needs no Spencer-Fano solution. For each pair of adjacent stages,
+`n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T))`, with the
+ionisation potentials `chi_i` from the NIST table. `n_elem` gives the charge-neutral free electron
+density of that element alone; `n_e` instead fixes it, for the comparison at the density of a
+solution. The partition functions `U_i` come from the LTE level populations of the level data; the
+built-in data covers He, O, and Fe. For other elements give them as `partfuncs={ion_stage: U, ...}`,
+or supply a level table in `adata_polars`. The bare nucleus (`ion_stage = Z + 1`) has a partition
+function of 1. `get_saha_factor()` gives one pair's ratio coefficient by itself.
 
 The [iron ionisation balance notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example: the ion fractions of iron in the core of a Type Ia supernova at 250 days, with the deposition rate from the 56Co decay, a comparison with the Saha equation, and the evolution from 150 to 400 days.
 

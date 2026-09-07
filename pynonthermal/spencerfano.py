@@ -25,7 +25,6 @@ from pynonthermal.constants import CLIGHT
 from pynonthermal.constants import K_B
 from pynonthermal.excitation import ExcitationTransition
 from pynonthermal.ionbalance import get_ion_fractions
-from pynonthermal.ionbalance import get_saha_factor
 from pynonthermal.ionbalance import solve_charge_neutral_n_e_ratios
 
 if t.TYPE_CHECKING:
@@ -69,9 +68,7 @@ RECOMB_RATECOEFF_MAX_WARN: float = 1e-8
 
 
 def _rule_ion_stages(
-    ion_densities: Mapping[int, float] | None,
-    saha_ion_stages: Sequence[int] | None,
-    recomb_ratecoeffs: Mapping[int, float] | None,
+    ion_densities: Mapping[int, float] | None, recomb_ratecoeffs: Mapping[int, float] | None
 ) -> tuple[int, ...]:
     # the ion stages that a population rule of add_element() covers. add_element() reads them before
     # it registers the element, to build the excitations without changing the solver, so a malformed
@@ -79,8 +76,6 @@ def _rule_ion_stages(
     try:
         if ion_densities is not None:
             return tuple(sorted(ion_densities))
-        if saha_ion_stages is not None:
-            return tuple(int(ion_stage) for ion_stage in saha_ion_stages)
         if recomb_ratecoeffs is not None:
             upper_stages = sorted(recomb_ratecoeffs)
             return tuple(range(upper_stages[0] - 1, upper_stages[-1] + 1))
@@ -117,12 +112,8 @@ class _BalancedElement:
     Z: int
     n_elem: float
     ion_stages: tuple[int, ...]
-    # recombination rate coefficients [cm^3 s^-1] keyed by the recombining (upper) ion stage, or None
-    # for the Saha mode
-    recomb_ratecoeffs: dict[int, float] | None
-    # the Saha ratio coefficients n_{i+1} n_e / n_i [cm^-3] of each pair of adjacent stages, or None
-    # for the recombination mode
-    saha_factors: tuple[float, ...] | None
+    # recombination rate coefficients [cm^3 s^-1] keyed by the recombining (upper) ion stage
+    recomb_ratecoeffs: dict[int, float]
     # key is the ion stage, value is {transitionkey: template}
     excitation_templates: dict[int, dict[t.Any, _ExcitationTemplate]] = dataclasses.field(default_factory=dict)
     # key is the ion stage, value is {band width k: (vec, fracvec)} for a unit ion population, the
@@ -252,11 +243,10 @@ class SpencerFanoSolver:
     then do not sum to one.
 
     The ion populations of an element can also come from an ionisation balance instead of
-    from the caller. add_element() takes recombination rate coefficients, and
-    solve() then iterates the non-thermal ionisation rates against recombination until the
-    populations converge. add_element() takes a temperature and uses the Saha equation.
-    In both cases solve() finds the charge-neutral free electron density, or uses the density of
-    override_n_e(), and the converged populations are in ionpopdict after solve().
+    from the caller. add_element() takes recombination rate coefficients, and solve() then iterates
+    the non-thermal ionisation rates against recombination until the populations converge. solve()
+    finds the charge-neutral free electron density, or uses the density of override_n_e(), and the
+    converged populations are in ionpopdict after solve().
     """
 
     _solved: bool
@@ -338,7 +328,7 @@ class SpencerFanoSolver:
         self._balanced_elements = {}
         self.balance_iterations = 0
 
-        # the one temperature [K] of the solver for the LTE level populations and the Saha equation,
+        # the one temperature [K] of the solver for the LTE level populations of the excitations,
         # set by set_temperature(). None until then.
         self.temperature = None
 
@@ -431,11 +421,11 @@ class SpencerFanoSolver:
         return list(dict.fromkeys([*self.ionpopdict, *self.excitationlists]))
 
     def set_temperature(self, temperature: float) -> None:
-        """Set the temperature in K for the LTE level populations and the Saha equation.
+        """Set the temperature in K for the LTE populations of the excitation levels.
 
-        The solver has one temperature. Call this method before add_ion_excitation(),
-        add_element() with excitation=True, or add_element(). A second call with a different value
-        raises a ValueError, because the level populations already in the matrix use the first value.
+        The solver has one temperature. Call this method before add_ion_excitation() or
+        add_element() with excitation=True. A second call with a different value raises a
+        ValueError, because the level populations already in the matrix use the first value.
         """
         self._require_not_solved("set the temperature")
         # the chained comparison also rejects nan
@@ -466,8 +456,8 @@ class SpencerFanoSolver:
         """Set the level data and the options for the excitations that add_ion_excitation() builds.
 
         The settings apply to every later call of add_ion_excitation() and of add_element() with
-        excitation=True, and to the Saha partition functions from the level data. Without this
-        call, the solver uses the internal database with the default options below.
+        excitation=True. Without this call, the solver uses the internal database with the default
+        options below.
 
         adata_polars:
             a levels/transitions table to use instead of the internal database (the CMFGEN-derived
@@ -1315,15 +1305,13 @@ class SpencerFanoSolver:
         *,
         ion_densities: Mapping[int, float] | None = None,
         ion_fractions: Mapping[int, float] | None = None,
-        saha_ion_stages: Sequence[int] | None = None,
         recomb_ratecoeffs: Mapping[int, float] | None = None,
-        partfuncs: Mapping[int, float] | None = None,
         excitation: bool = False,
         builtin_channels: bool = True,
     ) -> None:
         """Add the ions of one element, with the rule that gives their populations.
 
-        This is the entry point for an element. Give exactly one of the four rules:
+        This is the entry point for an element. Give exactly one of the three rules:
 
         ion_densities:
             the number density in cm^-3 of each ion stage, keyed by ion stage. n_elem is their sum,
@@ -1331,13 +1319,6 @@ class SpencerFanoSolver:
         ion_fractions:
             the fraction of the element in each ion stage, keyed by ion stage. They must lie
             between 0 and 1 and sum to one, and n_elem is required.
-        saha_ion_stages:
-            at least two contiguous ion stages between 1 and Z + 1, whose populations come from the
-            Saha equation at the temperature of set_temperature(). For each pair of adjacent stages,
-            n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T)),
-            with the ionisation potentials chi_i from the NIST table. solve() finds the free
-            electron density from charge neutrality in one pass, or uses the density of
-            override_n_e().
         recomb_ratecoeffs:
             the recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that
             recombines. For each pair of adjacent stages the balance is
@@ -1352,35 +1333,31 @@ class SpencerFanoSolver:
         add the channels of each stage yourself with add_ionisation() or add_ionisation_channel()
         and n_ion=None. With excitation=True, every stage with level data also gets its bound-bound
         excitations, as with add_ion_excitation() per stage with the settings of set_atomic_data().
-        Call set_temperature() first for saha_ion_stages or for excitations.
+        Call set_temperature() first for the excitations.
 
-        After this call, ionpopdict holds the populations of the stages. With saha_ion_stages or
-        recomb_ratecoeffs they are provisional (equal fractions) until solve() runs.
+        After this call, ionpopdict holds the populations of the stages. With recomb_ratecoeffs
+        they are provisional (equal fractions) until solve() runs.
+
+        The Saha equation is not a rule here, because these populations are not in local
+        thermodynamic equilibrium: non-thermal ionisation is not thermal, and no temperature
+        describes it. pynonthermal.ionbalance.get_saha_ion_fractions() gives the LTE populations
+        of the same gas for a comparison.
 
         n_elem:
             the number density of the element in cm^-3, summed over its ion stages. Every rule
             needs it except ion_densities, which gives the densities themselves.
-        partfuncs:
-            partition functions keyed by ion stage, for saha_ion_stages only. A stage without an
-            entry gets the LTE partition function at the temperature from the level data, or 1 for
-            the bare nucleus. A ValueError names a stage that has neither.
         """
         rules = {
             "ion_densities": ion_densities,
             "ion_fractions": ion_fractions,
-            "saha_ion_stages": saha_ion_stages,
             "recomb_ratecoeffs": recomb_ratecoeffs,
         }
         given = [name for name, rule in rules.items() if rule is not None]
         if len(given) != 1:
             msg = (
                 "give exactly one of ion_densities (the densities you set), ion_fractions (their fractions of"
-                " n_elem), saha_ion_stages (the Saha equation), or recomb_ratecoeffs (the ionisation balance),"
-                f" but {given or 'none'} was given"
+                f" n_elem), or recomb_ratecoeffs (the ionisation balance), but {given or 'none'} was given"
             )
-            raise ValueError(msg)
-        if partfuncs is not None and saha_ion_stages is None:
-            msg = "partfuncs belongs to saha_ion_stages, so give the ion stages of the Saha equation as well"
             raise ValueError(msg)
         if ion_densities is not None:
             if n_elem is not None:
@@ -1418,16 +1395,13 @@ class SpencerFanoSolver:
         # and the caller can repeat it. Nothing above the registration writes to the solver.
         templates_of_stage = None
         if excitation:
-            ion_stages = _rule_ion_stages(ion_densities, saha_ion_stages, recomb_ratecoeffs)
+            ion_stages = _rule_ion_stages(ion_densities, recomb_ratecoeffs)
             if ion_stages:
                 templates_of_stage = self._build_element_excitation_templates(Z, ion_stages)
 
         if recomb_ratecoeffs is not None:
             assert n_elem is not None
             self._add_element_ionbalance(Z, n_elem, recomb_ratecoeffs, builtin_channels)
-        elif saha_ion_stages is not None:
-            assert n_elem is not None
-            self._add_element_saha(Z, n_elem, saha_ion_stages, partfuncs, builtin_channels)
         else:
             assert ion_densities is not None
             self._add_element_fixed(Z, ion_densities, builtin_channels)
@@ -1583,95 +1557,6 @@ class SpencerFanoSolver:
                 n_elem=n_elem,
                 ion_stages=ion_stages,
                 recomb_ratecoeffs={int(ion_stage): float(alpha) for ion_stage, alpha in recomb_ratecoeffs.items()},
-                saha_factors=None,
-            ),
-            builtin_channels,
-        )
-
-    def _add_element_saha(
-        self,
-        Z: int,
-        n_elem: float,
-        ion_stages: Sequence[int],
-        partfuncs: Mapping[int, float] | None = None,
-        builtin_channels: bool = True,
-    ) -> None:
-        """Add an element whose ion populations solve() finds from the Saha equation.
-
-        For each pair of adjacent ion stages i and i+1,
-        n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T)),
-        with the ionisation potentials chi_i from the NIST table. solve() finds the free electron
-        density from charge neutrality. No recombination rate coefficients are needed.
-
-        Every stage gets the built-in ionisation channels of add_ionisation(), so the ionisation
-        of the top stage is an energy loss in the matrix. To add LTE excitations of a stage, call
-        add_ion_excitation() with n_ion=None.
-
-        Until solve() runs, ionpopdict holds a provisional population of equal fractions for the
-        stages, and get_n_e() and get_n_ion_tot() include it.
-
-        n_elem:
-            the number density of the element in cm^-3, summed over the stages of the chain
-        ion_stages:
-            at least two contiguous ion stages between 1 and Z + 1
-        partfuncs:
-            partition functions keyed by ion stage. A stage without an entry gets the LTE
-            partition function at the temperature from the level data (the internal database or
-            the table of set_atomic_data()), or 1 for the bare nucleus. A ValueError names a stage
-            that has neither.
-        """
-        stages = tuple(int(ion_stage) for ion_stage in ion_stages)
-        self._check_new_balanced_element(Z, n_elem, stages)
-        temperature = self._get_temperature("the Saha equation")
-        if partfuncs is not None:
-            # a partition function for a stage outside the chain is most likely a mistake in the keys
-            stages_outside_chain = sorted(ion_stage for ion_stage in partfuncs if ion_stage not in stages)
-            if stages_outside_chain:
-                msg = (
-                    f"partfuncs has ion stages {stages_outside_chain} that are not in the chain {list(stages)} of Z={Z}"
-                )
-                raise ValueError(msg)
-
-        partfunc_of_stage: dict[int, float] = {}
-        for ion_stage in stages:
-            if partfuncs is not None and ion_stage in partfuncs:
-                partfunc = float(partfuncs[ion_stage])
-            elif ion_stage == Z + 1:
-                partfunc = 1.0
-            else:
-                ion = self._get_ion_levels(Z, ion_stage)
-                if ion is None:
-                    msg = (
-                        f"No level data for Z={Z} ion_stage {ion_stage} to calculate a partition function."
-                        " Give it in partfuncs or supply a level table with set_atomic_data()."
-                    )
-                    raise ValueError(msg)
-                partfunc = at.transitions.get_lte_partfunc(ion["levels"].item(), temperature)
-            if not 0.0 < partfunc < math.inf:
-                msg = (
-                    f"the partition function of Z={Z} ion_stage {ion_stage} must be greater than zero but is {partfunc}"
-                )
-                raise ValueError(msg)
-            partfunc_of_stage[ion_stage] = partfunc
-
-        ionpots = pynonthermal.collion.get_nist_ionisation_energies_ev()
-        saha_factors = []
-        for ion_stage in stages[:-1]:
-            ionpot_ev = ionpots.get((Z, ion_stage))
-            if ionpot_ev is None:
-                msg = f"No NIST ionisation energy for Z={Z} ion_stage {ion_stage}"
-                raise ValueError(msg)
-            saha_factors.append(
-                get_saha_factor(temperature, ionpot_ev, partfunc_of_stage[ion_stage], partfunc_of_stage[ion_stage + 1])
-            )
-
-        self._add_balanced_element(
-            _BalancedElement(
-                Z=Z,
-                n_elem=n_elem,
-                ion_stages=stages,
-                recomb_ratecoeffs=None,
-                saha_factors=tuple(saha_factors),
             ),
             builtin_channels,
         )
@@ -1722,10 +1607,9 @@ class SpencerFanoSolver:
             self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
 
         if self.verbose:
-            mode = "Saha" if element.recomb_ratecoeffs is None else "ionisation/recombination balance"
             print(
                 f"  including Z={Z} ion_stages {element.ion_stages[0]}-{element.ion_stages[-1]} with n_elem"
-                f" {element.n_elem:.1e} [/cm3] from the {mode}"
+                f" {element.n_elem:.1e} [/cm3] from the ionisation/recombination balance"
             )
 
         self._balanced_elements[Z] = element
@@ -1773,7 +1657,7 @@ class SpencerFanoSolver:
         """Use n_e [cm^-3] as the free electron density in place of the one the ion charges give.
 
         The free electron density enters the thermal-electron loss function (Kozma & Fransson 1992
-        equations 1 and 2) and the balance of an element with recomb_ratecoeffs or saha_ion_stages.
+        equations 1 and 2) and the balance of an element with recomb_ratecoeffs.
         Without this call, it is the sum of the ion charges of ionpopdict, so it counts only the
         electrons of the ions that the solver holds. Give the density of your model here when other
         species that are not in the solver also give electrons.
@@ -1824,7 +1708,7 @@ class SpencerFanoSolver:
         """Get the fraction of element Z in each ion stage that the solver holds, keyed by ion stage.
 
         The fractions are the populations in ionpopdict divided by their sum. For an element with
-        saha_ion_stages or recomb_ratecoeffs they are provisional until solve() runs.
+        recomb_ratecoeffs they are provisional until solve() runs.
         """
         populations = {ion_stage: n_ion for (Z_ion, ion_stage), n_ion in self.ionpopdict.items() if Z_ion == Z}
         if not populations:
@@ -1970,13 +1854,12 @@ class SpencerFanoSolver:
         # find the populations of the balanced elements and the free electron density, and solve the
         # matrix equation at them. On return, yvec, ionpopdict, and the matrix agree with each other.
         elements = list(self._balanced_elements.values())
-        recomb_elements = [element for element in elements if element.recomb_ratecoeffs is not None]
         deposition = self.deposition_ev_per_s_per_cm3
 
         # a stage without an ionisation channel has no ionisation rate, so the balance would leave every
         # ion in that stage or below. That is a missing add_ionisation() or add_ionisation_channel()
         # call, not a result.
-        for element in recomb_elements:
+        for element in elements:
             for ion_stage in element.ion_stages[:-1]:
                 if not self._ionisation_channels.get((element.Z, ion_stage)):
                     msg = (
@@ -1989,24 +1872,20 @@ class SpencerFanoSolver:
         # a first solve has no ionisation rates yet, so one solution at the provisional populations
         # gives them. A later solve starts from the rates of the last solution: at fixed populations
         # the rates are proportional to the deposition rate density.
-        if any(element.ratecoeffs_per_deposition is None for element in recomb_elements):
+        if any(element.ratecoeffs_per_deposition is None for element in elements):
             self._solve_matrix()
-            for element in recomb_elements:
+            for element in elements:
                 if element.ratecoeffs_per_deposition is None:
                     element.ratecoeffs_per_deposition = self._balanced_ratecoeffs_per_deposition(element)
 
-        # the ratio coefficients n_{i+1} n_e / n_i of the recombination-balance elements, keyed by Z
+        # the ratio coefficients n_{i+1} n_e / n_i of every element, keyed by Z
         ratio_coeffs: dict[int, list[float]] = {}
-        for element in recomb_elements:
-            assert element.recomb_ratecoeffs is not None
+        for element in elements:
             assert element.ratecoeffs_per_deposition is not None
             ratio_coeffs[element.Z] = [
                 element.ratecoeffs_per_deposition[ion_stage] * deposition / element.recomb_ratecoeffs[ion_stage + 1]
                 for ion_stage in element.ion_stages[:-1]
             ]
-
-        def get_element_ratio_coeffs(element: _BalancedElement) -> Sequence[float]:
-            return element.saha_factors if element.saha_factors is not None else ratio_coeffs[element.Z]
 
         max_residual = math.inf
         for iteration in range(1, BALANCE_MAXITER + 1):
@@ -2023,13 +1902,10 @@ class SpencerFanoSolver:
                 )
                 n_e = solve_charge_neutral_n_e_ratios(
                     n_e_fixed,
-                    [
-                        (element.n_elem, element.ion_stages[0], get_element_ratio_coeffs(element))
-                        for element in elements
-                    ],
+                    [(element.n_elem, element.ion_stages[0], ratio_coeffs[element.Z]) for element in elements],
                 )
             for element in elements:
-                fractions = get_ion_fractions(get_element_ratio_coeffs(element), n_e)
+                fractions = get_ion_fractions(ratio_coeffs[element.Z], n_e)
                 self._set_balanced_populations(
                     element,
                     {
@@ -2042,17 +1918,12 @@ class SpencerFanoSolver:
             # loss term agree to machine precision whatever the tolerance of the root find
             self._solve_matrix()
 
-            if not recomb_elements:
-                # the Saha ratios do not depend on the solution, so one pass is the answer
-                break
-
             # the residual compares the ratios that the new solution gives with the ratios that gave the
             # populations in the matrix. At convergence the populations, yvec, and the matrix agree, and
             # n_i Gamma_i = n_{i+1} n_e alpha_{i+1} holds to the tolerance.
             max_residual = 0.0
             new_ratio_coeffs: dict[int, list[float]] = {}
-            for element in recomb_elements:
-                assert element.recomb_ratecoeffs is not None
+            for element in elements:
                 element.ratecoeffs_per_deposition = self._balanced_ratecoeffs_per_deposition(element)
                 new_ratio_coeffs[element.Z] = []
                 for index, ion_stage in enumerate(element.ion_stages[:-1]):
@@ -2094,7 +1965,7 @@ class SpencerFanoSolver:
             )
             raise RuntimeError(msg)
 
-        for element in recomb_elements:
+        for element in elements:
             self._warn_top_stage_leak(element)
 
     def _balanced_ratecoeffs_per_deposition(self, element: _BalancedElement) -> dict[int, float]:

@@ -8,12 +8,22 @@ recombination rate coefficient of stage i+1. In both cases n_{i+1} / n_i = c_i /
 two functions give the ion fractions (get_ion_fractions()) and the charge-neutral free electron
 density (solve_charge_neutral_n_e_ratios()). solve_charge_neutral_n_e() is the general root find
 behind it, for any population model whose charge density does not increase with n_e.
+
+The Saha equation describes a gas whose ionisation is thermal, which a gas with non-thermal
+ionisation is not. SpencerFanoSolver.add_element() therefore has no Saha rule, and
+get_saha_ion_fractions() gives the LTE populations of one element for a comparison with the
+populations that the solver finds.
 """
 
 import math
 from collections.abc import Callable
+from collections.abc import Mapping
 from collections.abc import Sequence
 
+import artistools as at
+import polars as pl
+
+import pynonthermal
 from pynonthermal.constants import EV
 from pynonthermal.constants import H
 from pynonthermal.constants import K_B
@@ -210,3 +220,114 @@ def solve_charge_neutral_n_e_ratios(n_e_fixed: float, elements: Sequence[tuple[f
         return total
 
     return solve_charge_neutral_n_e(n_e_fixed, charge_density, charge_density_min, charge_density_max)
+
+
+def get_saha_ion_fractions(
+    Z: int,
+    ion_stages: Sequence[int],
+    temperature: float,
+    *,
+    n_e: float | None = None,
+    n_elem: float | None = None,
+    partfuncs: Mapping[int, float] | None = None,
+    adata_polars: pl.DataFrame | None = None,
+) -> dict[int, float]:
+    """Get the LTE ion fractions of one element from the Saha equation, keyed by ion stage.
+
+    This is a comparison case for the populations that SpencerFanoSolver finds: the Saha equation
+    describes a gas whose ionisation is thermal, so it says what the same gas would do without the
+    non-thermal ionisation. For each pair of adjacent stages,
+    n_{i+1} n_e / n_i = 2 (U_{i+1} / U_i) (2 pi m_e k_B T / h^2)^(3/2) exp(-chi_i / (k_B T)), with
+    the ionisation potentials chi_i from the NIST table.
+
+    Give either n_e, which fixes the free electron density (the comparison at the density of a
+    solution), or n_elem, which finds the charge-neutral density of this element alone (the LTE
+    state of the gas).
+
+    Z:
+        the atomic number
+    ion_stages:
+        at least two contiguous ion stages between 1 and Z + 1
+    temperature:
+        the temperature in K
+    n_e:
+        the free electron density in cm^-3
+    n_elem:
+        the number density of the element in cm^-3, summed over the stages. The free electron
+        density then comes from charge neutrality, with no other element in the gas.
+    partfuncs:
+        partition functions keyed by ion stage. A stage without an entry gets the LTE partition
+        function at the temperature from the level data, or 1 for the bare nucleus. A ValueError
+        names a stage that has neither.
+    adata_polars:
+        a levels table to use instead of the internal database, as in
+        SpencerFanoSolver.set_atomic_data()
+    """
+    if (n_e is None) == (n_elem is None):
+        msg = "give either n_e (the fractions at that free electron density) or n_elem (charge neutrality), not both"
+        raise ValueError(msg)
+    if Z < 1:
+        msg = f"Z must be at least 1 but is {Z}"
+        raise ValueError(msg)
+    # the chained comparison also rejects nan. get_saha_factor() checks it too, but the LTE
+    # partition function of a bad temperature is nan, whose message names the wrong fault.
+    if not 0.0 < temperature < math.inf:
+        msg = f"temperature must be greater than zero and finite but is {temperature}"
+        raise ValueError(msg)
+    stages = tuple(int(ion_stage) for ion_stage in ion_stages)
+    if len(stages) < 2 or list(stages) != list(range(stages[0], stages[-1] + 1)):
+        msg = f"the ion stages of Z={Z} must be at least two contiguous stages but are {list(stages)}"
+        raise ValueError(msg)
+    if stages[0] < 1 or stages[-1] > Z + 1:
+        msg = f"the ion stages of Z={Z} must lie between 1 and {Z + 1} but are {list(stages)}"
+        raise ValueError(msg)
+    if partfuncs is not None:
+        # a partition function for a stage outside the chain is most likely a mistake in the keys
+        stages_outside_chain = sorted(ion_stage for ion_stage in partfuncs if ion_stage not in stages)
+        if stages_outside_chain:
+            msg = f"partfuncs has ion stages {stages_outside_chain} that are not in the chain {list(stages)} of Z={Z}"
+            raise ValueError(msg)
+
+    if adata_polars is None and any(
+        partfuncs is None or ion_stage not in partfuncs for ion_stage in stages if ion_stage <= Z
+    ):
+        adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
+
+    partfunc_of_stage: dict[int, float] = {}
+    for ion_stage in stages:
+        if partfuncs is not None and ion_stage in partfuncs:
+            partfunc = float(partfuncs[ion_stage])
+        elif ion_stage == Z + 1:
+            # a bare nucleus has one state
+            partfunc = 1.0
+        else:
+            assert adata_polars is not None
+            ion = adata_polars.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
+            if ion.is_empty():
+                msg = (
+                    f"No level data for Z={Z} ion_stage {ion_stage} to calculate a partition function."
+                    " Give it in partfuncs or supply a level table in adata_polars."
+                )
+                raise ValueError(msg)
+            partfunc = at.transitions.get_lte_partfunc(ion["levels"].item(), temperature)
+        if not 0.0 < partfunc < math.inf:
+            msg = f"the partition function of Z={Z} ion_stage {ion_stage} must be greater than zero but is {partfunc}"
+            raise ValueError(msg)
+        partfunc_of_stage[ion_stage] = partfunc
+
+    ionpots_ev = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    saha_factors = []
+    for ion_stage in stages[:-1]:
+        ionpot_ev = ionpots_ev.get((Z, ion_stage))
+        if ionpot_ev is None:
+            msg = f"No NIST ionisation energy for Z={Z} ion_stage {ion_stage}"
+            raise ValueError(msg)
+        saha_factors.append(
+            get_saha_factor(temperature, ionpot_ev, partfunc_of_stage[ion_stage], partfunc_of_stage[ion_stage + 1])
+        )
+
+    if n_e is None:
+        assert n_elem is not None
+        n_e = solve_charge_neutral_n_e_ratios(0.0, [(n_elem, stages[0], saha_factors)])
+
+    return dict(zip(stages, get_ion_fractions(saha_factors, n_e), strict=True))

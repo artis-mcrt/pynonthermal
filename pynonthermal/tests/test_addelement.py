@@ -42,16 +42,14 @@ def test_population_rule_validation() -> None:
             sf.add_element(8, 1e9, ion_fractions={1: 1.0}, recomb_ratecoeffs={2: 1e-12})
         with pytest.raises(ValueError, match="exactly one of ion_densities"):
             sf.add_element(8, ion_densities={1: 1e9}, ion_fractions={1: 1.0})
-        with pytest.raises(ValueError, match="partfuncs belongs to saha_ion_stages"):
-            sf.add_element(8, 1e9, ion_fractions={1: 1.0}, partfuncs={1: 1.0})
 
         # n_elem is the sum of ion_densities, and every other rule needs it
         with pytest.raises(ValueError, match="n_elem is the sum of ion_densities"):
             sf.add_element(8, 1e10, ion_densities={1: 1e9})
         with pytest.raises(ValueError, match="n_elem is required with ion_fractions"):
             sf.add_element(8, ion_fractions={1: 1.0})
-        with pytest.raises(ValueError, match="n_elem is required with saha_ion_stages"):
-            sf.add_element(8, saha_ion_stages=[1, 2])
+        with pytest.raises(ValueError, match="n_elem is required with recomb_ratecoeffs"):
+            sf.add_element(8, recomb_ratecoeffs={2: 1e-12})
         for bad in (0.0, -1.0, math.nan, math.inf):
             with pytest.raises(ValueError, match="n_elem must be greater than zero"):
                 sf.add_element(8, bad, ion_fractions={1: 1.0})
@@ -137,16 +135,12 @@ def test_messages_name_the_likely_mistake() -> None:
             sf.add_element(26, ion_densities={0: 3e5, 1: 7e5})
         with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
             sf.add_ionisation(26, 0, n_ion=1e6)
-        with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
-            sf.add_element(26, 1e6, saha_ion_stages=[0, 1])
 
         # recomb_ratecoeffs keyed by the stage that ionises, not by the stage that recombines
         with pytest.raises(ValueError, match="Each key is the ion stage that recombines"):
             sf.add_element(8, 1e10, recomb_ratecoeffs={1: 3e-13, 2: 3e-12})
 
         # the message names what needs the temperature
-        with pytest.raises(ValueError, match="the Saha equation needs the temperature"):
-            sf.add_element(8, 1e10, saha_ion_stages=[1, 2])
         with pytest.raises(ValueError, match="the LTE population of each lower level"):
             sf.add_element(8, 1e10, ion_fractions={1: 1.0}, excitation=True)
 
