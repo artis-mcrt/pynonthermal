@@ -338,7 +338,9 @@ def test_charge_neutral_n_e_without_an_override() -> None:
         fractions = sf.get_ion_fractions(2)
         assert set(fractions) == {1, 2, 3}
         assert math.isclose(sum(fractions.values()), 1.0, rel_tol=1e-12)
-        assert fractions[2] == sf.ionpopdict[(2, 2)] / 1e8
+        # the populations of the stages sum to n_elem only to rounding, so the fraction of a stage
+        # matches its population divided by n_elem to the same accuracy and not bit for bit
+        assert math.isclose(fractions[2], sf.ionpopdict[(2, 2)] / 1e8, rel_tol=1e-12)
 
 
 def test_override_n_e_with_balance() -> None:
