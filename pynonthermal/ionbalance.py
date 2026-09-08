@@ -269,6 +269,11 @@ def get_saha_ion_fractions(
     if (n_e is None) == (n_elem is None):
         msg = "give either n_e (the fractions at that free electron density) or n_elem (charge neutrality), not both"
         raise ValueError(msg)
+    # the chained comparison also rejects nan. The root find checks n_elem as well, but the cold gas
+    # below returns before it, and a bad density must not give plausible fractions.
+    if n_elem is not None and not 0.0 < n_elem < math.inf:
+        msg = f"n_elem must be greater than zero and finite but is {n_elem}"
+        raise ValueError(msg)
     if Z < 1:
         msg = f"Z must be at least 1 but is {Z}"
         raise ValueError(msg)

@@ -1807,8 +1807,14 @@ class SpencerFanoSolver:
                 DeprecationWarning,
                 stacklevel=2,
             )
-            # the method validates the value, so a bad one raises before anything below is applied
-            n_e_before = self._n_e_override
+            # the method validates the value, so a bad one raises before anything below is applied.
+            # A second call in a row must keep the density that override_n_e() set, not the
+            # temporary density of the call before it.
+            n_e_before = (
+                self._n_e_override
+                if isinstance(self._n_e_override_before_solve, _Omitted)
+                else self._n_e_override_before_solve
+            )
             self.override_n_e(override_n_e)
             self._n_e_override_before_solve = n_e_before
         elif not isinstance(self._n_e_override_before_solve, _Omitted):

@@ -298,6 +298,10 @@ def test_saha_ion_fractions_validation() -> None:
         get_fractions(56, [1, 2], 6000.0, n_e=1e8, partfuncs={1: 1.0, 2: 0.0})
     with pytest.raises(ValueError, match="temperature must be greater than zero"):
         get_fractions(8, [1, 2], 0.0, n_e=1e8)
+    # the cold gas returns before the root find, which is the other place that checks n_elem
+    for bad in (0.0, -1.0, math.nan, math.inf):
+        with pytest.raises(ValueError, match="n_elem must be greater than zero"):
+            get_fractions(8, [1, 2], 100.0, n_elem=bad)
 
 
 def at_get_lte_partfunc(adata: pl.DataFrame, Z: int, ion_stage: int, temperature: float) -> float:
@@ -383,6 +387,16 @@ def test_override_n_e_solve_argument_is_deprecated() -> None:
         # the deprecated argument applies to one call
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+
+        # two deprecated calls in a row still take back the density of the method
+        sf.override_n_e(2.5e6)
+        with pytest.warns(DeprecationWarning, match="override_n_e"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e7)
+        with pytest.warns(DeprecationWarning, match="override_n_e"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=2e7)
+        assert sf.get_n_e() == 2e7
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_n_e() == 2.5e6
 
         # but the method holds until it is cleared
         sf.override_n_e(1e6)
