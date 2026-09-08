@@ -7,6 +7,7 @@ add noise to the tracked benchmark set. Performance-relevant cases live in test_
 
 import itertools
 import math
+import typing as t
 import warnings
 
 import numpy as np
@@ -992,16 +993,28 @@ def test_every_builtin_ion_builds_channels() -> None:
         assert n_fit > 0
 
 
-def test_rejected_solve_keeps_the_last_deposition_rate() -> None:
-    # every argument of solve() is checked before the deposition rate density is stored, so a
-    # rejected call leaves the value that the last solution used
+def test_rejected_solve_keeps_the_last_solution() -> None:
+    # every argument of solve() is checked before the solver takes any of them, so a rejected call
+    # keeps the deposition rate density, the solution, and the analysis of the last solve
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.add_ionisation(8, 2, n_ion=1e8)
         sf.solve(deposition_ev_per_s_per_cm3=100.0)
         assert sf.deposition_ev_per_s_per_cm3 == 100.0
-        with pytest.raises(ValueError, match="balance_tol"):
-            sf.solve(deposition_ev_per_s_per_cm3=999.0, balance_tol=0.0)
-        assert sf.deposition_ev_per_s_per_cm3 == 100.0
+        yvec = sf.yvec.copy()
+        frac_heating = sf.get_frac_heating()
+
+        bad_arguments: list[tuple[dict[str, t.Any], str]] = [
+            ({"deposition_ev_per_s_per_cm3": 999.0, "balance_tol": 0.0}, "balance_tol"),
+            ({"deposition_ev_per_s_per_cm3": 0.0}, "deposition_ev_per_s_per_cm3 must be"),
+            ({}, "needs the deposition rate density"),
+        ]
+        for arguments, message in bad_arguments:
+            with pytest.raises(ValueError, match=message):
+                sf.solve(**arguments)
+            # the getters still give the last solution, which the caller does not have to repeat
+            assert sf.deposition_ev_per_s_per_cm3 == 100.0
+            assert np.array_equal(sf.yvec, yvec)
+            assert sf.get_frac_heating() == frac_heating
         # the deprecated override_n_e argument is checked there as well
         with (
             pytest.warns(DeprecationWarning, match="override_n_e"),

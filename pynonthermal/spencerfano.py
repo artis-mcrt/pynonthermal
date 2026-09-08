@@ -1768,10 +1768,6 @@ class SpencerFanoSolver:
             msg = "solve() needs the deposition rate density in eV s^-1 cm^-3 as deposition_ev_per_s_per_cm3"
             raise ValueError(msg)
 
-        self._solved = False
-        self._solution_discarded_by = None
-        self.reset_solution_analysis()
-
         # every fraction and rate coefficient is divided by the deposition rate density. A zero gave a bare
         # ZeroDivisionError from inside the analysis, and a negative one silently flipped the sign of yvec
         # and of every rate coefficient while leaving the energy fractions summing to one.
@@ -1802,10 +1798,14 @@ class SpencerFanoSolver:
             # electron density from the ion charges again. The method does not clear itself.
             self.override_n_e(None)
 
-        # every check of the arguments runs first, so a rejected call leaves the deposition rate
-        # density of the last solution in place instead of a rate that no solution used
-        self.deposition_ev_per_s_per_cm3 = deposition_ev_per_s_per_cm3
+        # every check of the arguments runs above, so a rejected call keeps the whole of the last
+        # solution: its deposition rate density, its yvec, and its analysis. The caller repeats the
+        # call with a good argument and does not have to solve again.
+        self._solved = False
+        self._solution_discarded_by = None
+        self.reset_solution_analysis()
 
+        self.deposition_ev_per_s_per_cm3 = deposition_ev_per_s_per_cm3
         self._n_e = None
 
         if self._balanced_elements:
