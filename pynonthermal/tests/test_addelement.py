@@ -170,3 +170,16 @@ def test_result_getters_name_the_ions_that_the_solver_holds() -> None:
             sf.get_frac_heating()
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         assert sf.get_frac_heating() > 0.0
+
+
+def test_set_atomic_data_keeps_the_options_of_an_earlier_call() -> None:
+    # every option that a call does not give keeps its value, as adata_polars does. A call that
+    # reset them silently changed the cross sections and the transitions of every later ion.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.set_atomic_data(use_collstrengths=False, maxnlevelslower=3, maxnlevelsupper=50)
+        sf.set_atomic_data()
+        assert (sf._use_collstrengths, sf._maxnlevelslower, sf._maxnlevelsupper) == (False, 3, 50)
+
+        # an explicit None still disables a cutoff
+        sf.set_atomic_data(maxnlevelsupper=None)
+        assert (sf._use_collstrengths, sf._maxnlevelslower, sf._maxnlevelsupper) == (False, 3, None)

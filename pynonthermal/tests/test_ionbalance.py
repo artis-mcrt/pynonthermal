@@ -580,7 +580,7 @@ def test_balanced_element_input_validation() -> None:
         with pytest.raises(ValueError, match="already has ions"):
             sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-12})
         sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
-        with pytest.raises(ValueError, match="already added as a balanced element"):
+        with pytest.raises(ValueError, match="already has ions"):
             sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
         with pytest.raises(ValueError, match="come from the ionisation balance"):
             sf.add_ionisation(2, 1, n_ion=1e8)

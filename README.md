@@ -91,7 +91,9 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
   Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
   use. The default `emax_ev` covers the K-shell ionisation of iron at about 7 keV; lower it to 3000 eV
-  to match Kozma & Fransson (1992).
+  to match Kozma & Fransson (1992). `emin_ev` also sets the highest free electron density that the
+  solver accepts, because the Coulomb logarithm of the loss function must stay positive at the bottom
+  of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time; check
   `get_frac_sum()`.
 - `verbose`: print the setup, each added ionisation channel, and a per-ion, per-shell breakdown.
@@ -121,7 +123,7 @@ those defaults.
 
 ```python
 sf.add_element(8, 1.0e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True)
-sf.add_element(26, 1.0e6, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11})
+sf.add_element(26, 1.0e9, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11, 4: 3.0e-11, 5: 6.0e-11})
 ```
 
 `add_element()` takes:

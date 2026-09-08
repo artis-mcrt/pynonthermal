@@ -111,6 +111,8 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # Both branches lose their meaning once the plasma is dense enough that the Coulomb logarithm
     # reaches zero, which would put a non-positive loss rate on the Spencer-Fano matrix diagonal. The
     # low-energy branch fails first, at n_e ~ 7e19 for a 1 eV electron against ~6e23 for the other.
+    # The limit falls as the cube of the energy, so it is n_e ~ 7e16 at the 0.1 eV bottom of the
+    # default grid of SpencerFanoSolver.
     if coulomblog_arg <= 1.0:
         msg = (
             f"the free-electron loss function is not valid at {energy_ev} eV for n_e = {n_e_cgs} cm^-3:"

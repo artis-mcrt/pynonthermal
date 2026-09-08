@@ -177,7 +177,9 @@ def solve_charge_neutral_n_e(
             ln_lower = ln_mid
         else:
             ln_upper = ln_mid
-        if ln_upper - ln_lower < 1e-15:
+        # a relative width, because the logarithms reach +-700 in the wide bracket below, where
+        # the spacing of a double is 1e-13 and an absolute test of 1e-15 never becomes true
+        if ln_upper - ln_lower < 1e-15 * max(1.0, abs(ln_upper)):
             break
 
     return math.exp(0.5 * (ln_lower + ln_upper))
@@ -260,8 +262,9 @@ def get_saha_ion_fractions(
         function at the temperature from the level data, or 1 for the bare nucleus. A ValueError
         names a stage that has neither.
     adata_polars:
-        a levels table to use instead of the internal database, as in
-        SpencerFanoSolver.set_atomic_data()
+        a levels table to use instead of the internal database, in the format that
+        artistools.atomic.get_levels() returns. This function reads only the levels, so a table
+        without transitions works here but not in SpencerFanoSolver.set_atomic_data()
     """
     if (n_e is None) == (n_elem is None):
         msg = "give either n_e (the fractions at that free electron density) or n_elem (charge neutrality), not both"
@@ -325,10 +328,10 @@ def get_saha_ion_fractions(
 
     if n_e is None:
         assert n_elem is not None
-        if not any(saha_factors):
-            # every Boltzmann factor has underflowed, so the element is entirely in its lowest stage
-            # at any free electron density, and the density of a neutral gas is zero. The root find
-            # has no bracket there, and it would raise instead of giving these fractions.
+        if saha_factors[0] == 0.0:
+            # the Boltzmann factor of the lowest stage has underflowed, so every stage above it is
+            # empty at any free electron density, and the density of a neutral gas is zero. The root
+            # find has no bracket there, and it would raise instead of giving these fractions.
             return {ion_stage: 1.0 if index == 0 else 0.0 for index, ion_stage in enumerate(stages)}
         n_e = solve_charge_neutral_n_e_ratios(0.0, [(n_elem, stages[0], saha_factors)])
 

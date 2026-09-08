@@ -417,7 +417,8 @@ def test_excitation_xs_zero_above_grid() -> None:
     # highest transition energy
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=5.0, npts=300) as sf:
         sf.set_temperature(3000)
-        sf.set_atomic_data(use_collstrengths=False)
+        # the collision-strength cross sections of Li et al. (2012), which no other test reaches
+        sf.set_atomic_data(use_collstrengths=True)
         sf.add_ionisation(26, 3, n_ion=0.7)
         sf.add_ion_excitation(26, 3, n_ion=0.7)
         for transitions in sf.excitationlists.values():
