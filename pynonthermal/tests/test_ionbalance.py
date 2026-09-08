@@ -1,0 +1,868 @@
+"""Tests of the ion populations from an ionisation/recombination balance.
+
+Not marked as benchmarks: these check the balance algebra, the consistency of the balanced solver
+with a solver that gets the same populations directly, and the error paths.
+"""
+
+import math
+import typing as t
+import warnings
+
+import artistools as at
+import numpy as np
+import numpy.typing as npt
+import polars as pl
+import pytest
+
+import pynonthermal
+
+# illustrative recombination rate coefficients [cm^3 s^-1] keyed by the recombining ion stage
+OXYGEN_ALPHAS = {2: 3e-13, 3: 3e-12, 4: 1e-11}
+HELIUM_ALPHAS = {2: 4e-13, 3: 2e-12}
+
+
+def test_saha_constant() -> None:
+    # (2 pi m_e k_B / h^2)^(3/2) = 2.4147e15 cm^-3 K^-3/2
+    assert math.isclose(pynonthermal.ionbalance.SAHA_CONST, 2.4147e15, rel_tol=1e-4)
+
+
+def test_saha_factor() -> None:
+    # hydrogen at 10^4 K with U_I = 2 and U_II = 1: 2 * (1/2) * SAHA_CONST * T^1.5 * exp(-13.598 eV / kT)
+    T = 1e4
+    expected = pynonthermal.ionbalance.SAHA_CONST * T**1.5 * math.exp(-13.598 / (8.617333262145e-5 * T))
+    assert math.isclose(pynonthermal.ionbalance.get_saha_factor(T, 13.598, 2.0, 1.0), expected, rel_tol=1e-12)
+
+    for bad in (0.0, -1.0, math.nan, math.inf):
+        with pytest.raises(ValueError, match="temperature"):
+            pynonthermal.ionbalance.get_saha_factor(bad, 13.598, 2.0, 1.0)
+        with pytest.raises(ValueError, match="ionpot_ev"):
+            pynonthermal.ionbalance.get_saha_factor(T, bad, 2.0, 1.0)
+        with pytest.raises(ValueError, match="partition functions"):
+            pynonthermal.ionbalance.get_saha_factor(T, 13.598, bad, 1.0)
+
+
+def test_ion_fractions() -> None:
+    # a well-conditioned case against the direct formula
+    n_e = 1e8
+    c = [2e8, 5e7]
+    r1, r2 = c[0] / n_e, c[1] / n_e
+    total = 1.0 + r1 + r1 * r2
+    fractions = pynonthermal.ionbalance.get_ion_fractions(c, n_e)
+    assert np.allclose(fractions, [1.0 / total, r1 / total, r1 * r2 / total], rtol=1e-14)
+    assert math.isclose(sum(fractions), 1.0, rel_tol=1e-14)
+
+    # a zero coefficient makes every higher stage exactly zero
+    fractions = pynonthermal.ionbalance.get_ion_fractions([2e8, 0.0, 1e30], n_e)
+    assert fractions[2] == 0.0
+    assert fractions[3] == 0.0
+    assert math.isclose(fractions[0] + fractions[1], 1.0, rel_tol=1e-14)
+    assert math.isclose(fractions[1] / fractions[0], 2.0, rel_tol=1e-14)
+
+    # very large and very small coefficients neither overflow nor warn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fractions = pynonthermal.ionbalance.get_ion_fractions([1e300, 1e300, 1e300], n_e)
+        assert fractions[3] == 1.0
+        fractions = pynonthermal.ionbalance.get_ion_fractions([1e-300, 1e-300], n_e)
+        assert fractions[0] == 1.0
+        assert fractions[1] > 0.0
+
+    with pytest.raises(ValueError, match="n_e"):
+        pynonthermal.ionbalance.get_ion_fractions([1.0], 0.0)
+    with pytest.raises(ValueError, match="ratio coefficients"):
+        pynonthermal.ionbalance.get_ion_fractions([-1.0], n_e)
+
+
+def test_charge_neutral_n_e_two_stages() -> None:
+    # one element with two stages: n_2 n_e = c n_1 and n_e = n_e_fixed + n_2, so
+    # n_e^2 - n_e_fixed n_e = c (n_elem - n_e + n_e_fixed) is a quadratic in n_e
+    n_elem = 1e10
+    # the 1e-130 case has its root at 1e-65, far below the first lower bracket of the bisection
+    for c, n_e_fixed in ((1e6, 0.0), (1e12, 0.0), (1e6, 3e7), (1e-20, 0.0), (1e-130, 0.0)):
+        b = -(n_e_fixed - c)
+        a_c = -c * (n_elem + n_e_fixed)
+        n_e_expected = 0.5 * (-b + math.sqrt(b * b - 4 * a_c))
+        n_e = pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(n_e_fixed, [(n_elem, 1, [c])])
+        assert math.isclose(n_e, n_e_expected, rel_tol=1e-10)
+        # the populations at the result are charge neutral
+        fractions = pynonthermal.ionbalance.get_ion_fractions([c], n_e)
+        assert math.isclose(n_e, n_e_fixed + n_elem * fractions[1], rel_tol=1e-10)
+
+    # a chain that starts above the neutral stage has an exact lower bound: with zero ratios, every ion
+    # sits in the lowest stage
+    assert math.isclose(
+        pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(n_elem, 2, [0.0])]), n_elem, rel_tol=1e-12
+    )
+
+    # zero ratios and no fixed ionised ion give no free electrons
+    with pytest.raises(ValueError, match="free electron density is zero"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(n_elem, 1, [0.0])])
+    # but a fixed ionised ion carries the result
+    assert math.isclose(
+        pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(5.0, [(n_elem, 1, [0.0])]), 5.0, rel_tol=1e-12
+    )
+
+    with pytest.raises(ValueError, match="lowest ion stage"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(n_elem, 0, [1.0])])
+    with pytest.raises(ValueError, match="n_elem"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(0.0, 1, [1.0])])
+
+
+def test_charge_neutral_n_e_two_elements() -> None:
+    # the result is charge neutral for two elements together with fixed ions
+    elements = [(1e10, 1, [1e9, 1e6]), (2e9, 2, [3e8])]
+    n_e_fixed = 4e8
+    n_e = pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(n_e_fixed, elements)
+    charge = n_e_fixed
+    for n_elem, lowest_stage, ratio_coeffs in elements:
+        fractions = pynonthermal.ionbalance.get_ion_fractions(ratio_coeffs, n_e)
+        charge += n_elem * sum((lowest_stage - 1 + index) * frac for index, frac in enumerate(fractions))
+    assert math.isclose(n_e, charge, rel_tol=1e-10)
+
+
+def check_balance_identity(sf: pynonthermal.SpencerFanoSolver, Z: int, alphas: dict[int, float], tol: float) -> None:
+    # n_i Gamma_i = n_{i+1} n_e alpha_{i+1} for every pair of adjacent stages
+    n_e = sf.get_n_e()
+    for upper, alpha in alphas.items():
+        rate_ionisation = sf.ionpopdict[(Z, upper - 1)] * sf.get_ionisation_ratecoeff(Z, upper - 1)
+        rate_recombination = sf.ionpopdict[(Z, upper)] * n_e * alpha
+        assert math.isclose(rate_ionisation, rate_recombination, rel_tol=tol)
+
+
+def build_direct_solver(
+    sf_balanced: pynonthermal.SpencerFanoSolver, Z: int, excitation_stages: tuple[int, ...], temperature: float
+) -> pynonthermal.SpencerFanoSolver:
+    # a solver that gets the converged populations of the balanced solver as fixed populations
+    sf = pynonthermal.SpencerFanoSolver(
+        emin_ev=sf_balanced.engrid[0], emax_ev=sf_balanced.engrid[-1], npts=len(sf_balanced.engrid)
+    )
+    sf.set_temperature(temperature)
+    sf.set_atomic_data(use_collstrengths=False)
+    for (Z_ion, ion_stage), n_ion in sf_balanced.ionpopdict.items():
+        if Z_ion == Z and ion_stage <= Z:
+            sf.add_ionisation(Z, ion_stage, n_ion)
+    for ion_stage in excitation_stages:
+        sf.add_ion_excitation(Z, ion_stage, n_ion=sf_balanced.ionpopdict[(Z, ion_stage)])
+    return sf
+
+
+def test_recombination_balance_oxygen() -> None:
+    n_oxygen = 1e10
+    deposition = 2950.49 * n_oxygen * 1e-5
+    balance_tol = 1e-5
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400) as sf:
+        sf.set_temperature(6000)
+        sf.set_atomic_data(use_collstrengths=False)
+        sf.add_element(8, n_oxygen, recomb_ratecoeffs=OXYGEN_ALPHAS)
+        # the provisional populations are equal fractions, and the top stage O IV has channels too
+        assert all(sf.ionpopdict[(8, ion_stage)] == n_oxygen / 4 for ion_stage in (1, 2, 3, 4))
+        assert math.isclose(sf.get_n_ion_tot(), n_oxygen, rel_tol=1e-12)
+        assert len(sf._ionisation_channels[(8, 4)]) > 0
+        for ion_stage in (1, 2, 3):
+            sf.add_ion_excitation(8, ion_stage, n_ion=None)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            sf.solve(deposition_ev_per_s_per_cm3=deposition, balance_tol=balance_tol)
+
+        assert 1 < sf.balance_iterations < 100
+        assert math.isclose(sf.get_n_ion_tot(), n_oxygen, rel_tol=1e-12)
+        assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+        assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.02)
+        check_balance_identity(sf, 8, OXYGEN_ALPHAS, tol=2 * balance_tol)
+        fractions_low = {ion_stage: sf.ionpopdict[(8, ion_stage)] / n_oxygen for ion_stage in (1, 2, 3, 4)}
+        assert math.isclose(sum(fractions_low.values()), 1.0, rel_tol=1e-12)
+
+        # the balanced solver has the same matrix and solution as a solver with the converged
+        # populations given directly. The delta updates leave only rounding differences.
+        sf_direct = build_direct_solver(sf, 8, (1, 2, 3), 6000)
+        sf_direct.solve(deposition_ev_per_s_per_cm3=deposition)
+        assert np.allclose(sf.sfmatrix, sf_direct.sfmatrix, rtol=1e-9, atol=1e-12 * np.abs(sf_direct.sfmatrix).max())
+        assert np.allclose(sf.yvec, sf_direct.yvec, rtol=1e-9)
+        for ion_stage in (1, 2, 3):
+            assert math.isclose(
+                sf.get_ionisation_ratecoeff(8, ion_stage),
+                sf_direct.get_ionisation_ratecoeff(8, ion_stage),
+                rel_tol=1e-9,
+            )
+            assert sf.excitationlists[(8, ion_stage)].keys() == sf_direct.excitationlists[(8, ion_stage)].keys()
+            transitionkey = next(iter(sf.excitationlists[(8, ion_stage)]))
+            assert math.isclose(
+                sf.get_excitation_ratecoeff(8, ion_stage, transitionkey),
+                sf_direct.get_excitation_ratecoeff(8, ion_stage, transitionkey),
+                rel_tol=1e-9,
+            )
+            trans_balanced = sf.excitationlists[(8, ion_stage)][transitionkey]
+            trans_direct = sf_direct.excitationlists[(8, ion_stage)][transitionkey]
+            assert math.isclose(trans_balanced.levelnumberdensity, trans_direct.levelnumberdensity, rel_tol=1e-12)
+
+        # a second solve at a higher deposition rate starts from the converged rates, reconverges,
+        # and ionises the element further
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            sf.solve(deposition_ev_per_s_per_cm3=deposition * 10, balance_tol=balance_tol)
+        check_balance_identity(sf, 8, OXYGEN_ALPHAS, tol=2 * balance_tol)
+        assert sf.ionpopdict[(8, 1)] < fractions_low[1] * n_oxygen
+        assert sf.get_n_e() > sum(fractions_low[ion_stage] * (ion_stage - 1) for ion_stage in (2, 3, 4)) * n_oxygen
+
+        # additions are locked after solving
+        with pytest.raises(RuntimeError):
+            sf.add_element(26, 1.0, recomb_ratecoeffs={2: 1e-12})
+        with pytest.raises(RuntimeError):
+            sf.set_temperature(6000)
+        with pytest.raises(RuntimeError):
+            sf.set_atomic_data(use_collstrengths=False)
+
+
+def test_recombination_balance_helium_bare_nucleus() -> None:
+    # the chain can end at the bare nucleus, which has no ionisation channel
+    n_helium = 1e8
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, n_helium, recomb_ratecoeffs=HELIUM_ALPHAS)
+        assert (2, 3) not in sf._ionisation_channels
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_ionisation_ratecoeff(2, 3) == 0.0
+        assert sf.get_ionisation_ratecoeff(2, 2) > 0.0
+        assert sf.ionpopdict[(2, 3)] > 0.0
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-4)
+        assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.02)
+
+
+def test_top_stage_leak_warning() -> None:
+    # a chain that stops at a stage with a large ionisation rate gets a warning
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(8, 1e10, recomb_ratecoeffs={2: 3e-13})
+        with pytest.warns(UserWarning, match="top stage 2 of Z=8"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e12)
+
+
+def test_saha_ion_fractions() -> None:
+    # the LTE comparison case: the fractions satisfy the Saha equation with the partition functions
+    # of the level data, and charge neutrality gives the free electron density
+    n_oxygen = 1e10
+    temperature = 12000.0
+    ionpots = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    fractions = pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], temperature, n_elem=n_oxygen)
+
+    assert list(fractions) == [1, 2, 3]
+    assert math.isclose(sum(fractions.values()), 1.0, rel_tol=1e-12)
+    n_e = n_oxygen * sum((ion_stage - 1) * frac for ion_stage, frac in fractions.items())
+    adata = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
+    for lower in (1, 2):
+        partfuncs = [at_get_lte_partfunc(adata, 8, ion_stage, temperature) for ion_stage in (lower, lower + 1)]
+        saha_factor = pynonthermal.ionbalance.get_saha_factor(
+            temperature, ionpots[(8, lower)], partfuncs[0], partfuncs[1]
+        )
+        assert math.isclose(fractions[lower + 1] * n_e / fractions[lower], saha_factor, rel_tol=1e-9)
+
+    # a given free electron density is the comparison at the density of a solution
+    fractions_at_n_e = pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], temperature, n_e=n_e)
+    for ion_stage, fraction in fractions.items():
+        assert math.isclose(fractions_at_n_e[ion_stage], fraction, rel_tol=1e-9)
+
+    # every ratio is the Saha factor divided by the free electron density, so twice the density
+    # halves every ratio
+    fractions_high = pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], temperature, n_e=2 * n_e)
+    for lower in (1, 2):
+        ratio = fractions_at_n_e[lower + 1] / fractions_at_n_e[lower]
+        assert math.isclose(fractions_high[lower + 1] / fractions_high[lower], ratio / 2.0, rel_tol=1e-9)
+
+    # given partition functions replace the level data, and the bare nucleus gets one
+    fractions_helium = pynonthermal.ionbalance.get_saha_ion_fractions(
+        2, [1, 2, 3], 30000.0, n_elem=1e8, partfuncs={1: 1.0, 2: 2.0}
+    )
+    n_e_helium = 1e8 * sum((ion_stage - 1) * frac for ion_stage, frac in fractions_helium.items())
+    saha_factor = pynonthermal.ionbalance.get_saha_factor(30000.0, ionpots[(2, 2)], 2.0, 1.0)
+    assert math.isclose(fractions_helium[3] * n_e_helium / fractions_helium[2], saha_factor, rel_tol=1e-9)
+
+
+def test_saha_ion_fractions_validation() -> None:
+    get_fractions = pynonthermal.ionbalance.get_saha_ion_fractions
+    with pytest.raises(ValueError, match="give either n_e"):
+        get_fractions(8, [1, 2], 6000.0)
+    with pytest.raises(ValueError, match="give either n_e"):
+        get_fractions(8, [1, 2], 6000.0, n_e=1e8, n_elem=1e10)
+    with pytest.raises(ValueError, match="Z must be at least 1"):
+        get_fractions(0, [1, 2], 6000.0, n_e=1e8)
+    for bad_stages in ([2], [1, 3]):
+        with pytest.raises(ValueError, match="at least two contiguous"):
+            get_fractions(8, bad_stages, 6000.0, n_e=1e8)
+    with pytest.raises(ValueError, match="between 1 and 9"):
+        get_fractions(8, [9, 10], 6000.0, n_e=1e8)
+    with pytest.raises(ValueError, match="not in the chain"):
+        get_fractions(8, [1, 2], 6000.0, n_e=1e8, partfuncs={3: 1.0})
+    # Ba has no level data in the internal database, so its partition functions must be given
+    with pytest.raises(ValueError, match="No level data for Z=56 ion_stage 1"):
+        get_fractions(56, [1, 2], 6000.0, n_e=1e8)
+    with pytest.raises(ValueError, match="partition function of Z=56 ion_stage 2"):
+        get_fractions(56, [1, 2], 6000.0, n_e=1e8, partfuncs={1: 1.0, 2: 0.0})
+    with pytest.raises(ValueError, match="temperature must be greater than zero"):
+        get_fractions(8, [1, 2], 0.0, n_e=1e8)
+    # the cold gas returns before the root find, which is the other place that checks n_elem
+    for bad in (0.0, -1.0, math.nan, math.inf):
+        with pytest.raises(ValueError, match="n_elem must be greater than zero"):
+            get_fractions(8, [1, 2], 100.0, n_elem=bad)
+
+
+def at_get_lte_partfunc(adata: pl.DataFrame, Z: int, ion_stage: int, temperature: float) -> float:
+    # the LTE partition function of one ion straight from the level data of artistools
+    ion = adata.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
+    return at.transitions.get_lte_partfunc(ion["levels"].item(), temperature)
+
+
+def test_mixed_fixed_and_balanced_elements() -> None:
+    # fixed ions and two balanced elements in one solver
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_ionisation(26, 2, n_ion=1e8)
+        sf.add_ionisation(26, 3, n_ion=2e8)
+        sf.set_temperature(12000.0)
+        sf.set_atomic_data(use_collstrengths=False)
+        # the oxygen chain runs to O V, so its top stage does not leak at this deposition rate
+        sf.add_element(8, 1e9, recomb_ratecoeffs={**OXYGEN_ALPHAS, 5: 3e-11})
+        sf.add_element(2, 1e9, recomb_ratecoeffs=HELIUM_ALPHAS)
+        sf.solve(deposition_ev_per_s_per_cm3=1e10)
+
+        n_e = sf.get_n_e()
+        charge = (
+            1e8 + 2 * 2e8 + sum((ion_stage - 1) * n_ion for (Z, ion_stage), n_ion in sf.ionpopdict.items() if Z != 26)
+        )
+        assert math.isclose(n_e, charge, rel_tol=1e-12)
+        n_oxygen_stages = sum(n_ion for (Z, ion_stage), n_ion in sf.ionpopdict.items() if Z == 8)
+        assert math.isclose(n_oxygen_stages, 1e9, rel_tol=1e-12)
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-4)
+        assert sf.ionpopdict[(26, 2)] == 1e8
+        assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.02)
+
+
+def test_charge_neutral_n_e_without_an_override() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+        fractions = sf.get_ion_fractions(2)
+        assert set(fractions) == {1, 2, 3}
+        assert math.isclose(sum(fractions.values()), 1.0, rel_tol=1e-12)
+        # the populations of the stages sum to n_elem only to rounding, so the fraction of a stage
+        # matches its population divided by n_elem to the same accuracy and not bit for bit
+        assert math.isclose(fractions[2], sf.ionpopdict[(2, 2)] / 1e8, rel_tol=1e-12)
+
+
+def test_override_n_e_with_balance() -> None:
+    # the caller gives the free electron density, so the balance holds at that density and the
+    # populations do not have to be neutral with it
+    n_e_given = 3e8
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        sf.override_n_e(n_e_given)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, balance_tol=1e-8)
+
+        assert sf.get_n_e() == n_e_given
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=1e-7)
+        assert math.isclose(sum(sf.get_ion_fractions(2).values()), 1.0, rel_tol=1e-12)
+        assert math.isclose(sum(sf.ionpopdict.values()), 1e8, rel_tol=1e-12)
+        # the given density is more than the ion charges give, so the gas is not neutral by itself
+        assert sf.calculate_free_electron_density() < n_e_given
+
+        # a higher free electron density recombines the ions faster, so the gas is less ionised
+        fractions_high = sf.get_ion_fractions(2)
+        sf.override_n_e(1e7)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, balance_tol=1e-8)
+        assert sf.get_n_e() == 1e7
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=1e-7)
+        assert sf.get_ion_fractions(2)[1] < fractions_high[1]
+
+        # None takes the free electron density from the ion charges again
+        sf.override_n_e(None)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+
+
+def test_override_n_e_solve_argument_is_deprecated() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        with pytest.warns(DeprecationWarning, match="override_n_e"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e6)
+        assert sf.get_n_e() == 1e6
+
+        # the deprecated argument applies to one call
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert math.isclose(sf.get_n_e(), sf.calculate_free_electron_density(), rel_tol=1e-12)
+
+        # two deprecated calls in a row still take back the density of the method
+        sf.override_n_e(2.5e6)
+        with pytest.warns(DeprecationWarning, match="override_n_e"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=1e7)
+        with pytest.warns(DeprecationWarning, match="override_n_e"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, override_n_e=2e7)
+        assert sf.get_n_e() == 2e7
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_n_e() == 2.5e6
+
+        # but the method holds until it is cleared
+        sf.override_n_e(1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=2e8)
+        assert sf.get_n_e() == 1e6
+
+        for badvalue in (0.0, -1.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="override_n_e must be greater than zero and finite"):
+                sf.override_n_e(badvalue)
+
+
+def test_override_n_e_discards_the_solution() -> None:
+    # the solution used the previous free electron density, so the getters need a new solve()
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_frac_heating() > 0.0
+
+        sf.override_n_e(1e6)
+        with pytest.raises(RuntimeError, match=r"override_n_e\(\).*call solve\(\) again"):
+            sf.get_frac_heating()
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.get_n_e() == 1e6
+
+
+def test_recomb_ratecoeff_out_of_range_warns() -> None:
+    # a coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1, which is the usual
+    # unit error. The value is accepted, because the balance takes any positive value.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        with pytest.warns(UserWarning, match="outside the range"):
+            sf.add_element(2, 1e8, recomb_ratecoeffs={2: 4e-19, 3: 2e-18})
+        assert sf.ionpopdict[(2, 1)] > 0.0
+
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf,
+        pytest.warns(UserWarning, match="ion_stage 3 is 1.000e-07"),
+    ):
+        sf.add_element(2, 1e8, recomb_ratecoeffs={2: 4e-13, 3: 1e-7})
+
+    # the plausible values of the other tests are silent, and a rejected call warns about nothing
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf, warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        with pytest.raises(ValueError, match="must be greater than zero"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-30, 3: -1.0})
+
+
+def test_heating_only_approximation_with_balance() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300, heating_only_approximation=True) as sf:
+        sf.set_temperature(3000)
+        sf.set_atomic_data(use_collstrengths=False)
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        sf.add_ion_excitation(2, 1, n_ion=None)
+        assert not sf.sfmatrix.any()
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert not sf.sfmatrix.any()
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-4)
+
+
+def test_zero_population_stage_has_a_rate_coefficient() -> None:
+    # a stage that the balance leaves empty still has a positive ionisation rate coefficient
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(8, ion_densities={1: 1e10, 2: 1e8, 3: 0.0, 4: 0.0})
+        # a zero-density stage gets no channel from add_element(), so add the channels of both
+        for ion_stage in (3, 4):
+            sf.add_ionisation(8, ion_stage, None)
+        # a fixed ionised ion gives the free electrons
+        sf.add_ionisation(26, 2, n_ion=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert sf.ionpopdict[(8, 2)] > 0.0
+        assert sf.ionpopdict[(8, 3)] == 0.0
+        assert sf.ionpopdict[(8, 4)] == 0.0
+        assert sf.get_ionisation_ratecoeff(8, 3) > 0.0
+        assert sf.get_ionisation_ratecoeff(8, 4) > 0.0
+        # the effective potential follows from the rate coefficient, so it is finite for an empty stage too
+        assert math.isclose(
+            sf.get_eff_ionpot(8, 4), 1e8 / sf.get_n_ion_tot() / sf.get_ionisation_ratecoeff(8, 4), rel_tol=1e-12
+        )
+
+
+def test_balance_not_converged(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        monkeypatch.setattr(pynonthermal.spencerfano, "BALANCE_MAXITER", 1)
+        with pytest.raises(RuntimeError, match="did not converge in 1 iteration"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        # the solver is not marked as solved after a failed balance
+        with pytest.raises(RuntimeError, match="must be solved first"):
+            sf.get_frac_heating()
+        with pytest.raises(ValueError, match="balance_tol"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8, balance_tol=0.0)
+
+
+def test_element_excitation() -> None:
+    # add_element() with excitation=True adds the excitations of every stage with level data
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_element,
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_stages,
+    ):
+        for sf in (sf_element, sf_stages):
+            sf.set_temperature(5000)
+            sf.set_atomic_data(use_collstrengths=False)
+        sf_element.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS, excitation=True)
+        sf_stages.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        # He III is a bare nucleus without level data, so only He I and He II get excitations
+        for ion_stage in (1, 2):
+            sf_stages.add_ion_excitation(2, ion_stage, n_ion=None)
+        assert (2, 3) not in sf_element.excitationlists
+        assert sf_element.excitationlists.keys() == sf_stages.excitationlists.keys()
+        for key, transitions in sf_element.excitationlists.items():
+            assert transitions.keys() == sf_stages.excitationlists[key].keys()
+        assert np.array_equal(sf_element.sfmatrix, sf_stages.sfmatrix)
+
+        # an ion without a registered population needs n_ion
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf_element.add_ion_excitation(8, 1, None)
+        # an element without any level data cannot get excitations
+        with pytest.raises(ValueError, match="No excitation data for any ion stage 1-2 of Z=56"):
+            sf_element.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12}, excitation=True)
+
+
+def test_set_temperature() -> None:
+    # the solver has one temperature, set by set_temperature() before the methods that need it
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        assert sf.temperature is None
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        # without a temperature, the methods that need one say which call to make
+        with pytest.raises(ValueError, match="Call set_temperature"):
+            sf.add_ion_excitation(2, 1, n_ion=None)
+        with pytest.raises(ValueError, match="Call set_temperature"):
+            sf.add_element(8, 1e10, ion_fractions={1: 0.5, 2: 0.5}, excitation=True)
+        assert not sf.excitationlists
+        assert (8, 1) not in sf.ionpopdict
+
+        for bad in (0.0, -100.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="temperature must be greater than zero"):
+                sf.set_temperature(bad)
+        assert sf.temperature is None
+
+        sf.set_temperature(4000)
+        sf.set_atomic_data(use_collstrengths=False)
+        assert sf.temperature == 4000
+        # the same value again is fine, a different one is not
+        sf.set_temperature(4000.0)
+        with pytest.raises(ValueError, match="the solver has one temperature"):
+            sf.set_temperature(5000)
+        assert sf.temperature == 4000
+
+        for ion_stage in (1, 2):
+            sf.add_ion_excitation(2, ion_stage, None)
+        sf.add_element(8, 1e10, ion_fractions={1: 0.5, 2: 0.5}, excitation=True)
+        assert (8, 1) in sf.excitationlists
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        with pytest.raises(RuntimeError, match="set the temperature"):
+            sf.set_temperature(4000)
+        with pytest.raises(RuntimeError, match="set the atomic data"):
+            sf.set_atomic_data(use_collstrengths=True)
+
+
+def test_balanced_element_input_validation() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.set_temperature(5000.0)
+        sf.set_atomic_data(use_collstrengths=False)
+        with pytest.raises(ValueError, match="at least one recombination"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={})
+        # a sequence of rate coefficients would otherwise be read as ion stages
+        bad_ratecoeffs: t.Any = [3e-13, 3e-12]
+        with pytest.raises(TypeError, match="must be a mapping"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs=bad_ratecoeffs)
+        float_keyed_ratecoeffs: t.Any = {2.0: 3e-13}
+        with pytest.raises(TypeError, match="must be ion stages"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs=float_keyed_ratecoeffs)
+        with pytest.raises(ValueError, match="contiguous"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-12, 4: 1e-12})
+        with pytest.raises(ValueError, match="between 1 and 9"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={10: 1e-12})
+        # a key of 1 means that the caller keyed the coefficients by the stage that ionises
+        with pytest.raises(ValueError, match="Each key is the ion stage that recombines"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={1: 1e-12})
+        for bad in (0.0, -1e-12, math.nan, math.inf):
+            with pytest.raises(ValueError, match="greater than zero"):
+                sf.add_element(8, 1e10, recomb_ratecoeffs={2: bad})
+        for bad in (0.0, -1.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="n_elem"):
+                sf.add_element(8, bad, recomb_ratecoeffs={2: 1e-12})
+        with pytest.raises(ValueError, match="Z must be at least 1"):
+            sf.add_element(0, 1e10, recomb_ratecoeffs={2: 1e-12})
+
+        # every rejected call leaves the solver unchanged
+        assert not sf.ionpopdict
+        assert not sf._balanced_elements
+        assert not sf.sfmatrix.any()
+
+        # a balanced element cannot overlap with fixed ions or with a second balanced element
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        with pytest.raises(ValueError, match="already has ions"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-12})
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        with pytest.raises(ValueError, match="already has ions"):
+            sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        with pytest.raises(ValueError, match="come from the ionisation balance"):
+            sf.add_ionisation(2, 1, n_ion=1e8)
+        with pytest.raises(ValueError, match="come from the ionisation balance"):
+            sf.add_ionisation_channel(2, 1, 1e8, 24.6, np.where(sf.engrid > 24.6, 1e-17, 0.0))
+        with pytest.raises(ValueError, match="come from the ionisation balance"):
+            sf.add_excitation(2, 1, 1e8, np.where(sf.engrid > 21.0, 1e-17, 0.0), 21.0)
+        with pytest.raises(ValueError, match="come from the ionisation balance"):
+            sf.add_ion_excitation(2, 1, n_ion=1e8)
+
+        # n_ion=None needs a balanced ion
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf.add_ion_excitation(8, 1, n_ion=None)
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf.add_ion_excitation(26, 2)
+
+        # the excitations of a balanced ion can be added once
+        sf.add_ion_excitation(2, 1, n_ion=None)
+        with pytest.raises(ValueError, match="already added"):
+            sf.add_ion_excitation(2, 1, n_ion=None)
+        assert len(sf.excitationlists[(2, 1)]) > 0
+
+
+def test_charge_neutral_n_e_general_model() -> None:
+    # the general root find takes any charge density that does not increase with n_e. Here a model
+    # element with n_elem ions whose ionised fraction is 1 / (1 + n_e / n_0): the charge-neutral n_e
+    # solves n_e (1 + n_e / n_0) = n_e_fixed (1 + n_e / n_0) + n_elem, a quadratic.
+    n_elem, n_0 = 1e10, 3e8
+    for n_e_fixed in (0.0, 2e8):
+        n_e = pynonthermal.ionbalance.solve_charge_neutral_n_e(
+            n_e_fixed, lambda n_e: n_elem / (1.0 + n_e / n_0), 0.0, n_elem
+        )
+        a, b, c = 1.0 / n_0, 1.0 - n_e_fixed / n_0, -(n_e_fixed + n_elem)
+        assert math.isclose(n_e, (-b + math.sqrt(b * b - 4 * a * c)) / (2 * a), rel_tol=1e-10)
+
+    # with an exact positive lower bound, a charge density at that bound is the solution
+    assert pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, lambda _n_e: 7.0, 7.0, 7.0) == 7.0
+    with pytest.raises(ValueError, match="charge_density_min <= charge_density_max"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, lambda _n_e: 1.0, 2.0, 1.0)
+    with pytest.raises(ValueError, match="free electron density is zero"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, lambda _n_e: 0.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="n_e_fixed"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e(-1.0, lambda _n_e: 1.0, 0.0, 1.0)
+
+
+def test_deprecated_excitation_name() -> None:
+    # the old name still works and warns
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_old,
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_new,
+    ):
+        for sf in (sf_old, sf_new):
+            sf.set_temperature(3000)
+            sf.set_atomic_data(use_collstrengths=False)
+            sf.add_ionisation(2, 2, n_ion=1e8)
+        with pytest.warns(DeprecationWarning, match="add_ion_excitation"):
+            sf_old.add_ion_ltepopexcitation(2, 2, n_ion=1e8, use_collstrengths=False)
+        sf_new.add_ion_excitation(2, 2, n_ion=1e8)
+        assert sf_old.excitationlists[(2, 2)].keys() == sf_new.excitationlists[(2, 2)].keys()
+        assert np.array_equal(sf_old.sfmatrix, sf_new.sfmatrix)
+
+
+def test_add_element_models_match_the_explicit_methods() -> None:
+    # add_element() with each population model gives the same solver as the explicit calls
+    def new_solver() -> pynonthermal.SpencerFanoSolver:
+        sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+        sf.set_temperature(12000.0)
+        sf.set_atomic_data(use_collstrengths=False)
+        return sf
+
+    with new_solver() as sf_model, new_solver() as sf_explicit:
+        sf_model.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS, excitation=True)
+        sf_model.add_element(8, ion_densities={1: 0.9e9, 2: 0.1e9}, excitation=True)
+        sf_model.add_element(26, 1e7, ion_fractions={2: 0.3, 3: 0.7}, excitation=True)
+
+        sf_explicit.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        for ion_stage in (1, 2):
+            sf_explicit.add_ion_excitation(2, ion_stage, None)
+        sf_explicit.add_ionisation(8, 1, 0.9e9)
+        sf_explicit.add_ionisation(8, 2, 0.1e9)
+        for ion_stage in (1, 2):
+            sf_explicit.add_ion_excitation(8, ion_stage, None)
+        sf_explicit.add_ionisation(26, 2, 0.3e7)
+        sf_explicit.add_ionisation(26, 3, 0.7e7)
+        sf_explicit.add_ion_excitation(26, 2, n_ion=0.3e7)
+        sf_explicit.add_ion_excitation(26, 3, n_ion=0.7e7)
+
+        assert sf_model.ionpopdict == sf_explicit.ionpopdict
+        assert sf_model.excitationlists.keys() == sf_explicit.excitationlists.keys()
+        assert np.array_equal(sf_model.sfmatrix, sf_explicit.sfmatrix)
+        sf_model.solve(deposition_ev_per_s_per_cm3=1e9)
+        sf_explicit.solve(deposition_ev_per_s_per_cm3=1e9)
+        assert np.array_equal(sf_model.yvec, sf_explicit.yvec)
+        assert sf_model.ionpopdict == sf_explicit.ionpopdict
+
+    # the bare nucleus of ion_fractions gets a population but no channel, and excitation=False adds none
+    with new_solver() as sf:
+        sf.add_element(2, 1e8, ion_fractions={1: 0.5, 2: 0.3, 3: 0.2})
+        assert sf.ionpopdict == {(2, 1): 0.5e8, (2, 2): 0.3e8, (2, 3): 0.2e8}
+        assert (2, 3) not in sf._ionisation_channels
+        assert not sf.excitationlists
+        assert math.isclose(sf.get_n_e(), 0.3e8 + 2 * 0.2e8, rel_tol=1e-12)
+
+
+def test_add_element_validation() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        with pytest.raises(ValueError, match="at least one ion fraction"):
+            sf.add_element(8, 1e10, ion_fractions={})
+        with pytest.raises(ValueError, match="must sum to one"):
+            sf.add_element(8, 1e10, ion_fractions={1: 0.5, 2: 0.4})
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            sf.add_element(8, 1e10, ion_fractions={1: 1.5, 2: -0.5})
+        with pytest.raises(ValueError, match="between 1 and 9"):
+            sf.add_element(8, 1e10, ion_fractions={10: 1.0})
+        with pytest.raises(ValueError, match="n_elem"):
+            sf.add_element(8, 0.0, ion_fractions={1: 1.0})
+        assert not sf.ionpopdict
+        assert not sf.sfmatrix.any()
+
+        sf.add_element(8, 1e10, ion_fractions={1: 0.9, 2: 0.1})
+        with pytest.raises(ValueError, match="already has ions"):
+            sf.add_element(8, 1e10, ion_fractions={1: 1.0})
+        with pytest.raises(ValueError, match="already has ions"):
+            sf.add_element(8, 1e10, recomb_ratecoeffs={2: 1e-12})
+        # the excitations need the temperature
+        with pytest.raises(ValueError, match="Call set_temperature"):
+            sf.add_element(26, 1e8, ion_fractions={2: 1.0}, excitation=True)
+
+
+def test_custom_channels_of_a_balanced_ion() -> None:
+    # channels and excitations added with n_ion=None / levelpopfrac take part in the balance, and the
+    # converged solver matches a fixed solver with the same channels at the converged populations
+    def custom_channel_xs(sf: pynonthermal.SpencerFanoSolver) -> npt.NDArray[np.float64]:
+        # a made-up He II channel: zero below the potential and constant above it
+        return np.where(sf.engrid > 60.0, 2e-17, 0.0)
+
+    def custom_excitation_xs(sf: pynonthermal.SpencerFanoSolver) -> npt.NDArray[np.float64]:
+        return np.where(sf.engrid > 21.0, 1e-17, 0.0)
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.set_temperature(5000)
+        sf.set_atomic_data(use_collstrengths=False)
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS, builtin_channels=False)
+        assert not sf._ionisation_channels
+        # the built-in shells of He I, a custom channel for He II, and a custom He I excitation
+        sf.add_ionisation(2, 1, None)
+        sf.add_ionisation_channel(2, 2, None, 60.0, custom_channel_xs(sf), channelkey="custom")
+        sf.add_excitation(2, 1, None, custom_excitation_xs(sf), 21.0, transitionkey="custom", levelpopfrac=0.25)
+        assert [channel.key for channel in sf._ionisation_channels[(2, 2)]] == ["custom"]
+        sf.solve(deposition_ev_per_s_per_cm3=1e8, balance_tol=1e-6)
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-6)
+        assert sf.excitationlists[(2, 1)]["custom"].levelnumberdensity == 0.25 * sf.ionpopdict[(2, 1)]
+
+        sf_fixed = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+        sf_fixed.add_ionisation(2, 1, sf.ionpopdict[(2, 1)])
+        sf_fixed.add_ionisation_channel(2, 2, sf.ionpopdict[(2, 2)], 60.0, custom_channel_xs(sf), channelkey="custom")
+        sf_fixed._register_ion_population(2, 3, sf.ionpopdict[(2, 3)])
+        sf_fixed.add_excitation(2, 1, 0.25 * sf.ionpopdict[(2, 1)], custom_excitation_xs(sf), 21.0, "custom")
+        sf_fixed.solve(deposition_ev_per_s_per_cm3=1e8)
+        assert np.allclose(sf.sfmatrix, sf_fixed.sfmatrix, rtol=1e-9, atol=1e-12 * np.abs(sf_fixed.sfmatrix).max())
+        assert np.allclose(sf.yvec, sf_fixed.yvec, rtol=1e-9)
+
+    # a Fixed element without the built-in channels gets only populations, and custom channels join with
+    # the same n_ion
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, ion_fractions={1: 0.5, 2: 0.5}, builtin_channels=False)
+        assert sf.ionpopdict == {(2, 1): 0.5e8, (2, 2): 0.5e8}
+        assert not sf._ionisation_channels
+        sf.add_ionisation_channel(2, 2, 0.5e8, 60.0, custom_channel_xs(sf))
+        with pytest.raises(ValueError, match="different populations"):
+            sf.add_ionisation_channel(2, 1, 0.4e8, 25.0, np.where(sf.engrid > 25.0, 1e-17, 0.0))
+
+
+def test_balance_stage_without_channels_is_rejected() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS, builtin_channels=False)
+        sf.add_ionisation(2, 1, None)
+        with pytest.raises(ValueError, match="ion_stage 2 of the ionisation balance has no ionisation channel"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        # the built-in shells can still be added to a balanced ion, once
+        sf.add_ionisation(2, 2, None)
+        with pytest.raises(ValueError, match="already added"):
+            sf.add_ionisation(2, 2, None)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        check_balance_identity(sf, 2, HELIUM_ALPHAS, tol=2e-4)
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        # None needs a balanced ion, and a balanced ion needs None or levelpopfrac
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf.add_ionisation(8, 2, None)
+        with pytest.raises(ValueError, match="n_ion is required"):
+            sf.add_ionisation_channel(8, 2, None, 35.1, np.where(sf.engrid > 35.1, 1e-17, 0.0))
+        with pytest.raises(ValueError, match="levelnumberdensity is required"):
+            sf.add_excitation(8, 2, None, np.where(sf.engrid > 20.0, 1e-17, 0.0), 20.0, levelpopfrac=0.5)
+        sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
+        xs_vec = np.where(sf.engrid > 21.0, 1e-17, 0.0)
+        with pytest.raises(ValueError, match="levelpopfrac must be between 0 and 1"):
+            sf.add_excitation(2, 1, None, xs_vec, 21.0)
+        with pytest.raises(ValueError, match="levelpopfrac must be between 0 and 1"):
+            sf.add_excitation(2, 1, None, xs_vec, 21.0, levelpopfrac=1.5)
+        with pytest.raises(ValueError, match="not both"):
+            sf.add_excitation(2, 1, 1e7, xs_vec, 21.0, levelpopfrac=0.5)
+        assert not sf.excitationlists
+
+
+def test_deprecated_excitation_name_keeps_its_old_parameters() -> None:
+    # the deprecated method keeps the old default temperature of 3000 K when the solver has none,
+    # and an explicit None for a level cutoff disables the cutoff, as the old signature documented
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_old,
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_new,
+    ):
+        sf_old.add_ionisation(8, 2, n_ion=1e8)
+        with pytest.warns(DeprecationWarning, match="add_ion_ltepopexcitation"):
+            sf_old.add_ion_ltepopexcitation(8, 2, n_ion=1e8, maxnlevelslower=None, maxnlevelsupper=None)
+        assert sf_old.temperature == 3000
+        assert sf_old._maxnlevelslower is None
+        assert sf_old._maxnlevelsupper is None
+
+        sf_new.set_temperature(3000)
+        sf_new.set_atomic_data(maxnlevelslower=None, maxnlevelsupper=None)
+        sf_new.add_ionisation(8, 2, n_ion=1e8)
+        sf_new.add_ion_excitation(8, 2, n_ion=1e8)
+        assert sf_old.excitationlists[(8, 2)].keys() == sf_new.excitationlists[(8, 2)].keys()
+        # without the cutoffs there are transitions from above the fifth level
+        assert any(lower >= 5 for lower, _ in sf_new.excitationlists[(8, 2)])
+        assert np.array_equal(sf_old.sfmatrix, sf_new.sfmatrix)
+
+
+def test_add_element_is_atomic() -> None:
+    # every step of add_element() is checked before the first one writes, so a rejected call leaves
+    # the solver unchanged and can be repeated
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.set_temperature(5000)
+        sf.add_ionisation(8, 2, n_ion=1e8)
+        matrix_before = sf.sfmatrix.copy()
+        n_e_before = sf.get_n_e()
+
+        # Ba has no level data, so the excitations of a balanced element cannot be built
+        with pytest.raises(ValueError, match="No excitation data"):
+            sf.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12}, excitation=True)
+        assert 56 not in sf._balanced_elements
+        assert sf.ionpopdict == {(8, 2): 1e8}
+        assert not sf.excitationlists
+        assert np.array_equal(sf.sfmatrix, matrix_before)
+        assert sf.get_n_e() == n_e_before
+
+        # a Fixed element whose second stage has a shell below emin_ev fails after the first stage
+        with pynonthermal.SpencerFanoSolver(emin_ev=12.0, emax_ev=3000, npts=300) as sf_emin:
+            with pytest.raises(ValueError, match="below emin_ev"):
+                sf_emin.add_element(26, 1e8, ion_fractions={2: 0.5, 1: 0.5})
+            assert not sf_emin.ionpopdict
+            assert not sf_emin._ionisation_channels
+            assert not sf_emin.sfmatrix.any()
+
+        # the repeated call with a usable model succeeds
+        sf.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12})
+        assert 56 in sf._balanced_elements
+
+
+def test_saha_ion_fractions_of_a_cold_gas() -> None:
+    # below about 200 K every Boltzmann factor of oxygen underflows to zero, so the gas is entirely
+    # neutral and its free electron density is zero. The charge-neutral mode has no root to find
+    # there, and it must give the fractions instead of raising.
+    assert pynonthermal.ionbalance.get_saha_factor(100.0, 13.618, 9.0, 4.0) == 0.0
+    fractions = pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], 100.0, n_elem=1e10)
+    assert fractions == {1: 1.0, 2: 0.0, 3: 0.0}
+    # the same gas at a given free electron density already gave these fractions
+    assert pynonthermal.ionbalance.get_saha_ion_fractions(8, [1, 2, 3], 100.0, n_e=1e6) == fractions

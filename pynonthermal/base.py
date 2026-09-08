@@ -82,8 +82,6 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # Fransson 1992: their equation 1 above 14 eV and equation 2 below it, with the plasma
     # energy zeta_e of their equation 3 in the high-energy Coulomb logarithm
     # returns a positive number
-
-    # return math.log(energy_ev) / energy_ev
     if n_e_cgs <= 0.0:
         # the plasma frequency would be zero, making the Coulomb logarithm infinite
         msg = f"the free-electron loss function requires a positive free electron density but n_e is {n_e_cgs}"
@@ -113,6 +111,8 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # Both branches lose their meaning once the plasma is dense enough that the Coulomb logarithm
     # reaches zero, which would put a non-positive loss rate on the Spencer-Fano matrix diagonal. The
     # low-energy branch fails first, at n_e ~ 7e19 for a 1 eV electron against ~6e23 for the other.
+    # The limit falls as the cube of the energy, so it is n_e ~ 7e16 at the 0.1 eV bottom of the
+    # default grid of SpencerFanoSolver.
     if coulomblog_arg <= 1.0:
         msg = (
             f"the free-electron loss function is not valid at {energy_ev} eV for n_e = {n_e_cgs} cm^-3:"
