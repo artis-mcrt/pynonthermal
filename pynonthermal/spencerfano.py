@@ -1646,7 +1646,7 @@ class SpencerFanoSolver:
         self._n_e = None
 
     def calculate_free_electron_density(self) -> float:
-        # number density of free electrons [cm^-3]
+        """Get the free electron density in cm^-3 from the ion charges, ignoring override_n_e()."""
         n_e = 0.0
         for Z, ion_stage in self.ionpopdict:
             charge = ion_stage - 1
@@ -1687,6 +1687,10 @@ class SpencerFanoSolver:
         self._solved = False
 
     def get_n_e(self) -> float:
+        """Get the free (thermal) electron density in cm^-3.
+
+        It is the sum of the ion charges of ionpopdict, or the density that override_n_e() gives.
+        """
         if self._n_e_override is not None:
             return self._n_e_override
 
@@ -1719,7 +1723,7 @@ class SpencerFanoSolver:
         return {ion_stage: n_ion / n_elem if n_elem > 0.0 else 0.0 for ion_stage, n_ion in sorted(populations.items())}
 
     def get_n_ion_tot(self) -> float:
-        # total number density of all nuclei [cm^-3]
+        """Get the total number density of the nuclei of every ion that the solver holds, in cm^-3."""
         n_ion_tot = 0.0
         for Z, ion_stage in self.ionpopdict:
             n_ion_tot += self.ionpopdict[(Z, ion_stage)]
@@ -2393,6 +2397,7 @@ class SpencerFanoSolver:
         return float(np.sum(self.yvec / arr_velocity) * self.deltaen)
 
     def get_frac_heating(self) -> float:
+        """Get the share of the deposited energy that heats the thermal electrons (KF92 equation 8)."""
         self._require_solved()
         if self._frac_heating is None:
             return self.calculate_frac_heating()
@@ -2400,6 +2405,7 @@ class SpencerFanoSolver:
         return self._frac_heating
 
     def get_frac_excitation_tot(self) -> float:
+        """Get the share of the deposited energy that goes to excitation, over every ion."""
         self._require_solved()
         if not self._analysed:
             self.analyse_ntspectrum()
@@ -2407,6 +2413,7 @@ class SpencerFanoSolver:
         return self._frac_excitation_tot
 
     def get_frac_ionisation_tot(self) -> float:
+        """Get the share of the deposited energy that goes to ionisation, over every ion."""
         self._require_solved()
         if not self._analysed:
             self.analyse_ntspectrum()
@@ -2429,6 +2436,7 @@ class SpencerFanoSolver:
         return results[(Z, ion_stage)]
 
     def get_frac_ionisation_ion(self, Z: int, ion_stage: int) -> float:
+        """Get one ion's share of the ionisation fraction (Kozma & Fransson 1992 equation 10)."""
         self._require_solved()
         if not self._analysed:
             self.analyse_ntspectrum()
@@ -2497,6 +2505,11 @@ class SpencerFanoSolver:
         return float(np.dot(trans.xs_vec, self.yvec) * self.deltaen)
 
     def get_frac_sum(self) -> float:
+        """Get the sum of the heating, ionisation, and excitation fractions.
+
+        It is one when the energy grid resolves every ionisation and excitation of the plasma, so it
+        is the conservation check of the solution. The solver warns when it is far from one.
+        """
         return self.get_frac_heating() + self.get_frac_excitation_tot() + self.get_frac_ionisation_tot()
 
     def get_d_etaheating_by_d_en_vec(self) -> list[float]:

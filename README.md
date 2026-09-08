@@ -200,6 +200,10 @@ Multiply `get_ionisation_ratecoeff()` by the ion number density for ionisations 
 For the excitations of `add_element(excitation=True)` and of `add_ion_excitation()` the key is
 `(lower_level_index, upper_level_index)`, for example `(0, 8)`.
 
+Each value of `excitationlists[(Z, ion_stage)]` is a `pynonthermal.ExcitationTransition`, which holds
+the lower level population `levelnumberdensity` in cm^-3, the cross sections `xs_vec` in cm^2 on
+`sf.engrid`, and the transition energy `epsilon_trans_ev` in eV.
+
 The solution itself is `sf.yvec` over `sf.engrid`, both read-only arrays. With `verbose=True` the
 solver prints the per-ion and per-shell breakdown as it analyses the solution.
 
@@ -351,7 +355,8 @@ Passing `use_ar1985=True` to the solver selects the original Arnaud and Rothenfl
 
 ## Advanced usage: custom cross sections
 
-Give a cross section as a function of an array of energies in eV that returns cross sections in cm^2.
+Give a cross section as a function of an array of energies in eV that returns cross sections in cm^2
+(the type `pynonthermal.CrossSectionFunc`).
 The solver calls it on its own grid, and between the grid points where it needs to, so the plasma does
 not depend on the energy grid of the solution. An array at every energy of `sf.engrid` is accepted too,
 but then the plasma is tied to that grid and the solver can only interpolate between the points.
