@@ -24,6 +24,8 @@ import artistools as at
 import polars as pl
 
 import pynonthermal
+from pynonthermal.base import _check_ion
+from pynonthermal.base import _is_integer
 from pynonthermal.constants import EV
 from pynonthermal.constants import H
 from pynonthermal.constants import K_B
@@ -274,15 +276,17 @@ def get_saha_ion_fractions(
     if n_elem is not None and not 0.0 < n_elem < math.inf:
         msg = f"n_elem must be greater than zero and finite but is {n_elem}"
         raise ValueError(msg)
-    if Z < 1:
-        msg = f"Z must be at least 1 but is {Z}"
+    if not _is_integer(Z) or Z < 1:
+        msg = f"Z must be an integer of at least 1 but is {Z!r}"
         raise ValueError(msg)
+    Z = int(Z)
     # the chained comparison also rejects nan. get_saha_factor() checks it too, but the LTE
     # partition function of a bad temperature is nan, whose message names the wrong fault.
     if not 0.0 < temperature < math.inf:
         msg = f"temperature must be greater than zero and finite but is {temperature}"
         raise ValueError(msg)
-    stages = tuple(int(ion_stage) for ion_stage in ion_stages)
+    # every stage is checked as an ion identity, so a non-integer stage raises and is not truncated
+    stages = tuple(_check_ion(Z, ion_stage)[1] for ion_stage in ion_stages)
     if len(stages) < 2 or list(stages) != list(range(stages[0], stages[-1] + 1)):
         msg = f"the ion stages of Z={Z} must be at least two contiguous stages but are {list(stages)}"
         raise ValueError(msg)

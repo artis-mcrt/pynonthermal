@@ -15,6 +15,39 @@ from pynonthermal.constants import QE
 
 DATADIR = Path(__file__).absolute().parent / "data"
 
+# ion_stage is one more than the charge. A caller who uses the charge gives a stage of 0 for a
+# neutral atom, so the messages that reject a stage below 1 give this hint.
+ION_STAGE_HINT: str = "ion_stage is one more than the charge, so a neutral atom is ion_stage 1"
+
+
+def _is_integer(value: object) -> bool:
+    # a Python or numpy integer, but not a bool, which is an int in Python
+    return isinstance(value, (int, np.integer)) and not isinstance(value, bool)
+
+
+def _check_ion(Z: int, ion_stage: int, needs_electron: bool = False) -> tuple[int, int]:
+    """Check an ion identity, and get Z and ion_stage as Python integers.
+
+    ion_stage is one more than the charge, so it runs from 1 (neutral) to Z + 1 (the bare
+    nucleus). With needs_electron, the bare nucleus is rejected. An ionisation or an excitation
+    needs a bound electron.
+    """
+    if not _is_integer(Z) or Z < 1:
+        msg = f"Z must be an integer of at least 1 but is {Z!r}"
+        raise ValueError(msg)
+    Z = int(Z)
+    if not _is_integer(ion_stage) or not 1 <= ion_stage <= Z + 1:
+        msg = f"ion_stage of Z={Z} must be an integer between 1 and {Z + 1} but is {ion_stage!r}"
+        if _is_integer(ion_stage) and ion_stage < 1:
+            msg = f"{msg}. {ION_STAGE_HINT}"
+        raise ValueError(msg)
+    ion_stage = int(ion_stage)
+    if needs_electron and ion_stage == Z + 1:
+        msg = f"Z={Z} ion_stage {ion_stage} is a bare nucleus, which has no bound electron"
+        raise ValueError(msg)
+    return Z, ion_stage
+
+
 # A cross section sigma(E) [cm^2] at an array of electron energies [eV].
 # An IonisationChannel holds one of these, because calculate_N_e() evaluates an ionisation cross
 # section between the points of the solver energy grid. A channel built from an array on that grid
@@ -82,9 +115,13 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # Fransson 1992: their equation 1 above 14 eV and equation 2 below it, with the plasma
     # energy zeta_e of their equation 3 in the high-energy Coulomb logarithm
     # returns a positive number
-    if n_e_cgs <= 0.0:
+    # the chained comparisons also reject nan, for which every comparison is False
+    if not 0.0 < n_e_cgs < math.inf:
         # the plasma frequency would be zero, making the Coulomb logarithm infinite
-        msg = f"the free-electron loss function requires a positive free electron density but n_e is {n_e_cgs}"
+        msg = f"the free-electron loss function requires a positive finite free electron density but n_e is {n_e_cgs}"
+        raise ValueError(msg)
+    if not 0.0 < energy_ev < math.inf:
+        msg = f"the free-electron loss function requires a positive finite energy but energy_ev is {energy_ev}"
         raise ValueError(msg)
 
     n_e = n_e_cgs
@@ -148,9 +185,16 @@ def get_Zbar(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], 
 
 
 def _get_energyindex(en_ev: float, engrid: npt.NDArray[np.float64], round_up: bool) -> int:
-    # index of the energy bin holding en_ev, clamped into the grid at both ends
-    offset = (en_ev - float(engrid[0])) / (float(engrid[1]) - float(engrid[0]))
-    index = math.ceil(offset) if round_up else math.floor(offset)
+    # index of the energy bin holding en_ev, clamped into the grid at both ends. A binary search
+    # on the grid is exact at the grid points. A division by the grid spacing gave the next bin
+    # for most of them.
+    if math.isnan(en_ev):
+        msg = "the energy must not be nan"
+        raise ValueError(msg)
+    if round_up:
+        index = int(np.searchsorted(engrid, en_ev, side="left"))
+    else:
+        index = int(np.searchsorted(engrid, en_ev, side="right")) - 1
 
     return 0 if index < 0 else min(index, len(engrid) - 1)
 

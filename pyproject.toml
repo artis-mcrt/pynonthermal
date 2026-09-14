@@ -28,13 +28,13 @@ dependencies = [
 [dependency-groups]
 dev = [
     "prek>=0.2.25",
-    "pyrefly>=1.0.0",
+    "pyrefly>=1.3.0",
     "pytest>=9.0.2",
     "pytest-codspeed>=4.1.1",
     "pytest-cov>=2.10.1",
     "pytest-xdist[psutil]>=3.6.1",
-    "ruff>=0.16.1",
-    "ty>=0.0.65",
+    "ruff>=0.16.7",
+    "ty>=0.0.80",
 ]
 
 [project.urls]
@@ -108,7 +108,9 @@ unfixable = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"pynonthermal/tests/*" = ["SLF001"] # tests may use private members to compare against production inputs
+"pynonthermal/tests/*" = [
+    "SLF001",
+] # tests may use private members to compare against production inputs
 
 [tool.ruff.lint.isort]
 force-single-line = true

@@ -102,6 +102,8 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 - `heating_only_approximation`: leave the excitation and ionisation loss terms out of the matrix and solve
   with the heating loss alone. The rates still follow from that approximate solution, so the fractions do
   not sum to one.
+- `lotz_a_cm2_ev2`: the constant of the Lotz formula for the shells without a fitted cross section
+  (default `1.33e-14`, the Axelrod value; see [Cross-section datasets](#cross-section-datasets)).
 
 ### 2. Set the temperature and the atomic data
 
@@ -354,6 +356,8 @@ If internal level/transition data are used (for example, via `add_ion_excitation
 Ionization cross sections from H (Z=1) to Ni (Z=28) use the shell-resolved analytical fits compiled by [Arnaud and Rothenflug (1985, A&AS, 60, 425)](https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A/abstract), with updates to Fe from [Arnaud and Raymond (1992, ApJ, 398, 394)](https://ui.adsabs.harvard.edu/abs/1992ApJ...398..394A/abstract). For heavier elements (Z>28) and any other ions missing from the fit data, the approximation of [Axelrod (1980, PhD thesis, Eq. 3.38)](https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A/abstract) is used — the high-energy limit of the [Lotz (1967, Z. Phys., 206, 205)](https://doi.org/10.1007/BF01325928) formula with relativistic corrections — with subshell binding energies from [Lotz (1970, J. Opt. Soc. Am., 60, 206)](https://doi.org/10.1364/JOSA.60.000206).
 
 Passing `use_ar1985=True` to the solver selects the original Arnaud and Rothenflug (1985) compilation without the Fe updates, which can be useful for comparison with older published results.
+
+The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solver takes it as `lotz_a_cm2_ev2` (in cm^2 eV^2). The default of `1.33e-14` is the value of Axelrod (1980). Lotz (1967) gives `4.5e-14` for most shells, available as `pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967`. The fits of Arnaud and Rothenflug (1985) agree with the Lotz value at high energy. The default is therefore a factor of about 3 below both. The solver gives a `pynonthermal.LotzApproximationWarning` when it adds a Lotz channel, so that the ions that depend on this constant are visible. Filter on that class to silence the warning.
 
 ## Advanced usage: custom cross sections
 

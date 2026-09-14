@@ -739,13 +739,13 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "prek", specifier = ">=0.2.25" },
-    { name = "pyrefly", specifier = ">=1.0.0" },
+    { name = "pyrefly", specifier = ">=1.3.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-codspeed", specifier = ">=4.1.1" },
     { name = "pytest-cov", specifier = ">=2.10.1" },
     { name = "pytest-xdist", extras = ["psutil"], specifier = ">=3.6.1" },
-    { name = "ruff", specifier = ">=0.16.1" },
-    { name = "ty", specifier = ">=0.0.65" },
+    { name = "ruff", specifier = ">=0.16.7" },
+    { name = "ty", specifier = ">=0.0.80" },
 ]
 
 [[package]]

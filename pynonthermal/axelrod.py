@@ -15,6 +15,20 @@ from pynonthermal.constants import EV
 from pynonthermal.constants import ME
 from pynonthermal.constants import QE
 
+# The default constant A of the Lotz formula sigma = A q ln(E / P) / (E P) in cm^2 eV^2. The
+# relativistic form of Axelrod (1980, "Late time optical spectra from the Ni-56 model for type I
+# supernovae", PhD thesis, University of California, Santa Cruz,
+# https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A) gives this formula at low energy, and the
+# default is his value. Lotz (1967, "An empirical formula for the electron-impact ionization
+# cross-section", Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928) gives
+# a_i = 4.5e-14 for most shells in his table 1. The fits of Arnaud & Rothenflug (1985, "An
+# updated evaluation of recombination and ionization rates", Astronomy and Astrophysics
+# Supplement Series, 60, 425-457, https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A) agree
+# with the Lotz value at high energy. The default is therefore a factor of about 3 below both.
+# The solver takes the constant as lotz_a_cm2_ev2, and it warns when a Lotz channel is in use.
+LOTZ_A_CM2_EV2: float = 1.33e-14
+LOTZ_A_CM2_EV2_LOTZ1967: float = 4.5e-14
+
 
 @lru_cache
 def get_binding_energies() -> npt.NDArray[np.float64]:
@@ -129,22 +143,24 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
     return total
 
 
-def get_workfn_ev(atomic_number: int, ion_stage: int, ionpot_ev: float, Zbar: float) -> float:
+def get_workfn_ev(
+    atomic_number: int, ion_stage: int, ionpot_ev: float, Zbar: float, lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
+) -> float:
     # the Axelrod 1980 high-energy-limit approximation to the work per ion pair W, an estimate
     # of the effective ionisation potential without solving the Spencer-Fano equation:
     # 1/W = sigma / L with both taken in their high-energy limits and losses to the free
     # electrons neglected, which reduces to the shell-occupancy-over-binding-energy sum
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
-    Aconst = 1.33e-14 * EV * EV
-    oneoverW = Aconst * binding / Zbar / (2 * math.pi * pow(QE, 4))
+    oneoverW = lotz_a_cm2_ev2 * EV * EV * binding / Zbar / (2 * math.pi * pow(QE, 4))
 
     return (1 / oneoverW) / EV
 
 
 def get_lotz_xs_ionisation_vec(
-    shell: dict[str, int | float], arr_en_ev: npt.NDArray[np.float64]
+    shell: dict[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
-    # Axelrod 1980 Eq 3.38 evaluated at an array of energies [eV]
+    # Axelrod 1980 Eq 3.38 evaluated at an array of energies [eV], with the constant A of the Lotz
+    # formula lotz_a_cm2_ev2 [cm^2 eV^2]
 
     arr_en_erg = arr_en_ev * EV
 
@@ -160,7 +176,6 @@ def get_lotz_xs_ionisation_vec(
     electronsinshell = get_shell_occupancies(atomic_number, ion_stage)[shellindex]
 
     p = ionpot_ev * EV
-    Aconst = 1.33e-14 * EV * EV
 
     # WARNING: The Axelrod equation uses both ln() and log10(), but the log10() term is likely a typo and has been
     # corrected to ln(). Fortunately, at our typical 16 keV value of EMAX, 511 keV electrons are only mildly
@@ -170,6 +185,6 @@ def get_lotz_xs_ionisation_vec(
         part_sigma_shell = (
             electronsinshell / p * (np.log(betasq * ME * CLIGHT**2 / 2.0 / p) - np.log(1 - betasq) - betasq)
         )
-        xs = 2 * Aconst / betasq / ME / CLIGHT**2 * part_sigma_shell
+        xs = 2 * lotz_a_cm2_ev2 * EV * EV / betasq / ME / CLIGHT**2 * part_sigma_shell
 
     return np.where(valid & (part_sigma_shell > 0), xs, 0.0)

@@ -65,7 +65,7 @@ def test_zero_free_electron_density() -> None:
         assert sf.get_n_e() == 1e-4
 
     # the loss function itself also rejects a non-positive density
-    with pytest.raises(ValueError, match="positive free electron density"):
+    with pytest.raises(ValueError, match="positive finite free electron density"):
         pynonthermal.electronlossfunction(100.0, 0.0)
 
 
@@ -594,7 +594,10 @@ def _reference_excitation_fill(
     deltaen = sf.deltaen
     contribution = np.zeros((npts, npts))
     vec = levelnumberdensity * deltaen * xs_vec
-    xsstartindex = sf.get_energyindex_lteq(en_ev=epsilon_trans_ev)
+    # the threshold bin is the first bin whose energy reaches the transition energy, and no bin
+    # below it contributes, also not as the partial bin of a row
+    xsstartindex = sf.get_energyindex_gteq(en_ev=epsilon_trans_ev)
+    vec[:xsstartindex] = 0.0
     k = int(epsilon_trans_ev / deltaen)
     frac = epsilon_trans_ev / deltaen - k
     for i in range(npts):
@@ -625,10 +628,12 @@ def test_excitation_band_fill_matches_rowwise() -> None:
     ]
     for emin, emax, epsilon_trans_ev in cases:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin, emax_ev=emax, npts=npts) as sf:
-            # nonzero cross sections below threshold too: the caller is not required to zero them,
-            # and the partial-bin term is written for every row
+            # nonzero cross sections below threshold too: the solver zeroes them in the stored
+            # array and in the matrix, and the partial-bin term is written for every row
             xs_vec = rng.random(npts) * 1e-16
             sf.add_excitation(8, 2, levelnumberdensity=1e5, xs_vec=xs_vec, epsilon_trans_ev=epsilon_trans_ev)
+            stored = sf.excitationlists[(8, 2)][0].xs_vec
+            assert not stored[: sf.get_energyindex_gteq(en_ev=epsilon_trans_ev)].any()
             expected = _reference_excitation_fill(sf, 1e5, xs_vec, epsilon_trans_ev)
             assert sf.sfmatrix.tobytes() == expected.tobytes(), f"mismatch for {epsilon_trans_ev=}"
 
@@ -693,11 +698,14 @@ def test_ltepop_excitation_grouped_fill() -> None:
 def test_ionisation_fill_matches_masked_reference() -> None:
     # _add_ionisation_channel_to_matrix writes only each row's non-empty integral range, located by
     # forward-only cut pointers that evaluate the same comparisons the per-row np.where masks
-    # used. The resulting matrix must be bit-identical to the masked full-tail construction.
+    # used. The resulting matrix must agree with the masked full-tail construction to the rounding
+    # of the population factor, which the fill applies after the division by the arctan. The
+    # tolerance is relative to the largest entry, because the two integrals cancel in some entries.
     for emin, emax, npts, Z, ion_stage in [
         (1.0, 300.0, 193, 8, 2),
         (7.9, 16000.0, 217, 26, 2),  # emin well above 1 eV and a heavy ion with many shells
         (1.0, 3000.0, 149, 2, 1),  # helium: J takes the Opal et al. 1971 special-case value
+        (1.0, 3000.0, 300, 56, 2),  # Lotz shells only, some of them above the top of the grid
     ]:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin, emax_ev=emax, npts=npts) as sf:
             n_ion = 1e5
@@ -705,7 +713,9 @@ def test_ionisation_fill_matches_masked_reference() -> None:
             expected = np.zeros((npts, npts))
             for channel in sf._ionisation_channels[(Z, ion_stage)]:
                 expected += _reference_ionisation_fill(sf, n_ion, channel)
-            assert sf.sfmatrix.tobytes() == expected.tobytes(), f"mismatch for {Z=} {ion_stage=}"
+            assert np.array_equal(sf.sfmatrix != 0.0, expected != 0.0), f"sparsity mismatch for {Z=} {ion_stage=}"
+            atol = 1e-12 * float(np.abs(expected).max())
+            assert np.allclose(sf.sfmatrix, expected, rtol=1e-12, atol=atol), f"mismatch for {Z=} {ion_stage=}"
 
 
 def test_solve_upper_triangular_diag_add() -> None:
@@ -867,10 +877,19 @@ def test_custom_ionisation_channel_validation() -> None:
                 sf.add_ionisation(8, 2, n_ion=bad)
 
         # ion_stage below one gives a negative charge, which only a bare assert used to catch
-        with pytest.raises(ValueError, match="ion_stage must be at least 1"):
+        with pytest.raises(ValueError, match="ion_stage of Z=8 must be an integer between 1 and 9"):
             sf.add_ionisation_channel(8, 0, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)
-        with pytest.raises(ValueError, match="Z must be at least 1"):
+        with pytest.raises(ValueError, match="Z must be an integer of at least 1"):
             sf.add_ionisation_channel(0, 1, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)
+        # a stage above the bare nucleus, a non-integer stage, and the bare nucleus itself
+        with pytest.raises(ValueError, match="between 1 and 9"):
+            sf.add_ionisation_channel(8, 10, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)
+        with pytest.raises(ValueError, match="between 1 and 9"):
+            sf.add_ionisation_channel(8, 2.5, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)  # ty: ignore[invalid-argument-type]
+        with pytest.raises(ValueError, match="bare nucleus"):
+            sf.add_ionisation_channel(8, 9, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)
+        with pytest.raises(ValueError, match="bare nucleus"):
+            sf.add_excitation(8, 9, levelnumberdensity=1e8, xs_vec=good, epsilon_trans_ev=35.0)
 
         assert not sf.ionpopdict
         assert not sf._ionisation_channels
@@ -894,6 +913,13 @@ def test_custom_ionisation_channel_validation() -> None:
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         with pytest.raises(RuntimeError, match="after solving"):
             sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=60.0, xs_vec=good)
+
+    # numpy integers are accepted and stored as Python integers
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        good = _bethe_xs_grid(sf.engrid, 35.0)
+        Z_numpy, ion_stage_numpy = np.int64(8), np.int64(2)
+        sf.add_ionisation_channel(Z_numpy, ion_stage_numpy, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)  # ty: ignore[invalid-argument-type]
+        assert all(type(key) is int for key in next(iter(sf.ionpopdict)))
 
 
 def test_add_ionisation_is_atomic() -> None:
@@ -1042,3 +1068,44 @@ def test_solution_arrays_are_read_only() -> None:
         sf.solve(deposition_ev_per_s_per_cm3=2e8)
         assert not sf.yvec.flags.writeable
         assert math.isclose(sf.get_frac_heating(), frac_heating, rel_tol=1e-12)
+
+
+def test_lotz_constant_is_configurable() -> None:
+    # every Lotz channel scales with lotz_a_cm2_ev2, the fit channels do not, and the solver warns
+    # once per element about the ions that use the Lotz formula
+    factor = 2.0
+    with pytest.raises(ValueError, match="lotz_a_cm2_ev2"):
+        pynonthermal.SpencerFanoSolver(lotz_a_cm2_ev2=0.0)
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_default,
+        pynonthermal.SpencerFanoSolver(
+            emin_ev=1, emax_ev=3000, npts=300, lotz_a_cm2_ev2=factor * pynonthermal.axelrod.LOTZ_A_CM2_EV2
+        ) as sf_scaled,
+    ):
+        # the constant is fixed for the life of the solver
+        with pytest.raises(AttributeError):
+            sf_scaled.lotz_a_cm2_ev2 = 1.0  # ty: ignore[invalid-assignment]
+        for sf in (sf_default, sf_scaled):
+            with warnings.catch_warnings():
+                # O I has fits for every shell, so no warning
+                warnings.simplefilter("error", UserWarning)
+                sf.add_ionisation(8, 1, n_ion=1.0)
+            with pytest.warns(pynonthermal.LotzApproximationWarning, match=r"Z=56 ion_stage 2: no fitted"):
+                sf.add_ionisation(56, 2, n_ion=1.0)
+            # one warning for an element with two Lotz stages
+            with pytest.warns(pynonthermal.LotzApproximationWarning, match=r"Z=57 ion_stages \[2, 3\]") as record:
+                sf.add_element(57, 1e8, recomb_ratecoeffs={3: 1e-12})
+            assert len([w for w in record if issubclass(w.category, pynonthermal.LotzApproximationWarning)]) == 1
+
+        # off-grid energies probe the function, and the grid probes the stored array
+        arr_en_ev = np.linspace(1.5, 2999.5, 200)
+        for (Z, ion_stage), scaled in (((56, 2), True), ((57, 2), True), ((8, 1), False)):
+            channels_default = sf_default._ionisation_channels[(Z, ion_stage)]
+            channels_scaled = sf_scaled._ionisation_channels[(Z, ion_stage)]
+            expected_factor = factor if scaled else 1.0
+            for channel_default, channel_scaled in zip(channels_default, channels_scaled, strict=True):
+                assert channel_default.lotz is scaled
+                assert np.allclose(
+                    channel_scaled.xs(arr_en_ev), expected_factor * channel_default.xs(arr_en_ev), rtol=1e-12
+                )
+                assert np.allclose(channel_scaled.xs_grid, expected_factor * channel_default.xs_grid, rtol=1e-12)
