@@ -154,8 +154,9 @@ def test_recombination_balance_oxygen() -> None:
         sf.set_temperature(6000)
         sf.set_atomic_data(use_collstrengths=False)
         sf.add_element(8, n_oxygen, recomb_ratecoeffs=OXYGEN_ALPHAS)
-        # the provisional populations are equal fractions, and the top stage O IV has channels too
-        assert all(sf.ionpopdict[(8, ion_stage)] == n_oxygen / 4 for ion_stage in (1, 2, 3, 4))
+        # the provisional populations are mostly neutral, and the top stage O IV has channels too
+        for ion_stage in (1, 2, 3):
+            assert sf.ionpopdict[(8, ion_stage + 1)] < sf.ionpopdict[(8, ion_stage)]
         assert math.isclose(sf.get_n_ion_tot(), n_oxygen, rel_tol=1e-12)
         assert len(sf._ionisation_channels[(8, 4)]) > 0
         for ion_stage in (1, 2, 3):
@@ -282,7 +283,7 @@ def test_saha_ion_fractions_validation() -> None:
         get_fractions(8, [1, 2], 6000.0)
     with pytest.raises(ValueError, match="give either n_e"):
         get_fractions(8, [1, 2], 6000.0, n_e=1e8, n_elem=1e10)
-    with pytest.raises(ValueError, match="Z must be at least 1"):
+    with pytest.raises(ValueError, match="Z must be an integer of at least 1"):
         get_fractions(0, [1, 2], 6000.0, n_e=1e8)
     for bad_stages in ([2], [1, 3]):
         with pytest.raises(ValueError, match="at least two contiguous"):
@@ -583,7 +584,7 @@ def test_balanced_element_input_validation() -> None:
         for bad in (0.0, -1.0, math.nan, math.inf):
             with pytest.raises(ValueError, match="n_elem"):
                 sf.add_element(8, bad, recomb_ratecoeffs={2: 1e-12})
-        with pytest.raises(ValueError, match="Z must be at least 1"):
+        with pytest.raises(ValueError, match="Z must be an integer of at least 1"):
             sf.add_element(0, 1e10, recomb_ratecoeffs={2: 1e-12})
 
         # every rejected call leaves the solver unchanged

@@ -15,6 +15,15 @@ from pynonthermal.constants import EV
 from pynonthermal.constants import ME
 from pynonthermal.constants import QE
 
+# The constant of the Lotz formula sigma = A q ln(E / P) / (E P) in cm^2 eV^2, from Lotz 1967,
+# "An empirical formula for the electron-impact ionization cross-section", Zeitschrift fuer
+# Physik, 206, 205-211, doi:10.1007/BF01325928, table 1 (his a_i for most shells). The
+# relativistic form of Axelrod 1980 below reduces to this formula at low energy. ARTIS
+# nonthermal.cc uses 1.33e-14, which is a factor of about 3 below both the Lotz value and the
+# Arnaud & Rothenflug 1985 fits of the same shells at high energy.
+LOTZ_A_CM2_EV2: float = 4.5e-14
+LOTZ_A: float = LOTZ_A_CM2_EV2 * EV * EV
+
 
 @lru_cache
 def get_binding_energies() -> npt.NDArray[np.float64]:
@@ -135,8 +144,7 @@ def get_workfn_ev(atomic_number: int, ion_stage: int, ionpot_ev: float, Zbar: fl
     # 1/W = sigma / L with both taken in their high-energy limits and losses to the free
     # electrons neglected, which reduces to the shell-occupancy-over-binding-energy sum
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
-    Aconst = 1.33e-14 * EV * EV
-    oneoverW = Aconst * binding / Zbar / (2 * math.pi * pow(QE, 4))
+    oneoverW = LOTZ_A * binding / Zbar / (2 * math.pi * pow(QE, 4))
 
     return (1 / oneoverW) / EV
 
@@ -160,7 +168,6 @@ def get_lotz_xs_ionisation_vec(
     electronsinshell = get_shell_occupancies(atomic_number, ion_stage)[shellindex]
 
     p = ionpot_ev * EV
-    Aconst = 1.33e-14 * EV * EV
 
     # WARNING: The Axelrod equation uses both ln() and log10(), but the log10() term is likely a typo and has been
     # corrected to ln(). Fortunately, at our typical 16 keV value of EMAX, 511 keV electrons are only mildly
@@ -170,6 +177,6 @@ def get_lotz_xs_ionisation_vec(
         part_sigma_shell = (
             electronsinshell / p * (np.log(betasq * ME * CLIGHT**2 / 2.0 / p) - np.log(1 - betasq) - betasq)
         )
-        xs = 2 * Aconst / betasq / ME / CLIGHT**2 * part_sigma_shell
+        xs = 2 * LOTZ_A / betasq / ME / CLIGHT**2 * part_sigma_shell
 
     return np.where(valid & (part_sigma_shell > 0), xs, 0.0)

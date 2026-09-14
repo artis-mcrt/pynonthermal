@@ -230,7 +230,9 @@ def get_arxs_array_shell(arr_enev: npt.NDArray[np.float64], shell: dict[str, int
         return get_lotz_xs_ionisation_vec(shell, arr_en_ev=arr_enev)
 
     ionpot_ev = float(shell["ionpot_ev"])
-    xs = np.zeros_like(arr_enev)
+    # an explicit float dtype, because zeros_like of an integer energy array would truncate every
+    # cross section to zero
+    xs = np.zeros(arr_enev.shape, dtype=np.float64)
     abovethreshold = arr_enev > ionpot_ev
     u = arr_enev[abovethreshold] / ionpot_ev
     # a few of the fits (Ne I n=2 l=0, Na II n=2 l=1) go slightly negative just above threshold,

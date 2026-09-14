@@ -82,9 +82,13 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # Fransson 1992: their equation 1 above 14 eV and equation 2 below it, with the plasma
     # energy zeta_e of their equation 3 in the high-energy Coulomb logarithm
     # returns a positive number
-    if n_e_cgs <= 0.0:
+    # the chained comparisons also reject nan, for which every comparison is False
+    if not 0.0 < n_e_cgs < math.inf:
         # the plasma frequency would be zero, making the Coulomb logarithm infinite
-        msg = f"the free-electron loss function requires a positive free electron density but n_e is {n_e_cgs}"
+        msg = f"the free-electron loss function requires a positive finite free electron density but n_e is {n_e_cgs}"
+        raise ValueError(msg)
+    if not 0.0 < energy_ev < math.inf:
+        msg = f"the free-electron loss function requires a positive finite energy but energy_ev is {energy_ev}"
         raise ValueError(msg)
 
     n_e = n_e_cgs
@@ -148,9 +152,13 @@ def get_Zbar(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], 
 
 
 def _get_energyindex(en_ev: float, engrid: npt.NDArray[np.float64], round_up: bool) -> int:
-    # index of the energy bin holding en_ev, clamped into the grid at both ends
-    offset = (en_ev - float(engrid[0])) / (float(engrid[1]) - float(engrid[0]))
-    index = math.ceil(offset) if round_up else math.floor(offset)
+    # index of the energy bin holding en_ev, clamped into the grid at both ends. A binary search
+    # on the grid itself is exact at the grid points, where a division by the grid spacing gave
+    # the next bin for most of them.
+    if round_up:
+        index = int(np.searchsorted(engrid, en_ev, side="left"))
+    else:
+        index = int(np.searchsorted(engrid, en_ev, side="right")) - 1
 
     return 0 if index < 0 else min(index, len(engrid) - 1)
 

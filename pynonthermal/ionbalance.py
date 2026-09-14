@@ -275,7 +275,7 @@ def get_saha_ion_fractions(
         msg = f"n_elem must be greater than zero and finite but is {n_elem}"
         raise ValueError(msg)
     if Z < 1:
-        msg = f"Z must be at least 1 but is {Z}"
+        msg = f"Z must be an integer of at least 1 but is {Z}"
         raise ValueError(msg)
     # the chained comparison also rejects nan. get_saha_factor() checks it too, but the LTE
     # partition function of a bad temperature is nan, whose message names the wrong fault.

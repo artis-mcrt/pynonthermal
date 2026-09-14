@@ -65,7 +65,7 @@ def test_zero_free_electron_density() -> None:
         assert sf.get_n_e() == 1e-4
 
     # the loss function itself also rejects a non-positive density
-    with pytest.raises(ValueError, match="positive free electron density"):
+    with pytest.raises(ValueError, match="positive finite free electron density"):
         pynonthermal.electronlossfunction(100.0, 0.0)
 
 
@@ -693,7 +693,8 @@ def test_ltepop_excitation_grouped_fill() -> None:
 def test_ionisation_fill_matches_masked_reference() -> None:
     # _add_ionisation_channel_to_matrix writes only each row's non-empty integral range, located by
     # forward-only cut pointers that evaluate the same comparisons the per-row np.where masks
-    # used. The resulting matrix must be bit-identical to the masked full-tail construction.
+    # used. The resulting matrix must agree with the masked full-tail construction to the rounding
+    # of the population factor, which the fill applies after the division by the arctan.
     for emin, emax, npts, Z, ion_stage in [
         (1.0, 300.0, 193, 8, 2),
         (7.9, 16000.0, 217, 26, 2),  # emin well above 1 eV and a heavy ion with many shells
@@ -705,7 +706,8 @@ def test_ionisation_fill_matches_masked_reference() -> None:
             expected = np.zeros((npts, npts))
             for channel in sf._ionisation_channels[(Z, ion_stage)]:
                 expected += _reference_ionisation_fill(sf, n_ion, channel)
-            assert sf.sfmatrix.tobytes() == expected.tobytes(), f"mismatch for {Z=} {ion_stage=}"
+            assert np.array_equal(sf.sfmatrix != 0.0, expected != 0.0), f"sparsity mismatch for {Z=} {ion_stage=}"
+            assert np.allclose(sf.sfmatrix, expected, rtol=1e-13, atol=0.0), f"mismatch for {Z=} {ion_stage=}"
 
 
 def test_solve_upper_triangular_diag_add() -> None:
@@ -867,9 +869,9 @@ def test_custom_ionisation_channel_validation() -> None:
                 sf.add_ionisation(8, 2, n_ion=bad)
 
         # ion_stage below one gives a negative charge, which only a bare assert used to catch
-        with pytest.raises(ValueError, match="ion_stage must be at least 1"):
+        with pytest.raises(ValueError, match="ion stages of Z=8 must be integers between 1 and 9"):
             sf.add_ionisation_channel(8, 0, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)
-        with pytest.raises(ValueError, match="Z must be at least 1"):
+        with pytest.raises(ValueError, match="Z must be an integer of at least 1"):
             sf.add_ionisation_channel(0, 1, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)
 
         assert not sf.ionpopdict
