@@ -16,6 +16,8 @@ import polars as pl
 
 import pynonthermal
 from pynonthermal.axelrod import get_workfn_ev
+from pynonthermal.axelrod import LOTZ_A_CM2_EV2
+from pynonthermal.axelrod import LOTZ_A_CM2_EV2_LOTZ1967
 from pynonthermal.base import electronlossfunction
 from pynonthermal.base import get_betasq
 from pynonthermal.base import get_xs_on_grid
@@ -357,6 +359,7 @@ class SpencerFanoSolver:
     _nt_ionisation_ratecoeff: dict[tuple[int, int], float]
     _ionisation_channels: dict[tuple[int, int], list[IonisationChannel]]
     _channel_fills: dict[IonisationChannel, _ChannelFill]
+    lotz_a_cm2_ev2: float
     deposition_ev_per_s_per_cm3: float
     ionpopdict: dict[tuple[int, int], float]
     excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]
@@ -387,6 +390,7 @@ class SpencerFanoSolver:
         verbose: bool = False,
         use_ar1985: bool = False,
         heating_only_approximation: bool = False,
+        lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2,
     ) -> None:
         """Make a solver with a uniform linear energy grid and the given options.
 
@@ -401,6 +405,13 @@ class SpencerFanoSolver:
 
         If heating_only_approximation is True, the solver removes the excitation and
         ionisation loss terms from the matrix and keeps only the heating loss.
+
+        lotz_a_cm2_ev2 is the constant A [cm^2 eV^2] of the Lotz formula
+        sigma = A q ln(E / P) / (E P), which gives the built-in cross section of every shell
+        without an Arnaud & Rothenflug fit (every element above Ni, and some ions below it). The
+        default is the ARTIS value of 1.33e-14. Lotz 1967 gives 4.5e-14
+        (pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967), and the Arnaud & Rothenflug fits agree
+        with that value at high energy. The solver warns when it adds a Lotz channel.
         """
         if npts < 2:
             msg = f"npts must be at least 2 to define an energy grid spacing but is {npts}"
@@ -441,6 +452,11 @@ class SpencerFanoSolver:
 
         self.verbose = verbose
         self.heating_only_approximation = heating_only_approximation
+        # the chained comparison also rejects nan
+        if not 0.0 < lotz_a_cm2_ev2 < math.inf:
+            msg = f"lotz_a_cm2_ev2 must be greater than zero and finite but is {lotz_a_cm2_ev2}"
+            raise ValueError(msg)
+        self.lotz_a_cm2_ev2 = float(lotz_a_cm2_ev2)
         self.engrid = np.linspace(emin_ev, emax_ev, num=npts, endpoint=True, dtype=float)
         # handed to the cross section functions of the caller, so a write must raise at the
         # mutation site. An in-place write would otherwise leave the grid and deltaen inconsistent.
@@ -678,9 +694,21 @@ class SpencerFanoSolver:
         # so a caller can build the channels of every stage before it stores the first one. An ion
         # without a row in the cross-section table raises, so an element skips its bare nucleus
         # before it calls this method.
-        channels = pynonthermal.collion.get_ion_ionisation_channels(self.dfcollion, Z, ion_stage, self.engrid)
+        channels = pynonthermal.collion.get_ion_ionisation_channels(
+            self.dfcollion, Z, ion_stage, self.engrid, lotz_a_cm2_ev2=self.lotz_a_cm2_ev2
+        )
         self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
         self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
+        lotz_keys = [channel.key for channel in channels if str(channel.key).startswith("Lotz")]
+        if lotz_keys:
+            # the Lotz constant is uncertain by a factor of about 3 (see lotz_a_cm2_ev2), so the
+            # user must know which ions it affects
+            _warn(
+                f"Z={Z} ion_stage {ion_stage} has no Arnaud & Rothenflug fit for {len(lotz_keys)} of"
+                f" {len(channels)} shells ({', '.join(lotz_keys)}), which use the Lotz formula with"
+                f" lotz_a_cm2_ev2={self.lotz_a_cm2_ev2:.3g} cm^2 eV^2 (ARTIS value {LOTZ_A_CM2_EV2:.3g},"
+                f" Lotz 1967 value {LOTZ_A_CM2_EV2_LOTZ1967:.3g})."
+            )
         return channels
 
     def _apply_ion_channels(self, Z: int, ion_stage: int, n_ion: float, channels: list[IonisationChannel]) -> None:
@@ -2475,6 +2503,7 @@ class SpencerFanoSolver:
                     ion_stage,
                     ionpot_ev=ionpot_valence,
                     Zbar=get_Zbar(ions=tuple(self.ionpopdict.keys()), ionpopdict=self.ionpopdict),
+                    lotz_a_cm2_ev2=self.lotz_a_cm2_ev2,
                 )
                 print(f"   workfn eff_ionpot: {eff_ionpot:8.2f} [eV]")
                 print(f"       approx workfn: {workfn_ev:8.2f} [eV] (without Spencer-Fano solution)")

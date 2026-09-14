@@ -12,6 +12,7 @@ import pynonthermal
 from pynonthermal.axelrod import get_binding_energies
 from pynonthermal.axelrod import get_lotz_xs_ionisation_vec
 from pynonthermal.axelrod import get_shell_configs
+from pynonthermal.axelrod import LOTZ_A_CM2_EV2
 from pynonthermal.base import CrossSectionFunc
 from pynonthermal.base import get_xs_on_grid
 from pynonthermal.constants import EV
@@ -220,14 +221,16 @@ def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
     return 0.6 * ionpot_ev
 
 
-def get_arxs_array_shell(arr_enev: npt.NDArray[np.float64], shell: dict[str, int | float]) -> npt.NDArray[np.float64]:
+def get_arxs_array_shell(
+    arr_enev: npt.NDArray[np.float64], shell: dict[str, int | float], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
+) -> npt.NDArray[np.float64]:
     # the shell's total impact-ionisation cross section in cm^2 at each energy [eV]: the
     # sigma_ic of Kozma & Fransson 1992 (equations 5, 10, and 11 and the ionisation term of
     # equation 7). Shells with fit data use the formula of Younger 1981 with the A-D
     # coefficients of the Arnaud & Rothenflug 1985 compilation; shells marked n < 0 have no
-    # fit data and use the Lotz approximation instead.
+    # fit data and use the Lotz approximation with the constant lotz_a_cm2_ev2 instead.
     if shell["n"] < 0:
-        return get_lotz_xs_ionisation_vec(shell, arr_en_ev=arr_enev)
+        return get_lotz_xs_ionisation_vec(shell, arr_en_ev=arr_enev, lotz_a_cm2_ev2=lotz_a_cm2_ev2)
 
     ionpot_ev = float(shell["ionpot_ev"])
     # an explicit float dtype, because zeros_like of an integer energy array would truncate every
@@ -389,10 +392,10 @@ def _interpolate_grid_xs(
     return xs
 
 
-def _bind_shell(shell: dict[str, t.Any]) -> CrossSectionFunc:
+def _bind_shell(shell: dict[str, t.Any], lotz_a_cm2_ev2: float) -> CrossSectionFunc:
     # give each channel its own shell row, and keep the call to the formula positional
     def xs(arr_enev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return get_arxs_array_shell(arr_enev, shell)
+        return get_arxs_array_shell(arr_enev, shell, lotz_a_cm2_ev2=lotz_a_cm2_ev2)
 
     return xs
 
@@ -402,11 +405,14 @@ def get_ion_ionisation_channels(
     Z: int,
     ion_stage: int,
     arr_enev: npt.NDArray[np.float64],
+    lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2,
 ) -> list[IonisationChannel]:
     """Get one ionisation channel for every subshell of an ion in the fit table dfcollion.
 
     arr_enev:
         the energy grid [eV] on which to evaluate and check each cross section
+    lotz_a_cm2_ev2:
+        the constant A [cm^2 eV^2] of the Lotz formula for the shells without fit data
     """
     shells = dfcollion.filter((pl.col("Z") == Z) & (pl.col("ion_stage") == ion_stage)).to_dicts()
     if not shells:
@@ -419,7 +425,7 @@ def get_ion_ionisation_channels(
             Z=Z,
             ion_stage=ion_stage,
             ionpot_ev=float(shell["ionpot_ev"]),
-            xs=_bind_shell(shell),
+            xs=_bind_shell(shell, lotz_a_cm2_ev2),
             # the key names the subshell, so the verbose output needs no separate label
             key=(
                 f"Lotz shell {SUBSHELLNAMES[-int(shell['l'])]}"

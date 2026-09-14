@@ -1044,3 +1044,30 @@ def test_solution_arrays_are_read_only() -> None:
         sf.solve(deposition_ev_per_s_per_cm3=2e8)
         assert not sf.yvec.flags.writeable
         assert math.isclose(sf.get_frac_heating(), frac_heating, rel_tol=1e-12)
+
+
+def test_lotz_constant_is_configurable() -> None:
+    # every Lotz channel scales with lotz_a_cm2_ev2, the fit channels do not, and the solver warns
+    # about the ions that use the Lotz formula
+    engrid = np.linspace(1.0, 3000.0, 300)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        sf_default = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+        # O I has fits for every shell, so no warning
+        sf_default.add_ionisation(8, 1, n_ion=1.0)
+    with pytest.raises(ValueError, match="lotz_a_cm2_ev2"):
+        pynonthermal.SpencerFanoSolver(lotz_a_cm2_ev2=0.0)
+
+    factor = 2.0
+    sf_scaled = pynonthermal.SpencerFanoSolver(
+        emin_ev=1, emax_ev=3000, npts=300, lotz_a_cm2_ev2=factor * pynonthermal.axelrod.LOTZ_A_CM2_EV2
+    )
+    for sf in (sf_default, sf_scaled):
+        with pytest.warns(UserWarning, match=r"Z=56 ion_stage 2 has no Arnaud & Rothenflug fit .* Lotz formula"):
+            sf.add_ionisation(56, 2, n_ion=1.0)
+    for channel_default, channel_scaled in zip(
+        sf_default._ionisation_channels[(56, 2)], sf_scaled._ionisation_channels[(56, 2)], strict=True
+    ):
+        assert str(channel_default.key).startswith("Lotz")
+        assert np.allclose(channel_scaled.xs(engrid), factor * channel_default.xs(engrid), rtol=1e-12)
+        assert np.allclose(channel_scaled.xs_grid, factor * channel_default.xs_grid, rtol=1e-12)
