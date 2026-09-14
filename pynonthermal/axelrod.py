@@ -16,8 +16,8 @@ from pynonthermal.constants import ME
 from pynonthermal.constants import QE
 
 # The default constant A of the Lotz formula sigma = A q ln(E / P) / (E P) in cm^2 eV^2, which
-# the relativistic form of Axelrod 1980 below gives at low energy. The value is the one of ARTIS
-# nonthermal.cc. Lotz 1967, "An empirical formula for the electron-impact ionization
+# the relativistic form of Axelrod 1980 below gives at low energy. The value is the one of
+# Axelrod 1980. Lotz 1967, "An empirical formula for the electron-impact ionization
 # cross-section", Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928, table 1 gives
 # a_i = 4.5e-14 for most shells, and the Arnaud & Rothenflug 1985 fits of the same shells agree
 # with that value at high energy, so the default is a factor of about 3 below both. The solver

@@ -409,7 +409,7 @@ class SpencerFanoSolver:
         lotz_a_cm2_ev2 is the constant A [cm^2 eV^2] of the Lotz formula
         sigma = A q ln(E / P) / (E P), which gives the built-in cross section of every shell
         without an Arnaud & Rothenflug fit (every element above Ni, and some ions below it). The
-        default is the ARTIS value of 1.33e-14. Lotz 1967 gives 4.5e-14
+        default is the Axelrod 1980 value of 1.33e-14. Lotz 1967 gives 4.5e-14
         (pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967), and the Arnaud & Rothenflug fits agree
         with that value at high energy. The solver warns when it adds a Lotz channel.
         """
@@ -706,7 +706,7 @@ class SpencerFanoSolver:
             _warn(
                 f"Z={Z} ion_stage {ion_stage} has no Arnaud & Rothenflug fit for {len(lotz_keys)} of"
                 f" {len(channels)} shells ({', '.join(lotz_keys)}), which use the Lotz formula with"
-                f" lotz_a_cm2_ev2={self.lotz_a_cm2_ev2:.3g} cm^2 eV^2 (ARTIS value {LOTZ_A_CM2_EV2:.3g},"
+                f" lotz_a_cm2_ev2={self.lotz_a_cm2_ev2:.3g} cm^2 eV^2 (Axelrod 1980 value {LOTZ_A_CM2_EV2:.3g},"
                 f" Lotz 1967 value {LOTZ_A_CM2_EV2_LOTZ1967:.3g})."
             )
         return channels
