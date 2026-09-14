@@ -287,6 +287,9 @@ class IonisationChannel:
     key: t.Any
     """A key that identifies the channel in its ion, and names it in the verbose output."""
 
+    lotz: bool = False
+    """True if the cross section is the Lotz formula, which the shells without a fit use."""
+
     @classmethod
     def from_xs_grid(
         cls,
@@ -322,6 +325,7 @@ class IonisationChannel:
         ionpot_ev: float,
         xs: CrossSectionFunc,
         key: t.Any,
+        lotz: bool = False,
     ) -> t.Self:
         """Make a channel, and check the cross section that xs gives on the energy grid arr_enev [eV].
 
@@ -358,6 +362,7 @@ class IonisationChannel:
             xs_grid=xs_grid,
             J_ev=get_J(Z, ion_stage, float(ionpot_ev)),
             key=key,
+            lotz=lotz,
         )
 
 
@@ -432,6 +437,7 @@ def get_ion_ionisation_channels(
                 if int(shell["n"]) < 0
                 else f"n {int(shell['n'])} l {int(shell['l'])}"
             ),
+            lotz=int(shell["n"]) < 0,
         )
         for shell in shells
     ]

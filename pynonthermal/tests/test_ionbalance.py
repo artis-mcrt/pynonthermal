@@ -154,9 +154,12 @@ def test_recombination_balance_oxygen() -> None:
         sf.set_temperature(6000)
         sf.set_atomic_data(use_collstrengths=False)
         sf.add_element(8, n_oxygen, recomb_ratecoeffs=OXYGEN_ALPHAS)
-        # the provisional populations are mostly neutral, and the top stage O IV has channels too
-        for ion_stage in (1, 2, 3):
-            assert sf.ionpopdict[(8, ion_stage + 1)] < sf.ionpopdict[(8, ion_stage)]
+        # the provisional populations fall by the seed ratio per stage, and the top stage O IV has
+        # channels too
+        ratio = pynonthermal.spencerfano.BALANCE_SEED_STAGE_RATIO
+        weights = [ratio**index for index in range(4)]
+        for index, ion_stage in enumerate((1, 2, 3, 4)):
+            assert math.isclose(sf.ionpopdict[(8, ion_stage)], n_oxygen * weights[index] / sum(weights), rel_tol=1e-12)
         assert math.isclose(sf.get_n_ion_tot(), n_oxygen, rel_tol=1e-12)
         assert len(sf._ionisation_channels[(8, 4)]) > 0
         for ion_stage in (1, 2, 3):
@@ -285,6 +288,11 @@ def test_saha_ion_fractions_validation() -> None:
         get_fractions(8, [1, 2], 6000.0, n_e=1e8, n_elem=1e10)
     with pytest.raises(ValueError, match="Z must be an integer of at least 1"):
         get_fractions(0, [1, 2], 6000.0, n_e=1e8)
+    with pytest.raises(ValueError, match="Z must be an integer of at least 1"):
+        get_fractions(8.0, [1, 2], 6000.0, n_e=1e8)  # ty: ignore[invalid-argument-type]
+    # a non-integer stage is rejected and not truncated
+    with pytest.raises(ValueError, match="must be an integer"):
+        get_fractions(8, [1.0, 2.9], 6000.0, n_e=1e8)  # ty: ignore[invalid-argument-type]
     for bad_stages in ([2], [1, 3]):
         with pytest.raises(ValueError, match="at least two contiguous"):
             get_fractions(8, bad_stages, 6000.0, n_e=1e8)

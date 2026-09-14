@@ -15,13 +15,17 @@ from pynonthermal.constants import EV
 from pynonthermal.constants import ME
 from pynonthermal.constants import QE
 
-# The default constant A of the Lotz formula sigma = A q ln(E / P) / (E P) in cm^2 eV^2, which
-# the relativistic form of Axelrod 1980 below gives at low energy. The value is the one of
-# Axelrod 1980. Lotz 1967, "An empirical formula for the electron-impact ionization
-# cross-section", Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928, table 1 gives
-# a_i = 4.5e-14 for most shells, and the Arnaud & Rothenflug 1985 fits of the same shells agree
-# with that value at high energy, so the default is a factor of about 3 below both. The solver
-# takes the constant as lotz_a_cm2_ev2, and it warns when a Lotz channel is in use.
+# The default constant A of the Lotz formula sigma = A q ln(E / P) / (E P) in cm^2 eV^2. The
+# relativistic form of Axelrod (1980, "Late time optical spectra from the Ni-56 model for type I
+# supernovae", PhD thesis, University of California, Santa Cruz,
+# https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A) gives this formula at low energy, and the
+# default is his value. Lotz (1967, "An empirical formula for the electron-impact ionization
+# cross-section", Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928) gives
+# a_i = 4.5e-14 for most shells in his table 1. The fits of Arnaud & Rothenflug (1985, "An
+# updated evaluation of recombination and ionization rates", Astronomy and Astrophysics
+# Supplement Series, 60, 425-457, https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A) agree
+# with the Lotz value at high energy. The default is therefore a factor of about 3 below both.
+# The solver takes the constant as lotz_a_cm2_ev2, and it warns when a Lotz channel is in use.
 LOTZ_A_CM2_EV2: float = 1.33e-14
 LOTZ_A_CM2_EV2_LOTZ1967: float = 4.5e-14
 

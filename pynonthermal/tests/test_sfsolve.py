@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import warnings
 from pathlib import Path
@@ -52,8 +53,8 @@ def test_api_guards() -> None:
         with pytest.raises(ValueError, match="already added"):
             sf.add_ionisation(2, 1, n_ion=1.0)
 
-        # an ion with no cross-section data (here H II, which has no bound electrons) is rejected
-        with pytest.raises(ValueError, match="No ionisation cross-section data"):
+        # a bare nucleus (here H II) has no electron to remove, so it is rejected
+        with pytest.raises(ValueError, match="bare nucleus"):
             sf.add_ionisation(1, 2, n_ion=1.0)
 
         # xs_vec must be defined on the full energy grid
@@ -111,14 +112,17 @@ def test_api_guards() -> None:
 
 
 def test_invalid_excitation_fraction_reported() -> None:
-    # an unphysically-large excitation cross section produces frac_excitation > 1. It is reported
+    # a stored transition that the matrix does not hold gives frac_excitation > 1. It is reported
     # but kept in the total, as for frac_ionisation_shell, so that the problem stays visible
-    # rather than being hidden behind a total that silently dropped the channel.
+    # rather than being hidden behind a total that silently dropped the channel. The solver keeps
+    # the stored transitions and the matrix consistent, so the test edits the stored transition.
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=100) as sf:
         sf.add_ionisation(2, 1, n_ion=1.0)
-        sf.add_excitation(2, 1, levelnumberdensity=1e30, xs_vec=np.full(100, 1e-10), epsilon_trans_ev=25.0)
+        sf.add_excitation(2, 1, levelnumberdensity=1.0, xs_vec=np.full(100, 1e-18), epsilon_trans_ev=25.0)
         sf.override_n_e(1e-4)
         sf.solve(deposition_ev_per_s_per_cm3=100)
+        transition = sf.excitationlists[(2, 1)][0]
+        sf.excitationlists[(2, 1)][0] = dataclasses.replace(transition, levelnumberdensity=1e30)
 
         with pytest.warns(UserWarning, match="invalid frac_excitation_ion"):
             frac_excitation_tot = sf.get_frac_excitation_tot()
