@@ -316,7 +316,13 @@ def test_saha_ion_fractions_validation() -> None:
 def at_get_lte_partfunc(adata: pl.DataFrame, Z: int, ion_stage: int, temperature: float) -> float:
     # the LTE partition function of one ion straight from the level data of artistools
     ion = adata.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
-    return at.transitions.get_lte_partfunc(ion["levels"].item(), temperature)
+    return float(
+        ion["levels"]
+        .item()
+        .select(pl.col("g") * (-pl.col("energy_ev") / pynonthermal.constants.K_B / temperature).exp())
+        .sum()
+        .item()
+    )
 
 
 def test_mixed_fixed_and_balanced_elements() -> None:

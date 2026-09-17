@@ -318,7 +318,9 @@ def get_saha_ion_fractions(
                     " Give it in partfuncs or supply a level table in adata_polars."
                 )
                 raise ValueError(msg)
-            partfunc = at.transitions.get_lte_partfunc(ion["levels"].item(), temperature)
+            partfunc = float(
+                ion["levels"].item().select(pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp()).sum().item()
+            )
         if not 0.0 < partfunc < math.inf:
             msg = f"the partition function of Z={Z} ion_stage {ion_stage} must be greater than zero but is {partfunc}"
             raise ValueError(msg)

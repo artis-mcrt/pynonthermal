@@ -1141,7 +1141,9 @@ class SpencerFanoSolver:
 
         dfpops_thision = ion["levels"].item()
 
-        ltepartfunc = at.transitions.get_lte_partfunc(dfpops_thision, temperature)
+        ltepartfunc = float(
+            dfpops_thision.select(pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp()).sum().item()
+        )
         dfpops_thision = (
             dfpops_thision.rename({"levelindex": "level"}).with_columns(
                 ion_popfrac=pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp() / ltepartfunc
