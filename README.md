@@ -153,7 +153,7 @@ sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
 - `deposition_ev_per_s_per_cm3`: the rate of energy deposition per volume in eV s^-1 cm^-3 (positive and
   finite). With fixed populations the energy *fractions* do not depend on it and the *rate coefficients*
   scale linearly with it; with `recomb_ratecoeffs` the populations depend on it too.
-- `balance_tol`: the relative tolerance of the population ratios of an element with
+- `balance_tol`: the relative tolerance of the ionisation rate coefficients of an element with
   `recomb_ratecoeffs` (default `1e-4`).
 
 The free electron density comes from the ion charges of `ionpopdict`, so it counts only the electrons
@@ -257,8 +257,8 @@ and `alpha_{i+1}` is the coefficient you give. The chain runs from one below the
 highest key, so the example is O I to O IV.
 
 A channel that removes more than one electron (see [Multiple ionisation](#multiple-ionisation)) jumps
-over stages. Then the balance holds for each cut between two adjacent stages `j` and `j+1`: the
-ionisations from all stages `i <= j` that cross the cut equal `n_{j+1} n_e alpha_{j+1}`.
+over stages. Then the balance holds for each cut between two adjacent stages `j` and `j+1`. At each
+cut, the ionisations from all stages `i <= j` that cross the cut equal `n_{j+1} n_e alpha_{j+1}`.
 Recombination is always from one stage to the stage below it.
 
 A coefficient outside `1e-16` to `1e-8` cm^3 s^-1 raises a warning
@@ -280,7 +280,8 @@ Points to note:
 - The top stage of the chain is a sink: its ionisation is an energy loss in the matrix, but the ions
   it makes have no stage to go to. A warning is raised if the ionisation rate out of the top stage
   exceeds 1 % of the total ionisation rate of the element, because about that fraction of the element
-  then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
+  then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage. If a
+  channel of the top stage removes `k` electrons, extend the chain to the top stage plus `k`.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
 The functions behind the balance are in `pynonthermal.ionbalance`:
@@ -442,19 +443,22 @@ with pynonthermal.SpencerFanoSolver() as sf:
     gamma_double = sf.get_ionisation_ratecoeff(38, 1, n_ejected=2)
 ```
 
-Give exclusive channels. A single-ionisation cross section must not include the events of a
-multiple-ionisation channel of the same ion, or the solver counts those events two times. The
-built-in channels all have `n_ejected=1`.
+Give exclusive channels. Do not include the events of a multiple-ionisation channel in a
+single-ionisation cross section of the same ion. If you include them, the solver counts those events
+two times. The built-in channels all have `n_ejected=1`.
 
 The energy of the extra electrons comes from energy conservation, so no Auger data is necessary:
 
-- The primary electron loses `ionpot_ev` plus the energy of the first ejected electron. That electron
-  has the Lorentzian distribution, as for a single ionisation.
-- The ion keeps the sum of the NIST ground-state potentials from `ion_stage` to
-  `ion_stage + n_ejected - 1`. The ionisation fraction counts only this energy.
-- The `n_ejected - 1` extra electrons share the remaining energy equally. They appear at a fixed energy,
-  with the source term of the Auger electrons in equation 8 of Shingles et al. (2020), MNRAS, 492,
-  2029–2043, doi:10.1093/mnras/stz3412. An extra electron at or below `emin_ev` counts as heating.
+- The primary electron loses `ionpot_ev` plus the energy of the first ejected electron. The primary
+  electron and the first ejected electron share the energy above `ionpot_ev`, as in a single
+  ionisation. The first ejected electron has the Lorentzian distribution.
+- By default, the ion keeps the sum of the NIST ground-state potentials from `ion_stage` to
+  `ion_stage + n_ejected - 1`. In general, it keeps `ionpot_ev` minus `extra_electron_energy_ev`. The
+  ionisation fraction counts only the energy that the ion keeps.
+- The `n_ejected - 1` extra electrons share the rest of the energy equally. They appear at a fixed
+  energy, with the source term of the Auger electrons in equation 8 of Shingles et al. (2020), MNRAS,
+  492, 2029–2043, doi:10.1093/mnras/stz3412. An extra electron at or below `emin_ev` counts as
+  heating.
 
 Two cases are typical:
 
@@ -462,12 +466,14 @@ Two cases are typical:
   extra electrons can then have hundreds of eV. This value ignores fluorescence and excited final
   states, so it is an upper limit.
 - Direct multiple ionisation: set `ionpot_ev` to the sum of the potentials. The extra electrons then
-  have no energy, and the first ejected electron gets all the energy above the threshold.
+  have no energy.
 
-`ionpot_ev` must be at least the sum of the potentials, less 1 % (`MULTIPLE_IONPOT_REL_TOL`). Give
-`extra_electron_energy_ev` to replace the value from energy conservation, for example a calculated
-Auger electron energy. The ion must still keep at least the sum of the potentials, less the same 1 %.
-The value is also necessary for an ion that the NIST data does not have.
+`ionpot_ev` must be at least the sum of the potentials, less 1 %
+(`pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL`). Inside that tolerance, the extra electrons get no
+energy, and the ion keeps all of `ionpot_ev`. Give `extra_electron_energy_ev` to replace the value from
+energy conservation, for example a calculated Auger electron energy. The ion must still keep at least
+the sum of the potentials, less the same 1 %. The value is also necessary for an ion that the NIST data
+does not have.
 
 ## Citing pynonthermal
 

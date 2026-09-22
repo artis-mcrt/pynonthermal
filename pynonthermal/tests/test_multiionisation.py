@@ -1,7 +1,11 @@
 """Tests of ionisation channels that remove more than one electron (n_ejected > 1).
 
-These check the cut coefficients of the ionisation balance, the source term of the extra
-electrons, the energy accounting, and the error paths.
+These tests check:
+
+- the cut coefficients of the ionisation balance;
+- the source term of the extra electrons;
+- the energy fractions;
+- the error paths.
 """
 
 import math
@@ -12,7 +16,8 @@ import pytest
 
 import pynonthermal
 
-# illustrative recombination rate coefficients [cm^3 s^-1] keyed by the recombining ion stage
+# recombination rate coefficients [cm^3 s^-1], keyed by the ion stage that recombines. The values are
+# only examples.
 HELIUM_ALPHAS = {2: 4e-13, 3: 2e-12}
 OXYGEN_ALPHAS = {2: 3e-13, 3: 3e-12}
 STRONTIUM_ALPHAS = {2: 3e-13, 3: 1e-12, 4: 3e-12}
@@ -138,13 +143,19 @@ def test_helium_double_ionisation_balance() -> None:
     assert gamma_12 > 0.0
     assert math.isclose(gamma_11 + gamma_12, sf.get_ionisation_ratecoeff(2, 1), rel_tol=1e-12)
     assert sf.get_ionisation_ratecoeff(2, 1, n_ejected=3) == 0.0
+    # He II has only its built-in channels, so the rate of n_ejected=1 is the total to the last bit
+    assert sf.get_ionisation_ratecoeff(2, 2, n_ejected=1) == sf.get_ionisation_ratecoeff(2, 2)
+    # the getter checks n_ejected as add_ionisation_channel() does. A bool would select n_ejected=1.
+    for n_ejected in (True, 0, -1, 1.5, "2"):
+        with pytest.raises(ValueError, match="n_ejected must be None or an integer"):
+            sf.get_ionisation_ratecoeff(2, 1, n_ejected=n_ejected)  # ty: ignore[invalid-argument-type]
 
-    # the flux across each cut is zero: the double ionisation crosses both cuts
+    # the flux across each cut is zero: the double ionisation crosses both cuts. get_n_e() is the
+    # charge of the populations, so these identities also fail if the balance used another n_e.
     n_1, n_2, n_3 = (sf.ionpopdict[(2, ion_stage)] for ion_stage in (1, 2, 3))
     n_e = sf.get_n_e()
     assert math.isclose(n_1 * (gamma_11 + gamma_12), n_2 * n_e * HELIUM_ALPHAS[2], rel_tol=2 * balance_tol)
     assert math.isclose(n_1 * gamma_12 + n_2 * gamma_21, n_3 * n_e * HELIUM_ALPHAS[3], rel_tol=2 * balance_tol)
-    assert math.isclose(n_e, n_2 + 2 * n_3, rel_tol=1e-12)
     assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.02)
 
     # the double ionisation moves ions to He III
@@ -184,31 +195,48 @@ def test_extra_electron_source_term() -> None:
     # A Ne I K-shell channel with n_ejected=3: the two extra (Auger) electrons share the energy that the
     # ion does not keep. Its matrix is that of a single-ionisation channel with the same potential,
     # minus the source term of the extra electrons in the rows below the energy of one extra electron.
+    # The last of these rows has the weight that gives each extra electron its true energy.
     ionpot_ev = 870.0
     n_ion = 1e8
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
     extra_ev = ionpot_ev - sum(nist[(10, ion_stage)] for ion_stage in (1, 2, 3))
+    xs = lotz_like_xs(ionpot_ev, 1e-19)
 
-    fills = {}
-    for n_ejected in (1, 3):
-        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400) as sf:
-            sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-19), n_ejected=n_ejected)
-            fills[n_ejected] = sf.sfmatrix.copy()
-            channel = sf._ionisation_channels[(10, 1)][0]
-            if n_ejected == 3:
-                assert math.isclose(channel.extra_electron_energy_ev, extra_ev, rel_tol=1e-12)
-                engrid = sf.engrid
-                deltaen = sf.deltaen
-                xs_grid = channel.xs_grid
+    sf_single = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf_single.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, n_ejected=1)
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, n_ejected=3)
+    channel = sf._ionisation_channels[(10, 1)][0]
+    assert math.isclose(channel.extra_electron_energy_ev, extra_ev, rel_tol=1e-12)
 
-    expected = np.zeros_like(fills[1])
-    for i, en_ev in enumerate(engrid):
-        if en_ev < extra_ev / 2:
-            for j in range(len(engrid)):
-                if engrid[j] >= ionpot_ev:
-                    expected[i, j] = -n_ion * xs_grid[j] * deltaen * 2
-    assert np.any(expected != 0.0)
-    assert np.allclose(fills[3] - fills[1], expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+    engrid = sf.engrid
+    row_weights = np.clip((extra_ev / 2 - engrid) / sf.deltaen, 0.0, 1.0)
+    assert 0.0 < row_weights[row_weights < 1.0].max() < 1.0
+    column_values = np.where(engrid >= ionpot_ev, -n_ion * channel.xs_grid * sf.deltaen * 2, 0.0)
+    expected = np.outer(row_weights, column_values)
+    assert np.allclose(sf.sfmatrix - sf_single.sfmatrix, expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+
+def test_extra_electrons_get_their_true_energy() -> None:
+    # The matrix and the heating term give each extra electron its true energy, also for an energy
+    # between two grid points and in the first grid interval. So the energy fractions sum to the same
+    # value with and without the energy of the extra electrons. A coarse grid (10 eV) makes the test
+    # strict: without the weight of the last row, an extra electron of 0.3 eV counts as 10 eV.
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    for emin_ev in (0.1, 1.0):
+        for extra_ev in (0.05, 0.3, 5.0, 10.2, 25.0):
+            ionpot_ev = nist[(2, 1)] + nist[(2, 2)] + extra_ev
+            frac_sums = []
+            for extra_electron_energy_ev in (0.0, extra_ev):
+                with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=300) as sf:
+                    sf.add_ionisation_channel(
+                        2, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 5e-17), n_ejected=2,
+                        extra_electron_energy_ev=extra_electron_energy_ev,
+                    )  # fmt: skip
+                    sf.override_n_e(1e6)
+                    sf.solve(deposition_ev_per_s_per_cm3=1e8)
+                    frac_sums.append(sf.get_frac_sum())
+            assert math.isclose(frac_sums[0], frac_sums[1], rel_tol=1e-12), (emin_ev, extra_ev, frac_sums)
 
 
 def test_auger_channel_energy_accounting() -> None:
@@ -295,6 +323,10 @@ def test_multiple_ionisation_validation() -> None:
                 sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=n_ejected)  # ty: ignore[invalid-argument-type]
         with pytest.raises(ValueError, match="cannot remove"):
             sf.add_ionisation_channel(2, 1, 1e8, 100.0, xs, n_ejected=3)
+        # a numpy integer must not wrap around in the check of the number of electrons
+        for n_ejected in (np.uint8(255), np.int8(127)):
+            with pytest.raises(ValueError, match="cannot remove"):
+                sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=n_ejected)  # ty: ignore[invalid-argument-type]
         with pytest.raises(ValueError, match="less than the sum of the ground-state"):
             sf.add_ionisation_channel(8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2)
         with pytest.raises(ValueError, match="no extra electrons"):
@@ -303,6 +335,13 @@ def test_multiple_ionisation_validation() -> None:
         # from the caller
         with pytest.raises(ValueError, match="Set extra_electron_energy_ev to at most"):
             sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=2, extra_electron_energy_ev=60.0)
+        # the limit in the message includes MULTIPLE_IONPOT_REL_TOL. For He I to He III, 79.0 eV is
+        # inside the tolerance below the NIST sum (79.005 eV), so the limit is 0.784 eV and not a
+        # negative value.
+        with pytest.raises(ValueError, match=r"at most 0\.784 eV"):
+            sf.add_ionisation_channel(
+                2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, extra_electron_energy_ev=1.0
+            )
         with pytest.raises(ValueError, match="less than the sum of the ground-state"):
             sf.add_ionisation_channel(
                 8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2, extra_electron_energy_ev=0.0
@@ -314,6 +353,24 @@ def test_multiple_ionisation_validation() -> None:
         # a value from the caller that leaves the ion at least the NIST sum is kept as it is
         sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "auger", n_ejected=2, extra_electron_energy_ev=30.0)
         assert sf._ionisation_channels[(8, 1)][0].extra_electron_energy_ev == 30.0
+        # the limit of the message above passes the check
+        sf.add_ionisation_channel(
+            2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, extra_electron_energy_ev=0.784
+        )
+
+    # IonisationChannel.from_xs() applies the same rules as add_ionisation_channel(), so a channel has
+    # the same energy for its extra electrons on both paths
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_ionisation_channel(10, 1, 1e8, 870.0, lotz_like_xs(870.0, 1e-19), n_ejected=3)
+        channel = pynonthermal.IonisationChannel.from_xs(
+            arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=870.0, xs=lotz_like_xs(870.0, 1e-19), key=0, n_ejected=3
+        )
+        assert channel.extra_electron_energy_ev == sf._ionisation_channels[(10, 1)][0].extra_electron_energy_ev
+        with pytest.raises(ValueError, match="Set extra_electron_energy_ev to at most"):
+            pynonthermal.IonisationChannel.from_xs(
+                arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=870.0, xs=lotz_like_xs(870.0, 1e-19), key=0,
+                n_ejected=3, extra_electron_energy_ev=860.0,
+            )  # fmt: skip
 
     # an ion that the NIST data does not hold needs the value from the caller
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
@@ -345,3 +402,34 @@ def test_multiple_ionisation_validation() -> None:
             sf.add_ionisation_channel(8, 1, None, 110.0, lotz_like_xs(110.0, 1e-18), n_ejected=3)
         # the top stage is a sink, so a multiple ionisation out of it is permitted, as a single one is
         sf.add_ionisation_channel(8, 3, None, 140.0, lotz_like_xs(140.0, 1e-18), "double", n_ejected=2)
+
+
+def test_zero_rate_warning_with_a_jump() -> None:
+    # A stage whose cross sections are zero on the grid gets a warning. If a jump from a lower stage
+    # crosses the cut above that stage, the stages above it are not empty, and the warning says so.
+    def zero_xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        return np.zeros_like(np.asarray(en_ev, dtype=np.float64))
+
+    for double, match in (
+        (False, "ion_stage 2 is zero, so the balance leaves every stage above it empty"),
+        (True, "ion_stage 2 is zero. Only a multiple ionisation from a lower stage fills the stages above it"),
+    ):
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+            sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS, builtin_channels=False)
+            sf.add_ionisation(2, 1, None)
+            sf.add_ionisation_channel(2, 2, None, 54.418, zero_xs, "zero")
+            if double:
+                sf.add_ionisation_channel(2, 1, None, 79.0, lotz_like_xs(79.0, 5e-18), "double", n_ejected=2)
+            with pytest.warns(UserWarning, match=match):
+                sf.solve(deposition_ev_per_s_per_cm3=1e8)
+            assert (sf.ionpopdict[(2, 3)] > 0.0) == double
+
+
+def test_top_stage_leak_advice_with_a_jump() -> None:
+    # The top stage O III has a channel with n_ejected=2, so the chain must reach O V. A chain that
+    # reaches only O IV makes add_ionisation_channel() raise for the same channel.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(8, 1e8, recomb_ratecoeffs={2: 3e-13, 3: 3e-13})
+        sf.add_ionisation_channel(8, 3, None, 140.0, lotz_like_xs(140.0, 3e-17), "double", n_ejected=2)
+        with pytest.warns(UserWarning, match="up to ion stage 5"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)

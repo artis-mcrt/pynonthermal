@@ -255,6 +255,13 @@ def get_arxs_array_shell(
     return xs
 
 
+# The relative tolerance of the ionisation potential of a multiple-ionisation channel below the sum of
+# the NIST ground-state potentials that the channel crosses. A calculated threshold can be a little
+# below the NIST sum. Inside the tolerance the extra electrons get no energy. A channel outside the
+# tolerance makes energy, so IonisationChannel.from_xs() raises a ValueError.
+MULTIPLE_IONPOT_REL_TOL: float = 0.01
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class IonisationChannel:
     """One collisional ionisation channel of an ion, with the cross section that the solver uses.
@@ -318,7 +325,7 @@ class IonisationChannel:
         key: t.Any,
         *,
         n_ejected: int = 1,
-        extra_electron_energy_ev: float = 0.0,
+        extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
         """Make a channel from cross sections [cm^2] at every energy of the grid arr_enev [eV]."""
         name = f"The cross section of ionisation channel {key}"
@@ -350,7 +357,7 @@ class IonisationChannel:
         lotz: bool = False,
         *,
         n_ejected: int = 1,
-        extra_electron_energy_ev: float = 0.0,
+        extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
         """Make a channel, and check the cross section that xs gives on the energy grid arr_enev [eV].
 
@@ -361,8 +368,11 @@ class IonisationChannel:
             the number of electrons that one ionisation removes. ion_stage + n_ejected must not
             be more than Z + 1, the bare nucleus.
         extra_electron_energy_ev:
-            the total kinetic energy [eV] of the n_ejected - 1 extra electrons. It must be zero
-            when n_ejected is 1, and less than ionpot_ev.
+            the total kinetic energy [eV] of the n_ejected - 1 extra electrons. None (the
+            default) gives zero for n_ejected=1. For a larger n_ejected, None gives the value from
+            energy conservation (see _get_extra_electron_energy_ev()). A value must be less than
+            ionpot_ev. If the NIST data holds the potentials that the ionisation crosses, the ion
+            must also keep at least their sum, less MULTIPLE_IONPOT_REL_TOL.
         """
         name = f"The cross section of ionisation channel {key}"
 
@@ -374,24 +384,33 @@ class IonisationChannel:
         if not _is_integer(n_ejected) or n_ejected < 1:
             msg = f"n_ejected must be an integer of at least 1 but is {n_ejected!r}"
             raise ValueError(msg)
+        # a Python integer, so that the sum below cannot wrap around in a fixed-width numpy type
+        n_ejected = int(n_ejected)
         if ion_stage + n_ejected > Z + 1:
             msg = (
                 f"Z={Z} ion_stage {ion_stage} has {Z + 1 - ion_stage} electrons, so an ionisation cannot remove"
                 f" n_ejected={n_ejected} of them"
             )
             raise ValueError(msg)
+        if n_ejected == 1:
+            # the comparison with zero also rejects nan
+            if extra_electron_energy_ev is not None and extra_electron_energy_ev != 0.0:
+                msg = (
+                    "a channel with n_ejected=1 has no extra electrons, so extra_electron_energy_ev must be zero"
+                    f" but is {extra_electron_energy_ev}"
+                )
+                raise ValueError(msg)
+            extra_ev = 0.0
+        else:
+            extra_ev = _get_extra_electron_energy_ev(
+                Z, ion_stage, float(ionpot_ev), n_ejected, extra_electron_energy_ev
+            )
         # the extra electrons get their energy from the ionisation potential, so the ion keeps a
         # positive energy. The chained comparison also rejects nan.
-        if not 0.0 <= extra_electron_energy_ev < ionpot_ev:
+        if not 0.0 <= extra_ev < ionpot_ev:
             msg = (
                 f"extra_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
-                f" but is {extra_electron_energy_ev}"
-            )
-            raise ValueError(msg)
-        if n_ejected == 1 and extra_electron_energy_ev > 0.0:
-            msg = (
-                f"a channel with n_ejected=1 has no extra electrons, so extra_electron_energy_ev must be zero"
-                f" but is {extra_electron_energy_ev}"
+                f" but is {extra_ev}"
             )
             raise ValueError(msg)
 
@@ -419,9 +438,54 @@ class IonisationChannel:
             J_ev=get_J(Z, ion_stage, float(ionpot_ev)),
             key=key,
             lotz=lotz,
-            n_ejected=int(n_ejected),
-            extra_electron_energy_ev=float(extra_electron_energy_ev),
+            n_ejected=n_ejected,
+            extra_electron_energy_ev=float(extra_ev),
         )
+
+
+def _get_extra_electron_energy_ev(
+    Z: int, ion_stage: int, ionpot_ev: float, n_ejected: int, extra_electron_energy_ev: float | None
+) -> float:
+    # the total energy [eV] of the extra electrons of a multiple ionisation. The ion must keep at
+    # least the sum of the NIST ground-state potentials that the ionisation crosses. Else the channel
+    # makes energy. Without a value from the caller, energy conservation gives the energy: the
+    # ionisation potential of the channel minus that sum.
+    ionpots_ev = get_nist_ionisation_energies_ev()
+    stages = range(ion_stage, ion_stage + n_ejected)
+    missing = [stage for stage in stages if (Z, stage) not in ionpots_ev]
+    if missing:
+        if extra_electron_energy_ev is not None:
+            # the value of the caller is the only source for an ion that the NIST data does not hold
+            return extra_electron_energy_ev
+        msg = (
+            f"the NIST data has no ionisation potential for Z={Z} ion_stages {missing}, so energy"
+            " conservation cannot give the energy of the extra electrons. Give extra_electron_energy_ev."
+        )
+        raise ValueError(msg)
+    retained_ev = sum(ionpots_ev[(Z, stage)] for stage in stages)
+    retained_min_ev = retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL)
+    if ionpot_ev < retained_min_ev:
+        msg = (
+            f"ionpot_ev ({ionpot_ev} eV) of a channel that takes Z={Z} ion_stage {ion_stage} to ion_stage"
+            f" {ion_stage + n_ejected} is less than the sum of the ground-state ionisation potentials"
+            f" ({retained_ev:.3f} eV). Set ionpot_ev to at least that sum."
+        )
+        raise ValueError(msg)
+    if extra_electron_energy_ev is None:
+        return max(0.0, ionpot_ev - retained_ev)
+    # a value that is not a number fails the range check of IonisationChannel.from_xs()
+    if ionpot_ev - extra_electron_energy_ev < retained_min_ev:
+        # round the limit down, so that the value in the message passes the check
+        extra_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+        msg = (
+            f"with extra_electron_energy_ev={extra_electron_energy_ev} eV, the ion keeps"
+            f" {ionpot_ev - extra_electron_energy_ev:.3f} eV. To go from ion_stage {ion_stage} to ion_stage"
+            f" {ion_stage + n_ejected}, it must keep at least {retained_min_ev:.3f} eV. That is the sum of the"
+            f" ground-state ionisation potentials ({retained_ev:.3f} eV), less MULTIPLE_IONPOT_REL_TOL. Set"
+            f" extra_electron_energy_ev to at most {extra_max_ev:.3f} eV."
+        )
+        raise ValueError(msg)
+    return extra_electron_energy_ev
 
 
 def _check_zero_below_ionpot(

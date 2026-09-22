@@ -1,7 +1,8 @@
 """Ionisation balance helpers that do not depend on the Spencer-Fano solver.
 
-Every function here works with the ratio coefficient c_i = n_{i+1} n_e / n_i [cm^-3] of two
-adjacent ion stages i and i+1. The Saha equation gives c_i from a temperature (get_saha_factor()).
+Most functions here use the ratio coefficient c_i = n_{i+1} n_e / n_i [cm^-3] of two adjacent
+ion stages i and i+1. The functions with the suffix _cuts use the cut coefficients below. The
+Saha equation gives c_i from a temperature (get_saha_factor()).
 A balance of non-thermal ionisation against recombination gives c_i = Gamma_i / alpha_{i+1},
 with Gamma_i [s^-1] the ionisation rate coefficient of stage i and alpha_{i+1} [cm^3 s^-1] the
 recombination rate coefficient of stage i+1. In both cases n_{i+1} / n_i = c_i / n_e, so the same
@@ -104,17 +105,8 @@ def get_ion_fractions(ratio_coeffs: Sequence[float], n_e: float) -> list[float]:
             msg = f"ratio coefficients must be non-negative and finite but one is {c}"
             raise ValueError(msg)
 
-    # ln(n_i / n_1) for each stage, with -inf after a zero coefficient
-    ln_n_e = math.log(n_e)
-    ln_relative = [0.0]
-    for c in ratio_coeffs:
-        ln_relative.append(ln_relative[-1] + (math.log(c) - ln_n_e) if c > 0.0 else -math.inf)
-
-    ln_max = max(ln_relative)
-    relative = [math.exp(ln_n - ln_max) if ln_n > -math.inf else 0.0 for ln_n in ln_relative]
-    total = sum(relative)
-
-    return [value / total for value in relative]
+    # a ratio coefficient is the only term of its cut (see get_ion_fractions_cuts())
+    return _get_ion_fractions_ln_terms([[(j, math.log(c))] if c > 0.0 else [] for j, c in enumerate(ratio_coeffs)], n_e)
 
 
 def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) -> list[float]:
@@ -123,8 +115,8 @@ def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) ->
     cut_coeffs[j] holds the cut coefficients C_{j,i} [cm^-3] for i = 0 to j (see the module
     docstring), so cut_coeffs[j] has j + 1 values and the chain has len(cut_coeffs) + 1 stages.
     The index 0 is the lowest stage of the chain. The calculation runs in log space, so very
-    large and very small coefficients do not overflow. A stage is exactly zero when every term
-    of its cut is zero.
+    large and very small coefficients do not overflow. A stage is exactly zero when each term of
+    the cut below it is zero or comes from a stage that is zero.
 
     With only the last value of each cut greater than zero, the result is that of
     get_ion_fractions() with those values as the ratio coefficients.
@@ -135,6 +127,15 @@ def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) ->
     if not 0.0 < n_e < math.inf:
         msg = f"n_e must be greater than zero and finite but is {n_e}"
         raise ValueError(msg)
+
+    return _get_ion_fractions_ln_terms(_get_ln_cut_terms(cut_coeffs), n_e)
+
+
+def _get_ln_cut_terms(cut_coeffs: Sequence[Sequence[float]]) -> list[list[tuple[int, float]]]:
+    # check the cut coefficients of get_ion_fractions_cuts(), and get the terms of each cut that are
+    # not zero, as (i, ln C_{j,i}). A root find calls _get_ion_fractions_ln_terms() many times with
+    # the same terms, so it checks the coefficients and takes their logarithms only once.
+    ln_cut_terms = []
     for j, cut in enumerate(cut_coeffs):
         if len(cut) != j + 1:
             msg = (
@@ -145,21 +146,25 @@ def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) ->
             if not 0.0 <= c < math.inf:
                 msg = f"cut coefficients must be non-negative and finite but one is {c}"
                 raise ValueError(msg)
+        ln_cut_terms.append([(i, math.log(c)) for i, c in enumerate(cut) if c > 0.0])
+    return ln_cut_terms
 
+
+def _get_ion_fractions_ln_terms(ln_cut_terms: Sequence[Sequence[tuple[int, float]]], n_e: float) -> list[float]:
+    # the fractions of get_ion_fractions_cuts() from the terms of _get_ln_cut_terms()
     # ln(n_i / n_1) for each stage, with -inf for a stage that no cut term reaches
     ln_n_e = math.log(n_e)
     ln_relative = [0.0]
-    for cut in cut_coeffs:
-        # the same arithmetic as get_ion_fractions() for each term, so that a cut with one term
-        # gives the same result to the last bit
-        terms = [
-            ln_relative[i] + (math.log(c) - ln_n_e) for i, c in enumerate(cut) if c > 0.0 and ln_relative[i] > -math.inf
-        ]
+    for cut_terms in ln_cut_terms:
+        terms = [ln_relative[i] + (ln_c - ln_n_e) for i, ln_c in cut_terms if ln_relative[i] > -math.inf]
         if not terms:
             ln_relative.append(-math.inf)
-            continue
-        ln_term_max = max(terms)
-        ln_relative.append(ln_term_max + math.log(sum(math.exp(term - ln_term_max) for term in terms)))
+        elif len(terms) == 1:
+            # the ratio chain of get_ion_fractions(), with no sum to take
+            ln_relative.append(terms[0])
+        else:
+            ln_term_max = max(terms)
+            ln_relative.append(ln_term_max + math.log(sum(math.exp(term - ln_term_max) for term in terms)))
 
     ln_max = max(ln_relative)
     relative = [math.exp(ln_n - ln_max) if ln_n > -math.inf else 0.0 for ln_n in ln_relative]
@@ -257,9 +262,9 @@ def solve_charge_neutral_n_e(
 def solve_charge_neutral_n_e_ratios(n_e_fixed: float, elements: Sequence[tuple[float, int, Sequence[float]]]) -> float:
     """Get the charge-neutral free electron density [cm^-3] for elements with ratio coefficients.
 
-    This calls solve_charge_neutral_n_e() with the ion fractions of each element from
-    get_ion_fractions() at n_e. The mean charge of every element decreases with n_e, so the
-    solution is unique.
+    This calls solve_charge_neutral_n_e_cuts() with the ratio coefficient of each pair of adjacent
+    stages as the only term of its cut. The ion fractions are then those of get_ion_fractions(). The
+    mean charge of every element decreases with n_e, so the solution is unique.
 
     n_e_fixed:
         the free electron density [cm^-3] from ions whose populations are fixed
@@ -269,28 +274,13 @@ def solve_charge_neutral_n_e_ratios(n_e_fixed: float, elements: Sequence[tuple[f
         n_{i+1} n_e / n_i [cm^-3] of each pair of adjacent stages. The chain has one stage more
         than ratio coefficients.
     """
-    charge_density_min = 0.0
-    charge_density_max = 0.0
-    for n_elem, lowest_stage, ratio_coeffs in elements:
-        if not 0.0 < n_elem < math.inf:
-            msg = f"n_elem must be greater than zero and finite but is {n_elem}"
-            raise ValueError(msg)
-        if lowest_stage < 1:
-            msg = f"the lowest ion stage must be at least 1 but is {lowest_stage}"
-            raise ValueError(msg)
-        # every stage is at least as charged as the lowest one and at most as the highest one
-        charge_density_min += (lowest_stage - 1) * n_elem
-        charge_density_max += (lowest_stage - 1 + len(ratio_coeffs)) * n_elem
-
-    def charge_density(n_e: float) -> float:
-        # the free electron density that the ion charges of the elements give at n_e
-        total = 0.0
-        for n_elem, lowest_stage, ratio_coeffs in elements:
-            fractions = get_ion_fractions(ratio_coeffs, n_e)
-            total += n_elem * sum((lowest_stage - 1 + index) * frac for index, frac in enumerate(fractions))
-        return total
-
-    return solve_charge_neutral_n_e(n_e_fixed, charge_density, charge_density_min, charge_density_max)
+    return solve_charge_neutral_n_e_cuts(
+        n_e_fixed,
+        [
+            (n_elem, lowest_stage, [[0.0] * j + [c] for j, c in enumerate(ratio_coeffs)])
+            for n_elem, lowest_stage, ratio_coeffs in elements
+        ],
+    )
 
 
 def solve_charge_neutral_n_e_cuts(
@@ -315,6 +305,8 @@ def solve_charge_neutral_n_e_cuts(
     """
     charge_density_min = 0.0
     charge_density_max = 0.0
+    # (n_elem, lowest_stage, the cut terms of _get_ln_cut_terms()) of each element
+    chains = []
     for n_elem, lowest_stage, cut_coeffs in elements:
         if not 0.0 < n_elem < math.inf:
             msg = f"n_elem must be greater than zero and finite but is {n_elem}"
@@ -325,12 +317,13 @@ def solve_charge_neutral_n_e_cuts(
         # every stage is at least as charged as the lowest one and at most as the highest one
         charge_density_min += (lowest_stage - 1) * n_elem
         charge_density_max += (lowest_stage - 1 + len(cut_coeffs)) * n_elem
+        chains.append((n_elem, lowest_stage, _get_ln_cut_terms(cut_coeffs)))
 
     def charge_density(n_e: float) -> float:
         # the free electron density that the ion charges of the elements give at n_e
         total = 0.0
-        for n_elem, lowest_stage, cut_coeffs in elements:
-            fractions = get_ion_fractions_cuts(cut_coeffs, n_e)
+        for n_elem, lowest_stage, ln_cut_terms in chains:
+            fractions = _get_ion_fractions_ln_terms(ln_cut_terms, n_e)
             total += n_elem * sum((lowest_stage - 1 + index) * frac for index, frac in enumerate(fractions))
         return total
 
