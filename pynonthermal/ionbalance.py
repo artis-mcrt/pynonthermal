@@ -7,7 +7,19 @@ with Gamma_i [s^-1] the ionisation rate coefficient of stage i and alpha_{i+1} [
 recombination rate coefficient of stage i+1. In both cases n_{i+1} / n_i = c_i / n_e, so the same
 two functions give the ion fractions (get_ion_fractions()) and the charge-neutral free electron
 density (solve_charge_neutral_n_e_ratios()). solve_charge_neutral_n_e() is the general root find
-behind it, for any population model whose charge density does not increase with n_e.
+behind it, for any population model whose charge density divided by n_e decreases with n_e.
+
+A multiple ionisation takes stage i to stage i+k with k > 1, and recombination still takes stage
+i+1 to stage i. The ratio of two adjacent stages then depends on the stages below them, so a
+single ratio coefficient is not sufficient. In a steady state, the net flux across the cut between
+each pair of adjacent stages j and j+1 is zero:
+
+    sum over i <= j of n_i * (sum over k > j - i of Gamma_{i,k}) = n_{j+1} n_e alpha_{j+1}
+
+The cut coefficient C_{j,i} = (sum over k > j - i of Gamma_{i,k}) / alpha_{j+1} [cm^-3] then gives
+n_{j+1} = (sum over i <= j of n_i C_{j,i}) / n_e. get_ion_fractions_cuts() and
+solve_charge_neutral_n_e_cuts() use these coefficients. With single ionisation only, C_{j,j} is the
+ratio coefficient c_j and every other C_{j,i} is zero.
 
 The Saha equation describes a gas whose ionisation is thermal, which a gas with non-thermal
 ionisation is not. SpencerFanoSolver.add_element() therefore has no Saha rule, and
@@ -105,22 +117,76 @@ def get_ion_fractions(ratio_coeffs: Sequence[float], n_e: float) -> list[float]:
     return [value / total for value in relative]
 
 
+def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) -> list[float]:
+    """Get the fractions of a contiguous chain of ion stages from the cut coefficients.
+
+    cut_coeffs[j] holds the cut coefficients C_{j,i} [cm^-3] for i = 0 to j (see the module
+    docstring), so cut_coeffs[j] has j + 1 values and the chain has len(cut_coeffs) + 1 stages.
+    The index 0 is the lowest stage of the chain. The calculation runs in log space, so very
+    large and very small coefficients do not overflow. A stage is exactly zero when every term
+    of its cut is zero.
+
+    With only the last value of each cut greater than zero, the result is that of
+    get_ion_fractions() with those values as the ratio coefficients.
+
+    n_e:
+        the free electron density in cm^-3
+    """
+    if not 0.0 < n_e < math.inf:
+        msg = f"n_e must be greater than zero and finite but is {n_e}"
+        raise ValueError(msg)
+    for j, cut in enumerate(cut_coeffs):
+        if len(cut) != j + 1:
+            msg = (
+                f"cut_coeffs[{j}] must have {j + 1} values (one for each stage at or below the cut) but has {len(cut)}"
+            )
+            raise ValueError(msg)
+        for c in cut:
+            if not 0.0 <= c < math.inf:
+                msg = f"cut coefficients must be non-negative and finite but one is {c}"
+                raise ValueError(msg)
+
+    # ln(n_i / n_1) for each stage, with -inf for a stage that no cut term reaches
+    ln_n_e = math.log(n_e)
+    ln_relative = [0.0]
+    for cut in cut_coeffs:
+        # the same arithmetic as get_ion_fractions() for each term, so that a cut with one term
+        # gives the same result to the last bit
+        terms = [
+            ln_relative[i] + (math.log(c) - ln_n_e) for i, c in enumerate(cut) if c > 0.0 and ln_relative[i] > -math.inf
+        ]
+        if not terms:
+            ln_relative.append(-math.inf)
+            continue
+        ln_term_max = max(terms)
+        ln_relative.append(ln_term_max + math.log(sum(math.exp(term - ln_term_max) for term in terms)))
+
+    ln_max = max(ln_relative)
+    relative = [math.exp(ln_n - ln_max) if ln_n > -math.inf else 0.0 for ln_n in ln_relative]
+    total = sum(relative)
+
+    return [value / total for value in relative]
+
+
 def solve_charge_neutral_n_e(
     n_e_fixed: float, charge_density: Callable[[float], float], charge_density_min: float, charge_density_max: float
 ) -> float:
     """Get the free electron density [cm^-3] that makes the plasma charge neutral.
 
     The result n_e satisfies n_e = n_e_fixed + charge_density(n_e). A bisection in ln(n_e) finds
-    it. The function works for any population model whose charge density does not increase with
-    the free electron density, for example the ratio coefficients of solve_charge_neutral_n_e_ratios()
-    or a collisional-radiative model.
+    it. The function works for any population model whose charge density divided by n_e decreases
+    with the free electron density. Then the residual n_e_fixed + charge_density(n_e) - n_e changes
+    sign only once. A charge density that does not increase with n_e satisfies this condition, for
+    example the ratio coefficients of solve_charge_neutral_n_e_ratios() or a collisional-radiative
+    model. If the condition is not true, the residual can change sign more than once, and the
+    bisection gives one of the solutions.
 
     n_e_fixed:
         the free electron density [cm^-3] from ions whose populations are fixed
     charge_density:
         a function of the free electron density n_e [cm^-3] that gives the electrons [cm^-3] from
-        the ion charges of the modelled populations at that n_e. It must not increase with n_e, so
-        that the solution is unique.
+        the ion charges of the modelled populations at that n_e. charge_density(n_e) / n_e must
+        decrease with n_e, so that the solution is unique.
     charge_density_min:
         a lower bound of charge_density(n_e) at every n_e, for example the charge of the lowest ion
         stage of every element. Zero if no positive bound exists.
@@ -150,7 +216,8 @@ def solve_charge_neutral_n_e(
     def residual(n_e: float) -> float:
         return n_e_fixed + charge_density(n_e) - n_e
 
-    # the residual falls with n_e, and it is at most zero at the upper bracket
+    # the residual divided by n_e falls with n_e, so the residual changes sign once. It is at most
+    # zero at the upper bracket.
     if n_e_lower > 0.0:
         # the lower bracket is exact: the charge density is at least charge_density_min, so the residual
         # there is at least zero. Zero means that the populations sit at the bound, and then the lower
@@ -220,6 +287,50 @@ def solve_charge_neutral_n_e_ratios(n_e_fixed: float, elements: Sequence[tuple[f
         total = 0.0
         for n_elem, lowest_stage, ratio_coeffs in elements:
             fractions = get_ion_fractions(ratio_coeffs, n_e)
+            total += n_elem * sum((lowest_stage - 1 + index) * frac for index, frac in enumerate(fractions))
+        return total
+
+    return solve_charge_neutral_n_e(n_e_fixed, charge_density, charge_density_min, charge_density_max)
+
+
+def solve_charge_neutral_n_e_cuts(
+    n_e_fixed: float, elements: Sequence[tuple[float, int, Sequence[Sequence[float]]]]
+) -> float:
+    """Get the charge-neutral free electron density [cm^-3] for elements with cut coefficients.
+
+    This calls solve_charge_neutral_n_e() with the ion fractions of each element from
+    get_ion_fractions_cuts() at n_e. With a multiple ionisation, the mean charge of an element
+    can increase with n_e. The solution is unique if the mean charge divided by n_e decreases with
+    n_e. A test of random rate coefficients finds this condition true for chains of up to 6 stages,
+    with every jump size. A jump of more than about 13 stages, together with very different
+    recombination rate coefficients, can give more than one solution. Then the bisection gives one
+    of them.
+
+    n_e_fixed:
+        the free electron density [cm^-3] from ions whose populations are fixed
+    elements:
+        one tuple (n_elem, lowest_stage, cut_coeffs) per element: the element number density
+        [cm^-3], the lowest ion stage of its chain, and the cut coefficients C_{j,i} [cm^-3] of
+        get_ion_fractions_cuts(). The chain has one stage more than cuts.
+    """
+    charge_density_min = 0.0
+    charge_density_max = 0.0
+    for n_elem, lowest_stage, cut_coeffs in elements:
+        if not 0.0 < n_elem < math.inf:
+            msg = f"n_elem must be greater than zero and finite but is {n_elem}"
+            raise ValueError(msg)
+        if lowest_stage < 1:
+            msg = f"the lowest ion stage must be at least 1 but is {lowest_stage}"
+            raise ValueError(msg)
+        # every stage is at least as charged as the lowest one and at most as the highest one
+        charge_density_min += (lowest_stage - 1) * n_elem
+        charge_density_max += (lowest_stage - 1 + len(cut_coeffs)) * n_elem
+
+    def charge_density(n_e: float) -> float:
+        # the free electron density that the ion charges of the elements give at n_e
+        total = 0.0
+        for n_elem, lowest_stage, cut_coeffs in elements:
+            fractions = get_ion_fractions_cuts(cut_coeffs, n_e)
             total += n_elem * sum((lowest_stage - 1 + index) * frac for index, frac in enumerate(fractions))
         return total
 

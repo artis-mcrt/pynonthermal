@@ -13,6 +13,7 @@ from pynonthermal.axelrod import get_binding_energies
 from pynonthermal.axelrod import get_lotz_xs_ionisation_vec
 from pynonthermal.axelrod import get_shell_configs
 from pynonthermal.axelrod import LOTZ_A_CM2_EV2
+from pynonthermal.base import _is_integer
 from pynonthermal.base import CrossSectionFunc
 from pynonthermal.base import get_xs_on_grid
 from pynonthermal.constants import EV
@@ -290,6 +291,22 @@ class IonisationChannel:
     lotz: bool = False
     """True if the cross section is the Lotz formula, which the shells without a fit use."""
 
+    n_ejected: int = 1
+    """The number of electrons that one ionisation removes from the ion.
+
+    The ionisation takes the ion from ion_stage to ion_stage + n_ejected. The first ejected
+    electron has the Lorentzian distribution of Psecondary_vec(). The other n_ejected - 1
+    electrons share extra_electron_energy_ev.
+    """
+
+    extra_electron_energy_ev: float = 0.0
+    """The total kinetic energy [eV] of the n_ejected - 1 extra electrons of one ionisation.
+
+    It is zero when n_ejected is 1. Each extra electron has the energy
+    extra_electron_energy_ev / (n_ejected - 1). The ion keeps ionpot_ev - extra_electron_energy_ev
+    as potential energy, and the ionisation fraction counts only that energy.
+    """
+
     @classmethod
     def from_xs_grid(
         cls,
@@ -299,6 +316,9 @@ class IonisationChannel:
         ionpot_ev: float,
         xs_vec: npt.NDArray[np.float64],
         key: t.Any,
+        *,
+        n_ejected: int = 1,
+        extra_electron_energy_ev: float = 0.0,
     ) -> t.Self:
         """Make a channel from cross sections [cm^2] at every energy of the grid arr_enev [eV]."""
         name = f"The cross section of ionisation channel {key}"
@@ -314,6 +334,8 @@ class IonisationChannel:
             ionpot_ev=ionpot_ev,
             xs=_interpolate_grid_xs(arr_enev, xs_grid, float(ionpot_ev)),
             key=key,
+            n_ejected=n_ejected,
+            extra_electron_energy_ev=extra_electron_energy_ev,
         )
 
     @classmethod
@@ -326,17 +348,51 @@ class IonisationChannel:
         xs: CrossSectionFunc,
         key: t.Any,
         lotz: bool = False,
+        *,
+        n_ejected: int = 1,
+        extra_electron_energy_ev: float = 0.0,
     ) -> t.Self:
         """Make a channel, and check the cross section that xs gives on the energy grid arr_enev [eV].
 
         get_J() gives the width of the secondary-electron distribution from Z, ion_stage, and
         ionpot_ev, so the channel is always consistent with its ionisation potential.
+
+        n_ejected:
+            the number of electrons that one ionisation removes. ion_stage + n_ejected must not
+            be more than Z + 1, the bare nucleus.
+        extra_electron_energy_ev:
+            the total kinetic energy [eV] of the n_ejected - 1 extra electrons. It must be zero
+            when n_ejected is 1, and less than ionpot_ev.
         """
         name = f"The cross section of ionisation channel {key}"
 
         # the chained comparison also rejects nan, for which every comparison is False
         if not 0.0 < ionpot_ev < math.inf:
             msg = f"ionpot_ev must be greater than zero and finite but is {ionpot_ev}"
+            raise ValueError(msg)
+
+        if not _is_integer(n_ejected) or n_ejected < 1:
+            msg = f"n_ejected must be an integer of at least 1 but is {n_ejected!r}"
+            raise ValueError(msg)
+        if ion_stage + n_ejected > Z + 1:
+            msg = (
+                f"Z={Z} ion_stage {ion_stage} has {Z + 1 - ion_stage} electrons, so an ionisation cannot remove"
+                f" n_ejected={n_ejected} of them"
+            )
+            raise ValueError(msg)
+        # the extra electrons get their energy from the ionisation potential, so the ion keeps a
+        # positive energy. The chained comparison also rejects nan.
+        if not 0.0 <= extra_electron_energy_ev < ionpot_ev:
+            msg = (
+                f"extra_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
+                f" but is {extra_electron_energy_ev}"
+            )
+            raise ValueError(msg)
+        if n_ejected == 1 and extra_electron_energy_ev > 0.0:
+            msg = (
+                f"a channel with n_ejected=1 has no extra electrons, so extra_electron_energy_ev must be zero"
+                f" but is {extra_electron_energy_ev}"
+            )
             raise ValueError(msg)
 
         xs_grid = get_xs_on_grid(xs, arr_enev, name)
@@ -363,6 +419,8 @@ class IonisationChannel:
             J_ev=get_J(Z, ion_stage, float(ionpot_ev)),
             key=key,
             lotz=lotz,
+            n_ejected=int(n_ejected),
+            extra_electron_energy_ev=float(extra_electron_energy_ev),
         )
 
 

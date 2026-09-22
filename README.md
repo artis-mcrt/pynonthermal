@@ -256,6 +256,11 @@ pair of adjacent stages `i` and `i+1` the balance is `n_i Gamma_i = n_{i+1} n_e 
 and `alpha_{i+1}` is the coefficient you give. The chain runs from one below the lowest key to the
 highest key, so the example is O I to O IV.
 
+A channel that removes more than one electron (see [Multiple ionisation](#multiple-ionisation)) jumps
+over stages. Then the balance holds for each cut between two adjacent stages `j` and `j+1`: the
+ionisations from all stages `i <= j` that cross the cut equal `n_{j+1} n_e alpha_{j+1}`.
+Recombination is always from one stage to the stage below it.
+
 A coefficient outside `1e-16` to `1e-8` cm^3 s^-1 raises a warning
 (`RECOMB_RATECOEFF_MIN_WARN` and `RECOMB_RATECOEFF_MAX_WARN`). The published radiative and
 dielectronic fits stay inside that range, so a value outside it is nearly always a unit error: a
@@ -263,7 +268,7 @@ coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1. The value 
 
 The solution depends on the ion densities, so `solve()` iterates: it solves the equation, updates the
 densities from the balance and the free electron density from charge neutrality, and repeats until the
-population ratios agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations; a
+ionisation rate coefficients agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations; a
 `RuntimeError` reports a balance that did not converge within 100. `sf.balance_iterations` says how many
 it took.
 
@@ -278,9 +283,12 @@ Points to note:
   then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
-The functions behind the balance are in `pynonthermal.ionbalance`: `get_ion_fractions()`,
-`solve_charge_neutral_n_e_ratios()`, and the general root find `solve_charge_neutral_n_e()`, which
-takes any charge density function that does not increase with the free electron density.
+The functions behind the balance are in `pynonthermal.ionbalance`:
+
+- `get_ion_fractions()` and `solve_charge_neutral_n_e_ratios()` for single ionisation;
+- `get_ion_fractions_cuts()` and `solve_charge_neutral_n_e_cuts()` for multiple ionisation;
+- the general root find `solve_charge_neutral_n_e()`. It takes any charge density function whose
+  value divided by the free electron density decreases with that density.
 
 ### The Saha equation as a comparison
 
@@ -416,6 +424,49 @@ thermalises below `emin_ev`, which is a small part of the heating fraction.
 The solver keeps the Lorentzian secondary-electron distribution of Kozma and Fransson (1992, equation 4),
 whose width comes from `pynonthermal.collion.get_J()`. The matrix fill integrates that distribution
 analytically, so its shape is not adjustable.
+
+### Multiple ionisation
+
+A channel of `add_ionisation_channel()` can remove more than one electron. Set `n_ejected` to the
+number of electrons that one ionisation removes. The ionisation balance of `add_element()` then sends
+the ions of that channel from `ion_stage` to `ion_stage + n_ejected`.
+
+```python
+nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+with pynonthermal.SpencerFanoSolver() as sf:
+    sf.add_element(38, 1.0e6, recomb_ratecoeffs={2: 3e-13, 3: 1e-12, 4: 3e-12})
+    # direct double ionisation of Sr I: the threshold is the sum of the two potentials
+    ionpot_ev = nist[(38, 1)] + nist[(38, 2)]
+    sf.add_ionisation_channel(38, 1, None, ionpot_ev, xs_vec=my_double_xs, channelkey="double", n_ejected=2)
+    sf.solve(deposition_ev_per_s_per_cm3=1.0)
+    gamma_double = sf.get_ionisation_ratecoeff(38, 1, n_ejected=2)
+```
+
+Give exclusive channels. A single-ionisation cross section must not include the events of a
+multiple-ionisation channel of the same ion, or the solver counts those events two times. The
+built-in channels all have `n_ejected=1`.
+
+The energy of the extra electrons comes from energy conservation, so no Auger data is necessary:
+
+- The primary electron loses `ionpot_ev` plus the energy of the first ejected electron. That electron
+  has the Lorentzian distribution, as for a single ionisation.
+- The ion keeps the sum of the NIST ground-state potentials from `ion_stage` to
+  `ion_stage + n_ejected - 1`. The ionisation fraction counts only this energy.
+- The `n_ejected - 1` extra electrons share the remaining energy equally. They appear at a fixed energy,
+  with the source term of the Auger electrons in equation 8 of Shingles et al. (2020), MNRAS, 492,
+  2029–2043, doi:10.1093/mnras/stz3412. An extra electron at or below `emin_ev` counts as heating.
+
+Two cases are typical:
+
+- Inner-shell ionisation followed by Auger decay: set `ionpot_ev` to the potential of the shell. The
+  extra electrons can then have hundreds of eV. This value ignores fluorescence and excited final
+  states, so it is an upper limit.
+- Direct multiple ionisation: set `ionpot_ev` to the sum of the potentials. The extra electrons then
+  have no energy, and the first ejected electron gets all the energy above the threshold.
+
+`ionpot_ev` must be at least the sum of the potentials, less 1 % (`MULTIPLE_IONPOT_REL_TOL`). Give
+`extra_electron_energy_ev` to replace the value from energy conservation, for example a calculated
+Auger electron energy. It is also necessary for an ion that the NIST data does not have.
 
 ## Citing pynonthermal
 
