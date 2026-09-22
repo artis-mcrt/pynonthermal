@@ -466,7 +466,8 @@ Two cases are typical:
 
 `ionpot_ev` must be at least the sum of the potentials, less 1 % (`MULTIPLE_IONPOT_REL_TOL`). Give
 `extra_electron_energy_ev` to replace the value from energy conservation, for example a calculated
-Auger electron energy. It is also necessary for an ion that the NIST data does not have.
+Auger electron energy. The ion must still keep at least the sum of the potentials, less the same 1 %.
+The value is also necessary for an ion that the NIST data does not have.
 
 ## Citing pynonthermal
 

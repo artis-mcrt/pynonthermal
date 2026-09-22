@@ -299,11 +299,44 @@ def test_multiple_ionisation_validation() -> None:
             sf.add_ionisation_channel(8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2)
         with pytest.raises(ValueError, match="no extra electrons"):
             sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, extra_electron_energy_ev=10.0)
-        with pytest.raises(ValueError, match="less than ionpot_ev"):
-            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=2, extra_electron_energy_ev=100.0)
+        # the ion must keep the sum of the NIST potentials (48.7 eV for O I to O III), also with a value
+        # from the caller
+        with pytest.raises(ValueError, match="Set extra_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=2, extra_electron_energy_ev=60.0)
+        with pytest.raises(ValueError, match="less than the sum of the ground-state"):
+            sf.add_ionisation_channel(
+                8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2, extra_electron_energy_ev=0.0
+            )
         # a rejected call leaves the solver unchanged
         assert not sf._ionisation_channels
         assert not sf.ionpopdict
+
+        # a value from the caller that leaves the ion at least the NIST sum is kept as it is
+        sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "auger", n_ejected=2, extra_electron_energy_ev=30.0)
+        assert sf._ionisation_channels[(8, 1)][0].extra_electron_energy_ev == 30.0
+
+    # an ion that the NIST data does not hold needs the value from the caller
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    Z_missing, stage_missing = next(
+        (Z, ion_stage) for Z in range(1, 111) for ion_stage in range(1, Z) if (Z, ion_stage) not in nist
+    )
+    ionpot_ev = 2000.0
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        with pytest.raises(ValueError, match="Give extra_electron_energy_ev"):
+            sf.add_ionisation_channel(
+                Z_missing, stage_missing, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-20), n_ejected=2
+            )
+        # without the NIST data, the ion must still keep a positive energy
+        with pytest.raises(ValueError, match="less than ionpot_ev"):
+            sf.add_ionisation_channel(
+                Z_missing, stage_missing, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-20), n_ejected=2,
+                extra_electron_energy_ev=ionpot_ev,
+            )  # fmt: skip
+        sf.add_ionisation_channel(
+            Z_missing, stage_missing, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-20), n_ejected=2,
+            extra_electron_energy_ev=100.0,
+        )  # fmt: skip
+        assert sf._ionisation_channels[(Z_missing, stage_missing)][0].extra_electron_energy_ev == 100.0
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(8, 1e8, recomb_ratecoeffs=OXYGEN_ALPHAS)

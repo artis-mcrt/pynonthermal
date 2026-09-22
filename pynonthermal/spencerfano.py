@@ -1534,7 +1534,10 @@ class SpencerFanoSolver:
             For an inner-shell ionisation followed by Auger decay, set ionpot_ev to the potential of
             the shell. For a direct multiple ionisation, set ionpot_ev to the sum of the potentials,
             and the extra electrons get no energy. Give a value to replace the value from energy
-            conservation, for example a calculated Auger electron energy.
+            conservation, for example a calculated Auger electron energy. If the NIST data holds
+            the potentials, the ion must still keep at least their sum (less
+            MULTIPLE_IONPOT_REL_TOL). For an ion that the NIST data does not hold, the value is
+            necessary.
 
         The first ejected electron has the Lorentzian distribution. Each extra electron appears at
         the energy extra_electron_energy_ev / (n_ejected - 1), or goes to heating below emin_ev. The
@@ -1562,14 +1565,14 @@ class SpencerFanoSolver:
         if channelkey is None:
             channelkey = len(self._ionisation_channels.get((Z, ion_stage), []))
 
-        # IonisationChannel.from_xs() rejects a bad n_ejected, so the energy from energy
-        # conservation is found only for a valid one
-        if extra_electron_energy_ev is None:
-            extra_electron_energy_ev = (
-                self._get_extra_electron_energy_ev(Z, ion_stage, ionpot_ev, n_ejected)
-                if _is_integer(n_ejected) and 2 <= n_ejected <= Z + 1 - ion_stage
-                else 0.0
+        # IonisationChannel.from_xs() rejects a bad n_ejected, so the energy of the extra electrons
+        # is found and checked only for a valid one
+        if _is_integer(n_ejected) and 2 <= n_ejected <= Z + 1 - ion_stage:
+            extra_electron_energy_ev = self._get_extra_electron_energy_ev(
+                Z, ion_stage, ionpot_ev, n_ejected, extra_electron_energy_ev
             )
+        elif extra_electron_energy_ev is None:
+            extra_electron_energy_ev = 0.0
 
         # every check runs before anything is recorded, so a rejected call leaves the solver
         # unchanged. The cross section is checked even for a zero population, which adds no channel.
@@ -1629,28 +1632,47 @@ class SpencerFanoSolver:
         self._store_ionisation_channel(Z, ion_stage, channel)
         self._add_ionisation_channel_to_matrix(n_ion, channel, cache=Z in self._balanced_elements)
 
-    def _get_extra_electron_energy_ev(self, Z: int, ion_stage: int, ionpot_ev: float, n_ejected: int) -> float:
-        # the total energy [eV] of the extra electrons of a multiple ionisation from energy
-        # conservation: the ionisation potential of the channel minus the potential energy that the
-        # ion keeps, which is the sum of the NIST ground-state potentials that the ionisation crosses
+    def _get_extra_electron_energy_ev(
+        self, Z: int, ion_stage: int, ionpot_ev: float, n_ejected: int, extra_electron_energy_ev: float | None
+    ) -> float:
+        # the total energy [eV] of the extra electrons of a multiple ionisation. The ion must keep at
+        # least the sum of the NIST ground-state potentials that the ionisation crosses, or the channel
+        # makes energy. Without a value from the caller, energy conservation gives the energy: the
+        # ionisation potential of the channel minus that sum.
         ionpots_ev = pynonthermal.collion.get_nist_ionisation_energies_ev()
         stages = range(ion_stage, ion_stage + n_ejected)
         missing = [stage for stage in stages if (Z, stage) not in ionpots_ev]
         if missing:
+            if extra_electron_energy_ev is not None:
+                # the value of the caller is the only source for an ion that the NIST data does not hold
+                return extra_electron_energy_ev
             msg = (
                 f"the NIST data has no ionisation potential for Z={Z} ion_stages {missing}, so energy"
                 " conservation cannot give the energy of the extra electrons. Give extra_electron_energy_ev."
             )
             raise ValueError(msg)
         retained_ev = sum(ionpots_ev[(Z, stage)] for stage in stages)
-        if ionpot_ev < retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL):
+        retained_min_ev = retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL)
+        if ionpot_ev < retained_min_ev:
             msg = (
                 f"ionpot_ev ({ionpot_ev} eV) of a channel that takes Z={Z} ion_stage {ion_stage} to ion_stage"
                 f" {ion_stage + n_ejected} is less than the sum of the ground-state ionisation potentials"
                 f" ({retained_ev:.3f} eV). Set ionpot_ev to at least that sum."
             )
             raise ValueError(msg)
-        return max(0.0, ionpot_ev - retained_ev)
+        if extra_electron_energy_ev is None:
+            return max(0.0, ionpot_ev - retained_ev)
+        # a value that is not a number fails the checks of IonisationChannel.from_xs()
+        if ionpot_ev - extra_electron_energy_ev < retained_min_ev:
+            msg = (
+                f"with extra_electron_energy_ev={extra_electron_energy_ev} eV, the ion keeps"
+                f" {ionpot_ev - extra_electron_energy_ev:.3f} eV, but it needs the sum of the ground-state"
+                f" ionisation potentials ({retained_ev:.3f} eV) to go from ion_stage {ion_stage} to ion_stage"
+                f" {ion_stage + n_ejected}. Set extra_electron_energy_ev to at most"
+                f" {ionpot_ev - retained_ev:.3f} eV."
+            )
+            raise ValueError(msg)
+        return extra_electron_energy_ev
 
     def add_element(
         self,
