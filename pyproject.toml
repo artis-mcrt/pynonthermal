@@ -54,7 +54,13 @@ project-excludes = [
 
 [tool.pytest.ini_options]
 addopts = " --durations=0 -n auto"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # A free-threaded Python build turns on the GIL when it loads an extension module that does not
+    # declare support for free threading, for example fontTools through matplotlib. The warning comes
+    # from a dependency, not from pynonthermal.
+    "ignore:The global interpreter lock:RuntimeWarning",
+]
 
 [tool.ruff]
 line-length = 120
