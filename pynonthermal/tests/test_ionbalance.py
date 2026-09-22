@@ -868,7 +868,8 @@ def test_add_element_is_atomic() -> None:
             assert not sf_emin.sfmatrix.any()
 
         # the repeated call with a usable model succeeds
-        sf.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12})
+        with pytest.warns(pynonthermal.LotzApproximationWarning, match="Z=56"):
+            sf.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12})
         assert 56 in sf._balanced_elements
 
 

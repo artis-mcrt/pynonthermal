@@ -709,7 +709,11 @@ def test_ionisation_fill_matches_masked_reference() -> None:
     ]:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin, emax_ev=emax, npts=npts) as sf:
             n_ion = 1e5
-            sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
+            if Z == 56:
+                with pytest.warns(pynonthermal.LotzApproximationWarning):
+                    sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
+            else:
+                sf.add_ionisation(Z, ion_stage, n_ion=n_ion)
             expected = np.zeros((npts, npts))
             for channel in sf._ionisation_channels[(Z, ion_stage)]:
                 expected += _reference_ionisation_fill(sf, n_ion, channel)

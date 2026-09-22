@@ -54,6 +54,7 @@ project-excludes = [
 
 [tool.pytest.ini_options]
 addopts = " --durations=0 -n auto"
+filterwarnings = ["error"]
 
 [tool.ruff]
 line-length = 120

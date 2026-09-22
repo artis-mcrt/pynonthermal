@@ -16,7 +16,8 @@ outputfolder = Path(__file__).absolute().parent / "output"
 def test_lotz_heavy_element() -> None:
     # elements heavier than Ni (Z>28) use the Axelrod 1980/Lotz 1967 cross section approximation
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400, verbose=True) as sf:
-        sf.add_ionisation(56, 2, n_ion=1.0)
+        with pytest.warns(pynonthermal.LotzApproximationWarning, match="Z=56 ion_stage 2"):
+            sf.add_ionisation(56, 2, n_ion=1.0)
         sf.override_n_e(1.0)
         sf.solve(deposition_ev_per_s_per_cm3=100)
 
@@ -124,7 +125,10 @@ def test_invalid_excitation_fraction_reported() -> None:
         transition = sf.excitationlists[(2, 1)][0]
         sf.excitationlists[(2, 1)][0] = dataclasses.replace(transition, levelnumberdensity=1e30)
 
-        with pytest.warns(UserWarning, match="invalid frac_excitation_ion"):
+        with (
+            pytest.warns(UserWarning, match="invalid frac_excitation_ion"),
+            pytest.warns(UserWarning, match="energy fractions sum"),
+        ):
             frac_excitation_tot = sf.get_frac_excitation_tot()
 
         assert frac_excitation_tot > 1.0
