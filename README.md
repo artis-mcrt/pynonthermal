@@ -420,7 +420,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
 one grid cell. A cross section given as a function is called there; an array can only be interpolated, so
 resolve that region with `npts` if it matters for your ion. The term it feeds is the energy that
-thermalises below `emin_ev`, which is a small part of the heating fraction.
+thermalises below `emin_ev`, which is a small part of the heating fraction. An autoionisation channel uses
+only the values on the grid, as `add_excitation()` does.
 
 The solver keeps the Lorentzian secondary-electron distribution of Kozma and Fransson (1992, equation 4),
 whose width comes from `pynonthermal.collion.get_J()`. The matrix fill integrates that distribution
@@ -475,16 +476,18 @@ Two cases are typical:
 energy, and the ion keeps all of `ionpot_ev`. Give `fixed_electron_energy_ev` to replace the value from
 energy conservation, for example a calculated Auger electron energy. The ion must still keep at least
 the sum of the potentials, less the same 1 %. The value is also necessary for an ion that the NIST data
-does not have.
+does not have. In v2026.9.23 the keyword was `extra_electron_energy_ev`. That name still works, with a
+`DeprecationWarning`.
 
 ### Channels from a metastable level
 
 A channel can start from a metastable level of the ion. Give `level_energy_ev`, the energy of the level
-above the ground state. The threshold `ionpot_ev` is then lower than for the ground state. For a
-multiple ionisation, the ion must keep the sum of the NIST potentials less `level_energy_ev`, and the
-default `fixed_electron_energy_ev` increases by `level_energy_ev`. `n_ion` stays the population of the
-whole ion, as for every channel. The channel rate uses that population, so scale the cross section by the
-population fraction of the level.
+above the ground state. It must be less than the ionisation potential of the ion. The threshold
+`ionpot_ev` is then lower than for the ground state. For a multiple ionisation or an autoionisation, the
+ion must keep the sum of the NIST potentials less `level_energy_ev`, and the default
+`fixed_electron_energy_ev` increases by `level_energy_ev`. A single direct ionisation has no such check.
+`n_ion` stays the population of the whole ion, as for every channel. The channel rate uses that
+population. Scale the cross section by the population fraction of the level.
 
 ```python
 # double ionisation of Sr I from a metastable level 1.8 eV above the ground state, which holds
@@ -507,8 +510,9 @@ sf.add_ionisation_channel(
 An excitation autoionisation is an excitation to a level above the ionisation limit, which then
 autoionises. Such a channel does not give the Lorentzian distribution of secondary electrons. The primary
 electron loses exactly the excitation threshold, as in `add_excitation()`, and the ion emits an Auger
-electron at one fixed energy. Set `autoionisation=True`, and set `ionpot_ev` to the excitation threshold
-of the autoionising level.
+electron at one fixed energy. Set `autoionisation=True`. Set `ionpot_ev` to the excitation threshold of
+the autoionising level. The solver sets the cross section below the threshold to zero, as
+`add_excitation()` does, and it keeps the value at the threshold.
 
 ```python
 with pynonthermal.SpencerFanoSolver() as sf:
@@ -521,10 +525,11 @@ with pynonthermal.SpencerFanoSolver() as sf:
 The energy rules follow those of a multiple ionisation:
 
 - All `n_ejected` electrons appear at the energy `fixed_electron_energy_ev / n_ejected`, with the source
-  term of the Auger electrons in equation 8 of Shingles et al. (2020). By default,
-  `fixed_electron_energy_ev` is `ionpot_ev` plus `level_energy_ev` minus the sum of the NIST potentials
-  from `ion_stage` to `ion_stage + n_ejected - 1`, the energy of the level above the ionisation limit.
-  Give a value to replace the default. An electron at or below `emin_ev` counts as heating.
+  term of the Auger electrons in equation 8 of Shingles et al. (2020, MNRAS, 492, 2029–2043,
+  doi:10.1093/mnras/stz3412). By default, `fixed_electron_energy_ev` is `ionpot_ev` plus
+  `level_energy_ev` minus the sum of the NIST potentials from `ion_stage` to `ion_stage + n_ejected - 1`.
+  That is the energy of the level above the ionisation limit. Give a value to replace the default. An
+  electron at or below `emin_ev` counts as heating.
 - The ion keeps `ionpot_ev` minus `fixed_electron_energy_ev`, and the ionisation fraction counts only that
   energy.
 - The rate coefficient and the ionisation balance count the channel as an ionisation of `n_ejected`
@@ -532,7 +537,9 @@ The energy rules follow those of a multiple ionisation:
 
 Give an exclusive cross section. Do not include the events of an autoionisation channel in a
 direct-ionisation channel of the same ion. Many autoionising levels can share one channel with the sum of
-their cross sections and one representative threshold, or a few channels with binned thresholds.
+their cross sections, or a few channels with binned thresholds. The threshold of a shared channel must be
+the lowest threshold of its levels, because the cross section must be zero below it. The default Auger
+electron energy then comes from that lowest level.
 
 ## Citing pynonthermal
 
