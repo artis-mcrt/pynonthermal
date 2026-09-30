@@ -66,7 +66,7 @@ import pynonthermal
 
 with pynonthermal.SpencerFanoSolver() as sf:
     # O II (ion_stage=2, i.e. charge +1) at a number density of 1e8 cm^-3
-    sf.add_element(8, ion_densities={2: 1.0e8})
+    sf.add_element(Z=8, ion_densities={2: 1.0e8})
 
     sf.solve(deposition_ev_per_s_per_cm3=1.0e8)  # the rate of energy deposition per volume
 
@@ -112,7 +112,7 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 ### 2. Set the temperature and the atomic data
 
 ```python
-sf.set_temperature(6000)  # K, for the LTE populations of the excitation levels
+sf.set_temperature(temperature=6000)  # K, for the LTE populations of the excitation levels
 sf.set_atomic_data(use_collstrengths=True, maxnlevelslower=5, maxnlevelsupper=250)
 ```
 
@@ -128,8 +128,8 @@ those defaults.
 ### 3. Add the elements
 
 ```python
-sf.add_element(8, 1.0e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True)
-sf.add_element(26, 1.0e9, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11, 4: 3.0e-11, 5: 6.0e-11})
+sf.add_element(Z=8, n_elem=1.0e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True)
+sf.add_element(Z=26, n_elem=1.0e9, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11, 4: 3.0e-11, 5: 6.0e-11})
 ```
 
 `add_element()` takes:
@@ -165,7 +165,7 @@ of the ions that the solver holds. Give it yourself with `sf.override_n_e(n_e)` 
 example when species that are not in the solver also give electrons:
 
 ```python
-sf.override_n_e(2.5e6)  # cm^-3; None takes it from the ion charges again
+sf.override_n_e(n_e=2.5e6)  # cm^-3; None takes it from the ion charges again
 ```
 
 It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality. `solve()`
@@ -221,7 +221,7 @@ solver prints the per-ion and per-shell breakdown as it analyses the solution.
 ```python
 sf.plot_yspectrum()  # degradation spectrum y(E)
 sf.plot_channels(xscalelog=True)  # energy going to each channel vs electron energy
-sf.plot_spec_channels("channels.pdf")  # both panels in one figure, saved to file
+sf.plot_spec_channels(outputfilename="channels.pdf")  # both panels in one figure, saved to file
 ```
 
 Each method shows the figure interactively, or saves it when `outputfilename` is given;
@@ -235,7 +235,7 @@ keyword.
 ### ion_densities
 
 ```python
-sf.add_element(26, ion_densities={2: 3.0e5, 3: 7.0e5})
+sf.add_element(Z=26, ion_densities={2: 3.0e5, 3: 7.0e5})
 ```
 
 The number density in cm^-3 of each ion stage, keyed by ion stage. `n_elem` is their sum, so do not
@@ -244,7 +244,7 @@ give it as well. This is usually what a plasma code already holds.
 ### ion_fractions
 
 ```python
-sf.add_element(26, 1.0e6, ion_fractions={2: 0.3, 3: 0.7})
+sf.add_element(Z=26, n_elem=1.0e6, ion_fractions={2: 0.3, 3: 0.7})
 ```
 
 The same populations as a share of `n_elem`. The fractions must lie between 0 and 1 and sum to one.
@@ -252,7 +252,7 @@ The same populations as a share of `n_elem`. The fractions must lie between 0 an
 ### recomb_ratecoeffs
 
 ```python
-sf.add_element(8, 1.0e10, recomb_ratecoeffs={2: 3.0e-13, 3: 3.0e-12, 4: 1.0e-11})
+sf.add_element(Z=8, n_elem=1.0e10, recomb_ratecoeffs={2: 3.0e-13, 3: 3.0e-12, 4: 1.0e-11})
 ```
 
 The recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that recombines. For each
@@ -303,7 +303,9 @@ with non-thermal ionisation is not in local thermodynamic equilibrium. It is sti
 so `pynonthermal.ionbalance` gives it as a function of its own:
 
 ```python
-fractions = pynonthermal.ionbalance.get_saha_ion_fractions(26, [1, 2, 3, 4, 5], 6000.0, n_elem=1.0e6)
+fractions = pynonthermal.ionbalance.get_saha_ion_fractions(
+    Z=26, ion_stages=[1, 2, 3, 4, 5], temperature=6000.0, n_elem=1.0e6
+)
 ```
 
 This needs no Spencer-Fano solution. For each pair of adjacent stages,
@@ -333,8 +335,8 @@ n_oxygen = n_e / x_e
 # the grid is theirs rather than the default: emin_ev=1 is their low-energy cutoff E_0,
 # and emax_ev=3000 is the top of their energy range.
 with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4096, verbose=True) as sf:
-    sf.set_temperature(6000)  # K, for the LTE level populations
-    sf.add_element(8, n_oxygen, ion_fractions={1: 1 - x_e, 2: x_e}, excitation=True)
+    sf.set_temperature(temperature=6000)  # K, for the LTE level populations
+    sf.add_element(Z=8, n_elem=n_oxygen, ion_fractions={1: 1 - x_e, 2: x_e}, excitation=True)
 
     # with fixed ion densities, any positive deposition rate works here: the energy fractions
     # are independent of it (with recomb_ratecoeffs they would not be).
@@ -394,10 +396,18 @@ def my_ionisation_xs(en_ev):
 
 
 with pynonthermal.SpencerFanoSolver() as sf:
-    sf.add_element(8, ion_densities={2: 1.0e8})
+    sf.add_element(Z=8, ion_densities={2: 1.0e8})
     # this keeps the built-in shells and adds one channel; builtin_channels=False replaces them
-    sf.add_ionisation_channel(8, 2, None, ionpot_ev=35.0, xs_vec=my_ionisation_xs, channelkey="mine")
-    sf.add_excitation(8, 2, None, my_excitation_xs, epsilon_trans_ev=20.0, transitionkey=(0, 3), levelpopfrac=0.9)
+    sf.add_ionisation_channel(Z=8, ion_stage=2, n_ion=None, ionpot_ev=35.0, xs_vec=my_ionisation_xs, channelkey="mine")
+    sf.add_excitation(
+        Z=8,
+        ion_stage=2,
+        levelnumberdensity=None,
+        xs_vec=my_excitation_xs,
+        epsilon_trans_ev=20.0,
+        transitionkey=(0, 3),
+        levelpopfrac=0.9,
+    )
 ```
 
 `add_ionisation_channel()` takes:
@@ -465,13 +475,21 @@ def lotz_like_xs(threshold_ev, scale_cm2):
 nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
 recomb = {2: 3e-13, 3: 1e-12, 4: 3e-12}
 with pynonthermal.SpencerFanoSolver() as sf:
-    sf.add_element(38, 1.0e6, recomb_ratecoeffs=recomb)
+    sf.add_element(Z=38, n_elem=1.0e6, recomb_ratecoeffs=recomb)
     # direct double ionisation of Sr I: the threshold is the sum of the two potentials
     ionpot_ev = nist[(38, 1)] + nist[(38, 2)]
-    sf.add_ionisation_channel(38, 1, None, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-17), "double", n_ejected=2)
+    sf.add_ionisation_channel(
+        Z=38,
+        ion_stage=1,
+        n_ion=None,
+        ionpot_ev=ionpot_ev,
+        xs_vec=lotz_like_xs(threshold_ev=ionpot_ev, scale_cm2=1e-17),
+        channelkey="double",
+        n_ejected=2,
+    )
     sf.solve(deposition_ev_per_s_per_cm3=1.0)
-    print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(38, 1, n_ejected=2):.2e} /s")
-    print(f"Sr III fraction {sf.get_ion_fractions(38)[3]:.3f}")
+    print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(Z=38, ion_stage=1, n_ejected=2):.2e} /s")
+    print(f"Sr III fraction {sf.get_ion_fractions(Z=38)[3]:.3f}")
 ```
 
 The double ionisation sends Sr I ions straight to Sr III, so the Sr III fraction rises above the value
@@ -525,22 +543,22 @@ population. Scale the cross section by the population fraction of the level.
 level_energy_ev = 1.8  # a metastable level of Sr I, 1.8 eV above the ground state
 level_popfrac = 0.2  # the fraction of the Sr I ions in that level
 with pynonthermal.SpencerFanoSolver() as sf:
-    sf.add_element(38, 1.0e6, recomb_ratecoeffs=recomb)
+    sf.add_element(Z=38, n_elem=1.0e6, recomb_ratecoeffs=recomb)
     # double ionisation from the level: the threshold is the ground-state sum less the level energy
     ionpot_ev = nist[(38, 1)] + nist[(38, 2)] - level_energy_ev
-    double_xs = lotz_like_xs(ionpot_ev, 1e-17)
+    double_xs = lotz_like_xs(threshold_ev=ionpot_ev, scale_cm2=1e-17)
     sf.add_ionisation_channel(
-        38,
-        1,
-        None,
-        ionpot_ev,
-        xs_vec=lambda en_ev: level_popfrac * double_xs(en_ev),
+        Z=38,
+        ion_stage=1,
+        n_ion=None,
+        ionpot_ev=ionpot_ev,
+        xs_vec=lambda en_ev: level_popfrac * double_xs(en_ev=en_ev),
         channelkey="double_meta",
         n_ejected=2,
         level_energy_ev=level_energy_ev,
     )
     sf.solve(deposition_ev_per_s_per_cm3=1.0)
-    print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(38, 1, n_ejected=2):.2e} /s")
+    print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(Z=38, ion_stage=1, n_ejected=2):.2e} /s")
 ```
 
 Without `level_energy_ev`, the same call raises a `ValueError`, because the threshold is below the sum of
@@ -557,13 +575,23 @@ autoionising level. The solver sets the cross section below that energy to zero,
 
 ```python
 with pynonthermal.SpencerFanoSolver() as sf:
-    sf.add_element(38, 1.0e6, recomb_ratecoeffs=recomb)
+    sf.add_element(Z=38, n_elem=1.0e6, recomb_ratecoeffs=recomb)
     # an autoionising level of Sr I at 20 eV, which is 14.3 eV above the ionisation limit. The
     # Auger electron gets those 14.3 eV, and the ion keeps the 5.7 eV ionisation potential.
-    sf.add_ionisation_channel(38, 1, None, 20.0, lotz_like_xs(20.0, 1e-16), "eai", autoionisation=True)
+    sf.add_ionisation_channel(
+        Z=38,
+        ion_stage=1,
+        n_ion=None,
+        ionpot_ev=20.0,
+        xs_vec=lotz_like_xs(threshold_ev=20.0, scale_cm2=1e-16),
+        channelkey="eai",
+        autoionisation=True,
+    )
     sf.solve(deposition_ev_per_s_per_cm3=1.0)
-    print(f"Sr I ionisation rate coefficient {sf.get_ionisation_ratecoeff(38, 1):.2e} /s (built-in shells + eai)")
-    print(f"Sr I ionisation fraction {sf.get_frac_ionisation_ion(38, 1):.4f}")
+    print(
+        f"Sr I ionisation rate coefficient {sf.get_ionisation_ratecoeff(Z=38, ion_stage=1):.2e} /s (built-in shells + eai)"
+    )
+    print(f"Sr I ionisation fraction {sf.get_frac_ionisation_ion(Z=38, ion_stage=1):.4f}")
 ```
 
 The same cross section as a direct channel (`autoionisation=False`) would count all 20 eV as ionisation
