@@ -399,11 +399,17 @@ with pynonthermal.SpencerFanoSolver() as sf:
 
 - `Z` and `ion_stage`: the ion that the channel ionises, and `n_ion`: its number density in cm^-3, or
   `None` for an ion whose population the solver already holds.
-- `ionpot_ev`: the ionisation potential in eV. It must lie between `emin_ev` and `emax_ev`, and the cross
-  section must be zero at and below it. Any value in that range is allowed, so a channel need not be a
-  subshell of the built-in table; a total ionisation cross section for the ion works too.
+- `ionpot_ev`: the ionisation potential in eV, or the excitation energy of the autoionising level of an
+  autoionisation channel. It must lie between `emin_ev` and `emax_ev`. The cross section of a
+  direct-ionisation channel must be zero at and below it. Any value in that range is allowed, so a
+  channel need not be a subshell of the built-in table; a total ionisation cross section for the ion
+  works too.
 - `xs_vec`: the cross section, non-negative and finite.
 - `channelkey`: any key that is unique within the ion, for the verbose output.
+- `n_ejected`, `level_energy_ev`, `auger_electron_energy_ev`, and `autoionisation`: the options of the
+  three sections below, for [multiple ionisation](#multiple-ionisation), a
+  [channel from a metastable level](#channels-from-a-metastable-level), and
+  [excitation autoionisation](#excitation-autoionisation).
 
 `add_excitation()` takes:
 
@@ -420,8 +426,9 @@ with pynonthermal.SpencerFanoSolver() as sf:
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
 one grid cell. A cross section given as a function is called there; an array can only be interpolated, so
 resolve that region with `npts` if it matters for your ion. The term it feeds is the energy that
-thermalises below `emin_ev`, which is a small part of the heating fraction. An autoionisation channel uses
-only the values on the grid, as `add_excitation()` does.
+thermalises below `emin_ev`, which is a small part of the heating fraction. An
+[autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as
+`add_excitation()` does.
 
 The solver keeps the Lorentzian secondary-electron distribution of Kozma and Fransson (1992, equation 4),
 whose width comes from `pynonthermal.collion.get_J()`. The matrix fill integrates that distribution
@@ -435,7 +442,8 @@ number of electrons that one ionisation removes. The ionisation balance of `add_
 the ions of that channel from `ion_stage` to `ion_stage + n_ejected`.
 
 The examples below use a made-up cross section with the shape of the Lotz formula. It is zero at and
-below its threshold, as every channel of `add_ionisation_channel()` must be.
+below its threshold, as a direct-ionisation channel must be. The two examples of the next sections
+continue from this one, with the same `lotz_like_xs`, `nist`, and `recomb`.
 
 ```python
 import numpy as np
@@ -478,10 +486,10 @@ The energy of the extra electrons comes from energy conservation, so no Auger da
 - By default, the ion keeps the sum of the NIST ground-state potentials from `ion_stage` to
   `ion_stage + n_ejected - 1`. In general, it keeps `ionpot_ev` minus `auger_electron_energy_ev`. The
   ionisation fraction counts only the energy that the ion keeps.
-- The `n_ejected - 1` extra electrons are Auger electrons. They share the rest of the energy equally,
-  and each appears at that one energy, with the source term of equation 8 of Shingles et al. (2020,
-  MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412). An Auger electron at or below `emin_ev` counts as
-  heating.
+- The solver treats the `n_ejected - 1` extra electrons as Auger electrons. They share the rest of the
+  energy equally, and each appears at that one energy, with the source term of equation 8 of Shingles
+  et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412). An Auger electron at or below
+  `emin_ev` counts as heating.
 
 Two cases are typical:
 
@@ -541,7 +549,7 @@ autoionises. Such a channel does not give the Lorentzian distribution of seconda
 electron loses exactly the excitation energy, as in `add_excitation()`, and the ion emits an Auger
 electron of one energy. Set `autoionisation=True`. Set `ionpot_ev` to the excitation energy of the
 autoionising level. The solver sets the cross section below that energy to zero, as
-`add_excitation()` does, and it keeps the value at the threshold.
+`add_excitation()` does, and it keeps the value at that energy.
 
 ```python
 with pynonthermal.SpencerFanoSolver() as sf:
@@ -573,9 +581,9 @@ The energy rules follow those of a multiple ionisation:
 
 Give an exclusive cross section. Do not include the events of an autoionisation channel in a
 direct-ionisation channel of the same ion. Many autoionising levels can share one channel with the sum of
-their cross sections, or a few channels with binned thresholds. The threshold of a shared channel must be
-the lowest threshold of its levels, because the cross section must be zero below it. The default Auger
-electron energy then comes from that lowest level.
+their cross sections, or a few channels with binned excitation energies. The excitation energy of a
+shared channel must be the lowest one of its levels, because the cross section must be zero below it.
+The default Auger electron energy then comes from that lowest level.
 
 ## Citing pynonthermal
 
