@@ -496,8 +496,7 @@ Two cases are typical:
 energy, and the ion keeps all of `ionpot_ev`. Give `auger_electron_energy_ev` to replace the value from
 energy conservation, for example a calculated Auger electron energy. The ion must still keep at least
 the sum of the potentials, less the same 1 %. The value is also necessary for an ion that the NIST data
-does not have. In v2026.9.23 the keyword was `extra_electron_energy_ev`. That name still works, with a
-`DeprecationWarning`.
+does not have.
 
 ### Channels from a metastable level
 
