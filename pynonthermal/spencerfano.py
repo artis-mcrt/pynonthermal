@@ -1570,10 +1570,10 @@ class SpencerFanoSolver:
             fluorescence and excited final states. Give a value to replace the default, for example
             the calculated energy of the Auger electrons. If the NIST data holds the potentials, the
             ion keeps at least their sum, less level_energy_ev and less
-            pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL. A value that leaves the ion less than
-            that gives a UserWarning, and the channel uses the value. So thresholds from other
-            atomic data can differ from NIST. For an ion that the NIST data does not hold, you
-            must give a value.
+            pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL. A threshold or a value that leaves the
+            ion less than that gives a UserWarning, and the channel uses it. So thresholds from
+            other atomic data can differ from NIST. For an ion that the NIST data does not hold,
+            you must give a value.
         autoionisation:
             True for an excitation-autoionisation channel. Set ionpot_ev to the excitation energy
             of the autoionising level. The primary electron loses exactly ionpot_ev, as in

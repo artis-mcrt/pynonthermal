@@ -521,13 +521,14 @@ Two cases are typical:
 - Direct multiple ionisation: set `ionpot_ev` to the sum of the potentials. There is no Auger decay,
   and the extra electrons appear with zero energy.
 
-`ionpot_ev` must be at least the sum of the potentials, less 1 %
+The solver compares `ionpot_ev` with the sum of the potentials, less 1 %
 (`pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL`). Inside that tolerance, the extra electrons get no
-energy, and the ion keeps all of `ionpot_ev`. Give `auger_electron_energy_ev` to replace the value from
-energy conservation, for example a calculated Auger electron energy. If the value leaves the ion less
-than the sum of the potentials, less the same 1 %, the solver gives a `UserWarning` and uses the value.
-So thresholds from other atomic data, for example calculated level energies, can differ from NIST. The
-value is also necessary for an ion that the NIST data does not have.
+energy, and the ion keeps all of `ionpot_ev`. Below it, the solver gives a `UserWarning` and does the
+same. Give `auger_electron_energy_ev` to replace the value from energy conservation, for example a
+calculated Auger electron energy. If the value leaves the ion less than the sum of the potentials, less
+the same 1 %, the solver gives a `UserWarning` and uses the value. So thresholds from other atomic data,
+for example calculated level energies, can differ from NIST. The value is also necessary for an ion that
+the NIST data does not have.
 
 ### Channels from a metastable level
 
@@ -561,8 +562,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
     print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(Z=38, ion_stage=1, n_ejected=2):.2e} /s")
 ```
 
-Without `level_energy_ev`, the same call raises a `ValueError`, because the threshold is below the sum of
-the ground-state potentials.
+Without `level_energy_ev`, the same call gives a `UserWarning`, because the threshold is below the sum
+of the ground-state potentials, and the Auger electron gets zero energy.
 
 ### Excitation autoionisation
 

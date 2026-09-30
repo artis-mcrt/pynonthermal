@@ -364,8 +364,6 @@ def test_multiple_ionisation_validation() -> None:
         for n_ejected in (np.uint8(255), np.int8(127)):
             with pytest.raises(ValueError, match="cannot remove"):
                 sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=n_ejected)  # ty: ignore[invalid-argument-type]
-        with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
-            sf.add_ionisation_channel(8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2)
         with pytest.raises(ValueError, match="no Auger electrons"):
             sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, auger_electron_energy_ev=10.0)
         # a rejected call leaves the solver unchanged
@@ -397,6 +395,11 @@ def test_multiple_ionisation_validation() -> None:
             sf.add_ionisation_channel(
                 8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), "low", n_ejected=2, auger_electron_energy_ev=0.0
             )
+        # the default then gives the Auger electrons zero energy, with the same warning. Thresholds
+        # from other atomic data can differ from NIST, and a single direct ionisation has no check.
+        with pytest.warns(UserWarning, match="less than the energy that the ion must keep"):
+            sf.add_ionisation_channel(8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), "low_default", n_ejected=2)
+        assert sf._ionisation_channels[(8, 1)][-1].auger_electron_energy_ev == 0.0
 
     # IonisationChannel.from_xs() applies the same rules as add_ionisation_channel(), so a channel has
     # the same energy for its extra electrons on both paths
@@ -596,10 +599,14 @@ def test_autoionisation_energy_fractions() -> None:
 
 def test_autoionisation_validation() -> None:
     xs = lotz_like_xs(48.0, 1e-17)
+    # a threshold that leaves the ion less than the NIST potential, less the tolerance, gives a
+    # warning, and the Auger electron gets zero energy
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_low:
+        with pytest.warns(UserWarning, match="less than the energy that the ion must keep"):
+            sf_low.add_ionisation_channel(10, 1, 1e8, 20.0, lotz_like_xs(20.0, 1e-17), "low", autoionisation=True)
+        assert sf_low._ionisation_channels[(10, 1)][0].auger_electron_energy_ev == 0.0
+
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        # the threshold must leave the ion at least the NIST potential, less the tolerance
-        with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
-            sf.add_ionisation_channel(10, 1, 1e8, 20.0, lotz_like_xs(20.0, 1e-17), autoionisation=True)
         # a value from the caller gives a warning when the ion keeps less than the NIST potential, and
         # it must leave the ion a positive energy
         with (
@@ -712,12 +719,15 @@ def test_level_energy_lowers_the_nist_requirement() -> None:
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
     nist_sum_ev = nist[(8, 1)] + nist[(8, 2)]  # O I to O III, 48.739 eV
     xs = lotz_like_xs(45.0, 1e-18)
-    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
-            sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2)
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_low:
+        with pytest.warns(UserWarning, match="less than the energy that the ion must keep"):
+            sf_low.add_ionisation_channel(8, 1, 1e8, 45.0, xs, "ground", n_ejected=2)
         # 2 eV is not enough, and the message says what was subtracted
-        with pytest.raises(ValueError, match=r"less level_energy_ev \(2\.0 eV\)"):
-            sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2, level_energy_ev=2.0)
+        with pytest.warns(UserWarning, match=r"less level_energy_ev \(2\.0 eV\)"):
+            sf_low.add_ionisation_channel(8, 1, 1e8, 45.0, xs, "level2", n_ejected=2, level_energy_ev=2.0)
+        assert [channel.auger_electron_energy_ev for channel in sf_low._ionisation_channels[(8, 1)]] == [0.0, 0.0]
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         for level_energy_ev in (-1.0, math.nan, math.inf):
             with pytest.raises(ValueError, match="level_energy_ev must be at least zero and finite"):
                 sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2, level_energy_ev=level_energy_ev)
