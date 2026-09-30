@@ -1597,10 +1597,9 @@ class SpencerFanoSolver:
             the energy [eV] of the initial level above the ground state of the ion. The default is
             zero, the ground state. For a channel from a metastable level, give the excitation
             energy of that level. The ion must then keep the sum of the NIST potentials less this
-            energy, and the default extra_electron_energy_ev increases by this energy. Then n_ion
-            is the population of that level, not the population of the whole ion. For a balanced
-            ion, the channel rate uses the ion population, so scale the cross section by the
-            population fraction of the level.
+            energy, and the default extra_electron_energy_ev increases by this energy. n_ion stays
+            the population of the whole ion, as for every channel. The channel rate uses that
+            population, so scale the cross section by the population fraction of the level.
         extra_electron_energy_ev:
             the total kinetic energy [eV] of the electrons of one ionisation that appear at a fixed
             energy: the n_ejected - 1 extra electrons, or all n_ejected electrons of an

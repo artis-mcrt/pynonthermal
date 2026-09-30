@@ -482,15 +482,23 @@ does not have.
 A channel can start from a metastable level of the ion. Give `level_energy_ev`, the energy of the level
 above the ground state. The threshold `ionpot_ev` is then lower than for the ground state. For a
 multiple ionisation, the ion must keep the sum of the NIST potentials less `level_energy_ev`, and the
-default `extra_electron_energy_ev` increases by `level_energy_ev`. Then `n_ion` is the population of
-the level, not the population of the whole ion. For a balanced ion, the channel rate uses the ion
-population, so scale the cross section by the population fraction of the level.
+default `extra_electron_energy_ev` increases by `level_energy_ev`. `n_ion` stays the population of the
+whole ion, as for every channel. The channel rate uses that population, so scale the cross section by the
+population fraction of the level.
 
 ```python
-# double ionisation of Sr I from a metastable level 1.8 eV above the ground state
+# double ionisation of Sr I from a metastable level 1.8 eV above the ground state, which holds
+# a fraction level_popfrac of the Sr I ions
 ionpot_ev = nist[(38, 1)] + nist[(38, 2)] - 1.8
 sf.add_ionisation_channel(
-    38, 1, n_level, ionpot_ev, xs_vec=my_double_xs, channelkey="double_meta", n_ejected=2, level_energy_ev=1.8
+    38,
+    1,
+    None,
+    ionpot_ev,
+    xs_vec=lambda en_ev: level_popfrac * my_double_xs(en_ev),
+    channelkey="double_meta",
+    n_ejected=2,
+    level_energy_ev=1.8,
 )
 ```
 
