@@ -306,26 +306,18 @@ class IonisationChannel:
 
     The ionisation takes the ion from ion_stage to ion_stage + n_ejected. For a channel that is
     not an autoionisation, the first ejected electron has the Lorentzian distribution of
-    Psecondary_vec(). The other electrons (n_fixed_energy_electrons) share
-    extra_electron_energy_ev.
+    Psecondary_vec(). The other electrons (n_fixed_electrons) share
+    fixed_electron_energy_ev.
     """
 
-    extra_electron_energy_ev: float = 0.0
+    fixed_electron_energy_ev: float = 0.0
     """The total kinetic energy [eV] of the electrons that appear at a fixed energy.
 
     It is zero for a channel with n_ejected=1 that is not an autoionisation. Each of the
-    n_fixed_energy_electrons electrons has the energy
-    extra_electron_energy_ev / n_fixed_energy_electrons. The ion keeps
-    ionpot_ev - extra_electron_energy_ev as potential energy, and the ionisation fraction counts
+    n_fixed_electrons electrons has the energy
+    fixed_electron_energy_ev / n_fixed_electrons. The ion keeps
+    ionpot_ev - fixed_electron_energy_ev as potential energy, and the ionisation fraction counts
     only that energy.
-    """
-
-    level_energy_ev: float = 0.0
-    """The energy [eV] of the initial level above the ground state of the ion.
-
-    The default is zero, the ground state. For a metastable level, the ion must keep the sum of the
-    NIST ground-state potentials less this energy, and the default extra_electron_energy_ev
-    increases by this energy. The solver does not read it after the channel is made.
     """
 
     autoionisation: bool = False
@@ -333,11 +325,11 @@ class IonisationChannel:
 
     The primary electron loses exactly ionpot_ev, the excitation threshold of the autoionising
     level. No electron has the Lorentzian distribution. All n_ejected electrons appear at the
-    energy extra_electron_energy_ev / n_ejected.
+    energy fixed_electron_energy_ev / n_ejected.
     """
 
     @property
-    def n_fixed_energy_electrons(self) -> int:
+    def n_fixed_electrons(self) -> int:
         """The number of electrons of one ionisation that appear at a fixed energy.
 
         An autoionisation channel has no Lorentzian electron, so all of its n_ejected electrons
@@ -357,7 +349,7 @@ class IonisationChannel:
         *,
         n_ejected: int = 1,
         level_energy_ev: float = 0.0,
-        extra_electron_energy_ev: float | None = None,
+        fixed_electron_energy_ev: float | None = None,
         autoionisation: bool = False,
     ) -> t.Self:
         """Make a channel from cross sections [cm^2] at every energy of the grid arr_enev [eV]."""
@@ -376,7 +368,7 @@ class IonisationChannel:
             key=key,
             n_ejected=n_ejected,
             level_energy_ev=level_energy_ev,
-            extra_electron_energy_ev=extra_electron_energy_ev,
+            fixed_electron_energy_ev=fixed_electron_energy_ev,
             autoionisation=autoionisation,
         )
 
@@ -393,7 +385,7 @@ class IonisationChannel:
         *,
         n_ejected: int = 1,
         level_energy_ev: float = 0.0,
-        extra_electron_energy_ev: float | None = None,
+        fixed_electron_energy_ev: float | None = None,
         autoionisation: bool = False,
     ) -> t.Self:
         """Make a channel, and check the cross section that xs gives on the energy grid arr_enev [eV].
@@ -407,12 +399,12 @@ class IonisationChannel:
         level_energy_ev:
             the energy [eV] of the initial level above the ground state. It lowers the sum of the
             NIST potentials that the ion must keep, and it increases the default
-            extra_electron_energy_ev.
-        extra_electron_energy_ev:
+            fixed_electron_energy_ev. The channel does not keep it.
+        fixed_electron_energy_ev:
             the total kinetic energy [eV] of the electrons that appear at a fixed energy. None (the
             default) gives zero for a channel with n_ejected=1 that is not an autoionisation. In
             the other cases, None gives the value from energy conservation (see
-            _get_extra_electron_energy_ev()). A value must be less than ionpot_ev. If the NIST
+            _get_fixed_electron_energy_ev()). A value must be less than ionpot_ev. If the NIST
             data holds the potentials that the ionisation crosses, the ion must also keep at least
             their sum, less level_energy_ev and less MULTIPLE_IONPOT_REL_TOL.
         autoionisation:
@@ -447,23 +439,23 @@ class IonisationChannel:
             raise ValueError(msg)
         if n_ejected == 1 and not autoionisation:
             # the comparison with zero also rejects nan
-            if extra_electron_energy_ev is not None and extra_electron_energy_ev != 0.0:
+            if fixed_electron_energy_ev is not None and fixed_electron_energy_ev != 0.0:
                 msg = (
-                    "a channel with n_ejected=1 has no extra electrons, so extra_electron_energy_ev must be zero"
-                    f" but is {extra_electron_energy_ev}"
+                    "a channel with n_ejected=1 has no extra electrons, so fixed_electron_energy_ev must be zero"
+                    f" but is {fixed_electron_energy_ev}"
                 )
                 raise ValueError(msg)
-            extra_ev = 0.0
+            fixed_ev = 0.0
         else:
-            extra_ev = _get_extra_electron_energy_ev(
-                Z, ion_stage, float(ionpot_ev), n_ejected, extra_electron_energy_ev, level_energy_ev
+            fixed_ev = _get_fixed_electron_energy_ev(
+                Z, ion_stage, float(ionpot_ev), n_ejected, fixed_electron_energy_ev, level_energy_ev
             )
         # the fixed-energy electrons get their energy from the ionisation potential, so the ion keeps
         # a positive energy. The chained comparison also rejects nan.
-        if not 0.0 <= extra_ev < ionpot_ev:
+        if not 0.0 <= fixed_ev < ionpot_ev:
             msg = (
-                f"extra_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
-                f" but is {extra_ev}"
+                f"fixed_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
+                f" but is {fixed_ev}"
             )
             raise ValueError(msg)
 
@@ -492,18 +484,17 @@ class IonisationChannel:
             key=key,
             lotz=lotz,
             n_ejected=n_ejected,
-            extra_electron_energy_ev=float(extra_ev),
-            level_energy_ev=level_energy_ev,
+            fixed_electron_energy_ev=float(fixed_ev),
             autoionisation=autoionisation,
         )
 
 
-def _get_extra_electron_energy_ev(
+def _get_fixed_electron_energy_ev(
     Z: int,
     ion_stage: int,
     ionpot_ev: float,
     n_ejected: int,
-    extra_electron_energy_ev: float | None,
+    fixed_electron_energy_ev: float | None,
     level_energy_ev: float = 0.0,
 ) -> float:
     # the total energy [eV] of the electrons of a channel that appear at a fixed energy. The ion must
@@ -515,12 +506,12 @@ def _get_extra_electron_energy_ev(
     stages = range(ion_stage, ion_stage + n_ejected)
     missing = [stage for stage in stages if (Z, stage) not in ionpots_ev]
     if missing:
-        if extra_electron_energy_ev is not None:
+        if fixed_electron_energy_ev is not None:
             # the value of the caller is the only source for an ion that the NIST data does not hold
-            return extra_electron_energy_ev
+            return fixed_electron_energy_ev
         msg = (
             f"the NIST data has no ionisation potential for Z={Z} ion_stages {missing}, so energy"
-            " conservation cannot give the energy of the extra electrons. Give extra_electron_energy_ev."
+            " conservation cannot give the energy of the fixed-energy electrons. Give fixed_electron_energy_ev."
         )
         raise ValueError(msg)
     nist_sum_ev = sum(ionpots_ev[(Z, stage)] for stage in stages)
@@ -532,12 +523,10 @@ def _get_extra_electron_energy_ev(
         raise ValueError(msg)
     retained_ev = nist_sum_ev - level_energy_ev
     retained_min_ev = retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL)
-    # the message keeps its wording for the ground state
     retained_str = (
-        f"the sum of the ground-state ionisation potentials ({nist_sum_ev:.3f} eV)"
-        if level_energy_ev == 0.0
-        else f"the sum of the ground-state ionisation potentials ({nist_sum_ev:.3f} eV), less level_energy_ev"
-        f" ({level_energy_ev} eV)"
+        f"the energy that the ion must keep ({retained_min_ev:.3f} eV): the sum of the ground-state ionisation"
+        f" potentials ({nist_sum_ev:.3f} eV), less level_energy_ev ({level_energy_ev} eV), less"
+        " MULTIPLE_IONPOT_REL_TOL"
     )
     if ionpot_ev < retained_min_ev:
         msg = (
@@ -545,20 +534,20 @@ def _get_extra_electron_energy_ev(
             f" {ion_stage + n_ejected} is less than {retained_str}. Set ionpot_ev to at least {retained_ev:.3f} eV."
         )
         raise ValueError(msg)
-    if extra_electron_energy_ev is None:
+    if fixed_electron_energy_ev is None:
         return max(0.0, ionpot_ev - retained_ev)
     # a value that is not a number fails the range check of IonisationChannel.from_xs()
-    if ionpot_ev - extra_electron_energy_ev < retained_min_ev:
+    if ionpot_ev - fixed_electron_energy_ev < retained_min_ev:
         # round the limit down, so that the value in the message passes the check
-        extra_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+        fixed_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
         msg = (
-            f"with extra_electron_energy_ev={extra_electron_energy_ev} eV, the ion keeps"
-            f" {ionpot_ev - extra_electron_energy_ev:.3f} eV. To go from ion_stage {ion_stage} to ion_stage"
-            f" {ion_stage + n_ejected}, it must keep at least {retained_min_ev:.3f} eV. That is {retained_str},"
-            f" less MULTIPLE_IONPOT_REL_TOL. Set extra_electron_energy_ev to at most {extra_max_ev:.3f} eV."
+            f"with fixed_electron_energy_ev={fixed_electron_energy_ev} eV, the ion keeps"
+            f" {ionpot_ev - fixed_electron_energy_ev:.3f} eV. To go from ion_stage {ion_stage} to ion_stage"
+            f" {ion_stage + n_ejected}, it must keep at least {retained_str}. Set fixed_electron_energy_ev to at"
+            f" most {fixed_max_ev:.3f} eV."
         )
         raise ValueError(msg)
-    return extra_electron_energy_ev
+    return fixed_electron_energy_ev
 
 
 def _check_zero_below_ionpot(
