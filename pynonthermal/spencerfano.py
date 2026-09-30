@@ -205,6 +205,20 @@ class _ChannelFill:
     extra_lastrow_weight: float
 
 
+@dataclasses.dataclass(frozen=True, slots=True, eq=False)
+class _AutoionisationFill:
+    # the parts of the matrix fill of one autoionisation channel that do not depend on the
+    # population: the band of the loss of exactly ionpot_ev, as for an excitation (see
+    # SpencerFanoSolver._excitation_band_vectors), and the rows of the source term of its
+    # electrons (see SpencerFanoSolver._get_extra_electron_rows). Both are linear in the population.
+    unit_bandvec: npt.NDArray[np.float64]  # deltaen * xs_grid, zero below the threshold
+    unit_bandfracvec: npt.NDArray[np.float64]  # unit_bandvec times the weight of the partial bin
+    k: int  # the band width in whole bins
+    xsstartindex: int
+    extra_rowstop: int
+    extra_lastrow_weight: float
+
+
 @dataclasses.dataclass(slots=True, eq=False)
 class _BalancedElement:
     # one element whose ion populations come from the ionisation balance in solve()
@@ -336,7 +350,9 @@ class SpencerFanoSolver:
     Every cross section is adjustable. add_excitation() and add_ionisation_channel() each take one
     custom cross section. The cross section is a function of the energy, or an array of cross
     sections at every energy of the solver energy grid. A channel of add_ionisation_channel() can
-    also remove more than one electron (n_ejected).
+    also remove more than one electron (n_ejected), start from a metastable level
+    (level_energy_ev), or be an excitation autoionisation (autoionisation=True), which emits its
+    electrons at one fixed energy.
 
     If heating_only_approximation is True, the solver removes the excitation and ionisation
     loss terms from the matrix and keeps only the heating loss. The solver still stores the
@@ -361,7 +377,7 @@ class SpencerFanoSolver:
     _eff_ionpot: dict[tuple[int, int], float]
     _nt_ionisation_ratecoeff: dict[tuple[int, int], float]
     _ionisation_channels: dict[tuple[int, int], list[IonisationChannel]]
-    _channel_fills: dict[IonisationChannel, _ChannelFill]
+    _channel_fills: dict[IonisationChannel, _ChannelFill | _AutoionisationFill]
     _lotz_a_cm2_ev2: float
     deposition_ev_per_s_per_cm3: float
     ionpopdict: dict[tuple[int, int], float]
@@ -1273,7 +1289,8 @@ class SpencerFanoSolver:
         # total cross section sigma_ic (IonisationChannel.xs_grid) times the secondary-electron energy
         # distribution P of KF92 equation 4, whose integrals over epsilon are taken analytically
         # via the arctan antiderivative below. That analytic step fixes the shape of P, so a channel
-        # sets only its width J and not the shape.
+        # sets only its width J and not the shape. An autoionisation channel has no such
+        # distribution: its primary loses exactly ionpot_ev, so it uses the band of an excitation.
         self._require_not_solved("add ionisation")
         if self.heating_only_approximation:
             # leave the ionisation loss out of the matrix. add_ionisation keeps the ion
@@ -1289,6 +1306,13 @@ class SpencerFanoSolver:
 
         # the matrix entries of a channel are linear in the population, so the balance calls this
         # method with the change of the population, and the rest of the fill stays the same
+        if isinstance(fill, _AutoionisationFill):
+            self._add_excitation_band(n_ion * fill.unit_bandvec, n_ion * fill.unit_bandfracvec, fill.k)
+            self._subtract_fixed_energy_electrons(
+                n_ion, channel, fill.xsstartindex, fill.extra_rowstop, fill.extra_lastrow_weight
+            )
+            return
+
         prefactors = n_ion * fill.unit_prefactors
         int_eps_uppers = fill.int_eps_uppers
         int_eps_lowers1 = fill.int_eps_lowers1
@@ -1325,21 +1349,36 @@ class SpencerFanoSolver:
                 product *= prefactors[jstart2:]
                 sfmatrix[i, jstart2:] -= product
 
-        if fill.extra_rowstop > 0:
-            # the extra electrons of a multiple ionisation. The fill subtracts them like the second
-            # integral. They appear at a fixed energy below the ionisation potential. Thus they are an
-            # extra source at every grid energy below their energy. This is the source term of the
-            # Auger electrons in equation 8 of Shingles et al. (2020), MNRAS, 492, 2029-2043,
-            # doi:10.1093/mnras/stz3412. Each row is below the energy of an extra electron, and that
-            # energy is below ionpot_ev, so each row starts at xsstartindex.
-            extra = (n_ion * self.deltaen * (channel.n_ejected - 1)) * channel.xs_grid[xsstartindex:]
-            sfmatrix[: fill.extra_rowstop - 1, xsstartindex:] -= extra
-            sfmatrix[fill.extra_rowstop - 1, xsstartindex:] -= fill.extra_lastrow_weight * extra
+        self._subtract_fixed_energy_electrons(
+            n_ion, channel, xsstartindex, fill.extra_rowstop, fill.extra_lastrow_weight
+        )
 
-    def _build_channel_fill(self, channel: IonisationChannel) -> _ChannelFill:
+    def _subtract_fixed_energy_electrons(
+        self,
+        n_ion: float,
+        channel: IonisationChannel,
+        xsstartindex: int,
+        extra_rowstop: int,
+        extra_lastrow_weight: float,
+    ) -> None:
+        # the electrons of a channel that appear at a fixed energy: the extra electrons of a
+        # multiple ionisation, or all electrons of an autoionisation. The fill subtracts them like
+        # the second integral. They appear at a fixed energy below the ionisation potential. Thus
+        # they are an extra source at every grid energy below their energy. This is the source term
+        # of the Auger electrons in equation 8 of Shingles et al. (2020), MNRAS, 492, 2029-2043,
+        # doi:10.1093/mnras/stz3412. Each row is below the energy of a fixed-energy electron, and
+        # that energy is below ionpot_ev, so each row starts at xsstartindex.
+        if extra_rowstop <= 0:
+            return
+        extra = (n_ion * self.deltaen * channel.n_fixed_energy_electrons) * channel.xs_grid[xsstartindex:]
+        self.sfmatrix[: extra_rowstop - 1, xsstartindex:] -= extra
+        self.sfmatrix[extra_rowstop - 1, xsstartindex:] -= extra_lastrow_weight * extra
+
+    def _build_channel_fill(self, channel: IonisationChannel) -> _ChannelFill | _AutoionisationFill:
         # the part of the matrix fill of one channel that does not depend on the population. It
         # holds the analytic integrals over the secondary-electron distribution, and the column
-        # range of each integral in each row.
+        # range of each integral in each row. For an autoionisation channel, it holds the band of
+        # the loss of exactly ionpot_ev instead.
         deltaen = self.deltaen
         ionpot_ev = channel.ionpot_ev
         J = channel.J_ev
@@ -1349,6 +1388,25 @@ class SpencerFanoSolver:
         # engrid[xsstartindex] >= ionpot_ev, which the column ranges below need. A built-in shell
         # above the top of the grid has a zero cross section, so its fill writes nothing.
         xsstartindex = 0 if ionpot_ev <= self.engrid[0] else self.get_energyindex_gteq(en_ev=ionpot_ev)
+
+        if channel.autoionisation:
+            # the primary loses exactly ionpot_ev, as in an excitation with that transition energy.
+            # The cross section is zero at and below ionpot_ev (IonisationChannel.from_xs checks
+            # it), and add_ionisation_channel() rejects a threshold above the grid, as
+            # _check_epsilon_trans() does for an excitation.
+            unit_bandvec, k, frac = self._excitation_band_vectors(1.0, channel.xs_grid, ionpot_ev)
+            unit_bandfracvec = unit_bandvec * frac
+            extra_rowstop, extra_lastrow_weight = self._get_extra_electron_rows(channel)
+            for arr in (unit_bandvec, unit_bandfracvec):
+                arr.flags.writeable = False
+            return _AutoionisationFill(
+                unit_bandvec=unit_bandvec,
+                unit_bandfracvec=unit_bandfracvec,
+                k=k,
+                xsstartindex=xsstartindex,
+                extra_rowstop=extra_rowstop,
+                extra_lastrow_weight=extra_lastrow_weight,
+            )
 
         # J * atan[(epsilon - ionpot_ev) / J] is the indefinite integral of
         # 1/(1 + (epsilon - ionpot_ev)^2/ J^2) d_epsilon
@@ -1425,8 +1483,8 @@ class SpencerFanoSolver:
         )
 
     def _get_extra_electron_rows(self, channel: IonisationChannel) -> tuple[int, float]:
-        # the rows of the source term of the extra electrons of a channel, as (rowstop, weight). Each
-        # extra electron has the energy extra_electron_energy_ev / (n_ejected - 1). The rows
+        # the rows of the source term of the fixed-energy electrons of a channel, as (rowstop, weight).
+        # Each of them has the energy extra_electron_energy_ev / n_fixed_energy_electrons. The rows
         # [0, rowstop) lie below that energy. With the full source in each of these rows, the matrix
         # gives each extra electron the energy engrid[rowstop], which is the grid energy at or above
         # its energy. So the last row gets the weight (energy - engrid[rowstop - 1]) / deltaen. Then
@@ -1437,7 +1495,7 @@ class SpencerFanoSolver:
         # and calculate_frac_heating() both call this method, so they always agree.
         if channel.extra_electron_energy_ev <= 0.0:
             return 0, 0.0
-        en_extra_ev = channel.extra_electron_energy_ev / (channel.n_ejected - 1)
+        en_extra_ev = channel.extra_electron_energy_ev / channel.n_fixed_energy_electrons
         rowstop = int(np.searchsorted(self.engrid, en_extra_ev, side="left"))
         if rowstop == 0:
             return 0, 0.0
@@ -1495,7 +1553,9 @@ class SpencerFanoSolver:
         channelkey: t.Any | None = None,
         *,
         n_ejected: int = 1,
+        level_energy_ev: float = 0.0,
         extra_electron_energy_ev: float | None = None,
+        autoionisation: bool = False,
     ) -> None:
         """Add one collisional ionisation channel of an ion, with a custom cross section.
 
@@ -1508,6 +1568,7 @@ class SpencerFanoSolver:
         The solver keeps the Lorentzian secondary-electron distribution of Kozma & Fransson 1992
         equation 4, whose width comes from pynonthermal.collion.get_J(Z, ion_stage, ionpot_ev).
         The matrix fill integrates that distribution analytically, so the shape is not adjustable.
+        An autoionisation channel (autoionisation=True) does not use that distribution.
 
         n_ion:
             the ion number density in cm^-3, or None for an ion of a balanced element. A value
@@ -1532,25 +1593,45 @@ class SpencerFanoSolver:
             stage must be in the chain. Do not include the events of a multiple-ionisation channel in
             a single-ionisation cross section of the same ion. If you include them, the solver counts
             those events two times.
+        level_energy_ev:
+            the energy [eV] of the initial level above the ground state of the ion. The default is
+            zero, the ground state. For a channel from a metastable level, give the excitation
+            energy of that level. The ion must then keep the sum of the NIST potentials less this
+            energy, and the default extra_electron_energy_ev increases by this energy. Then n_ion
+            is the population of that level, not the population of the whole ion. For a balanced
+            ion, the channel rate uses the ion population, so scale the cross section by the
+            population fraction of the level.
         extra_electron_energy_ev:
-            the total kinetic energy [eV] of the n_ejected - 1 extra electrons of one ionisation. The
-            default (None) comes from energy conservation: ionpot_ev minus the sum of the ground-state
-            ionisation potentials from ion_stage to ion_stage + n_ejected - 1 (NIST). This default
-            needs no Auger data, but it ignores fluorescence and excited final states. Give a value to
-            replace the default, for example the calculated energy of the Auger electrons. If the NIST
-            data holds the potentials, the ion must keep at least their sum, less
-            pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL. For an ion that the NIST data does not hold,
-            you must give a value.
+            the total kinetic energy [eV] of the electrons of one ionisation that appear at a fixed
+            energy: the n_ejected - 1 extra electrons, or all n_ejected electrons of an
+            autoionisation. The default (None) comes from energy conservation: ionpot_ev plus
+            level_energy_ev minus the sum of the ground-state ionisation potentials from ion_stage
+            to ion_stage + n_ejected - 1 (NIST). This default needs no Auger data, but it ignores
+            fluorescence and excited final states. Give a value to replace the default, for example
+            the calculated energy of the Auger electrons. If the NIST data holds the potentials, the
+            ion must keep at least their sum, less level_energy_ev and less
+            pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL. For an ion that the NIST data does not
+            hold, you must give a value.
+        autoionisation:
+            True for an excitation-autoionisation channel. Set ionpot_ev to the excitation threshold
+            of the autoionising level. The primary electron loses exactly ionpot_ev, as in
+            add_excitation(). No electron has the Lorentzian distribution. All n_ejected electrons
+            appear at the energy extra_electron_energy_ev / n_ejected. The default
+            extra_electron_energy_ev is then the energy of the autoionising level above the
+            ionisation limit. The channel counts as an ionisation of n_ejected electrons for the
+            rate coefficients and the ionisation balance. Give an exclusive cross section: do not
+            include these events in a direct-ionisation channel of the same ion.
 
         For an inner-shell ionisation followed by Auger decay, set ionpot_ev to the potential of the
         shell. For a direct multiple ionisation, set ionpot_ev to the sum of the potentials. Then the
         extra electrons get no energy.
 
-        The primary electron and the first ejected electron share the energy above ionpot_ev, as in a
-        single ionisation. Each extra electron appears at the energy
-        extra_electron_energy_ev / (n_ejected - 1), or goes to heating at or below emin_ev. The
-        ionisation fraction counts ionpot_ev - extra_electron_energy_ev per ionisation. The extra
-        electrons return the rest to the electrons of the plasma.
+        For a channel that is not an autoionisation, the primary electron and the first ejected
+        electron share the energy above ionpot_ev, as in a single ionisation. Each fixed-energy
+        electron appears at the energy extra_electron_energy_ev / n_fixed_energy_electrons, or goes
+        to heating at or below emin_ev. The ionisation fraction counts
+        ionpot_ev - extra_electron_energy_ev per ionisation. The fixed-energy electrons return the
+        rest to the electrons of the plasma.
         """
         self._require_not_solved("add ionisation")
         Z, ion_stage = _check_ion(Z, ion_stage, needs_electron=True)
@@ -1585,7 +1666,9 @@ class SpencerFanoSolver:
                 xs=xs_vec,
                 key=channelkey,
                 n_ejected=n_ejected,
+                level_energy_ev=level_energy_ev,
                 extra_electron_energy_ev=extra_electron_energy_ev,
+                autoionisation=autoionisation,
             )
             if not isinstance(xs_vec, np.ndarray) and callable(xs_vec)
             else IonisationChannel.from_xs_grid(
@@ -1596,7 +1679,9 @@ class SpencerFanoSolver:
                 xs_vec=xs_vec,
                 key=channelkey,
                 n_ejected=n_ejected,
+                level_energy_ev=level_energy_ev,
                 extra_electron_energy_ev=extra_electron_energy_ev,
+                autoionisation=autoionisation,
             )
         )
         self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev])
@@ -1619,10 +1704,12 @@ class SpencerFanoSolver:
             return
 
         if self.verbose:
+            kind = "autoionisation" if channel.autoionisation else "ionisation"
             print(
                 f"  including Z={Z} ion_stage {ion_stage} ({_ionstring(Z, ion_stage)})"
-                f" ionisation channel {channelkey} (ionpot {ionpot_ev:.2f} eV, n_ejected {channel.n_ejected},"
-                f" extra electron energy {channel.extra_electron_energy_ev:.2f} eV) with n_ion {n_ion:.1e} [/cm3]"
+                f" {kind} channel {channelkey} (ionpot {ionpot_ev:.2f} eV, n_ejected {channel.n_ejected},"
+                f" level energy {channel.level_energy_ev:.2f} eV,"
+                f" fixed electron energy {channel.extra_electron_energy_ev:.2f} eV) with n_ion {n_ion:.1e} [/cm3]"
             )
 
         if not registered:
@@ -2403,8 +2490,9 @@ class SpencerFanoSolver:
     def calculate_N_e(self, energy_ev: float) -> float:
         """Get N(E), the rate per volume at which electrons appear at energy_ev (KF92 equation 11).
 
-        N(E) does not include the extra electrons of a multiple ionisation. calculate_frac_heating()
-        adds the energy of the extra electrons at or below emin_ev in a different term.
+        N(E) does not include the electrons that appear at a fixed energy (the extra electrons of a
+        multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
+        the energy of those electrons at or below emin_ev in a different term.
         """
         # both this method and calculate_frac_heating() read yvec, which exists only after solve()
         self._require_solved()
@@ -2453,6 +2541,22 @@ class SpencerFanoSolver:
 
             for channel in self._ionisation_channels.get((Z, ion_stage), ()):
                 ionpot_ev = channel.ionpot_ev
+
+                if channel.autoionisation:
+                    # the primary loses exactly ionpot_ev, so the channel enters like the excitation
+                    # term above, with the ion population as the level population, and it has no
+                    # secondary integrals. The cross section comes from the grid array, as for an
+                    # excitation, so the two terms agree to machine precision.
+                    en_upper = energy_ev + ionpot_ev
+                    if e_min <= en_upper <= e_max:
+                        pos = (en_upper - e_min) / deltaen
+                        i = min(int(pos), lastindex)
+                        weight = pos - i
+                        xsvec = channel.xs_grid
+                        N_e_ion += (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i])) * (
+                            xsvec[i] + weight * (xsvec[i + 1] - xsvec[i])
+                        )
+                    continue
 
                 enlambda = min(e_max - energy_ev, energy_ev + ionpot_ev)
                 J = channel.J_ev
@@ -2532,7 +2636,8 @@ class SpencerFanoSolver:
         # - the boundary term E_0 y(E_0) L(E_0) for the electrons that flow through the bottom of
         #   the grid;
         # - the energy of the electrons that first appear below E_0 (N(E) of KF92 equation 11);
-        # - the energy below E_0 of the extra electrons of a multiple ionisation.
+        # - the energy below E_0 of the electrons that appear at a fixed energy (the extra
+        #   electrons of a multiple ionisation, and the electrons of an autoionisation).
         # it reads yvec, which exists only after solve(), and it caches its result in _frac_heating
         self._require_solved()
         frac_heating = 0.0
@@ -2563,11 +2668,11 @@ class SpencerFanoSolver:
             integral_e_n_e = integrate_simpson_uniform(arr_en_N_e, arr_en)
             frac_heating_N_e = integral_e_n_e / self.deposition_ev_per_s_per_cm3
 
-            # the matrix holds only the part above E_0 of the energy of the extra electrons of a
-            # multiple ionisation, and N(E) does not hold them (see _get_extra_electron_rows()). The
-            # rest thermalises, so it is heating. An extra electron at or below E_0 gives all of its
-            # energy. An extra electron in the first grid interval gives the part that the weighted
-            # first row does not hold.
+            # the matrix holds only the part above E_0 of the energy of the fixed-energy electrons
+            # of a channel, and N(E) does not hold them (see _get_extra_electron_rows()). The rest
+            # thermalises, so it is heating. An electron at or below E_0 gives all of its energy. An
+            # electron in the first grid interval gives the part that the weighted first row does
+            # not hold.
             deposition = self.deposition_ev_per_s_per_cm3
             for (Z, ion_stage), channels in self._ionisation_channels.items():
                 n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
@@ -2578,7 +2683,7 @@ class SpencerFanoSolver:
                     extra_heat_ev = (
                         channel.extra_electron_energy_ev
                         if extra_rowstop == 0
-                        else (channel.n_ejected - 1) * (1.0 - extra_lastrow_weight) * E_0
+                        else channel.n_fixed_energy_electrons * (1.0 - extra_lastrow_weight) * E_0
                     )
                     frac_heating_N_e += (
                         n_ion * extra_heat_ev * float(np.dot(self.yvec, channel.xs_grid)) * deltaen / deposition
@@ -2658,7 +2763,8 @@ class SpencerFanoSolver:
                     print(
                         f"frac_ionisation_shell({channel.key}):"
                         f" {frac_ionisation_shell:.4f} (ionpot"
-                        f" {channel.ionpot_ev:.2f} eV, n_ejected {channel.n_ejected})"
+                        f" {channel.ionpot_ev:.2f} eV, n_ejected {channel.n_ejected}"
+                        f"{', autoionisation' if channel.autoionisation else ''})"
                     )
 
                 # the heating-only approximation lets the fractions exceed one, so in that mode
@@ -3053,8 +3159,8 @@ class SpencerFanoSolver:
         # excitation is drawn flat because add_excitation does allow a transition energy below E_0.
         # The heating curve stops at E_0 instead of continuing, because l(E) * y(E) needs y, which the
         # solver only has above E_0. The energy that thermalises below E_0 is in get_frac_heating()
-        # (the integral of E * N_e over [0, E_0], and the extra electrons of a multiple ionisation
-        # below E_0), but it has no per-energy curve to draw here.
+        # (the integral of E * N_e over [0, E_0], and the fixed-energy electrons of a channel below
+        # E_0), but it has no per-energy curve to draw here.
         engrid_low = np.arange(0.0, E_0, E_0 / 20.0, dtype=float)
         npts_low = len(engrid_low)
         engridfull = np.append(engrid_low, self.engrid)

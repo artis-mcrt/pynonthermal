@@ -1,9 +1,11 @@
-"""Tests of ionisation channels that remove more than one electron (n_ejected > 1).
+"""Tests of ionisation channels with electrons at a fixed energy.
 
-These tests check:
+These channels remove more than one electron (n_ejected > 1), start from a metastable level
+(level_energy_ev), or are an excitation autoionisation (autoionisation=True). These tests check:
 
 - the cut coefficients of the ionisation balance;
-- the source term of the extra electrons;
+- the source term of the fixed-energy electrons;
+- the band of the loss term of an autoionisation channel;
 - the energy fractions;
 - the error paths.
 """
@@ -433,3 +435,314 @@ def test_top_stage_leak_advice_with_a_jump() -> None:
         sf.add_ionisation_channel(8, 3, None, 140.0, lotz_like_xs(140.0, 3e-17), "double", n_ejected=2)
         with pytest.warns(UserWarning, match="up to ion stage 5"):
             sf.solve(deposition_ev_per_s_per_cm3=1e8)
+
+
+def fixed_energy_source_term(
+    sf: pynonthermal.SpencerFanoSolver, channel: pynonthermal.IonisationChannel, n_ion: float
+) -> npt.NDArray[np.float64]:
+    # the expected source term of the fixed-energy electrons of a channel: each row below the energy
+    # of one electron gets the full source, and the last row gets the weight that gives the electron
+    # its true energy
+    en_electron_ev = channel.extra_electron_energy_ev / channel.n_fixed_energy_electrons
+    row_weights = np.clip((en_electron_ev - sf.engrid) / sf.deltaen, 0.0, 1.0)
+    assert 0.0 < row_weights[row_weights < 1.0].max() < 1.0
+    column_values = np.where(
+        sf.engrid >= channel.ionpot_ev,
+        -n_ion * channel.xs_grid * sf.deltaen * channel.n_fixed_energy_electrons,
+        0.0,
+    )
+    return np.outer(row_weights, column_values)
+
+
+def test_autoionisation_matrix_is_an_excitation_plus_the_source_term() -> None:
+    # An autoionisation channel of Ne I with a threshold of 48 eV: the primary loses exactly 48 eV, as
+    # in an excitation with that transition energy, and the Auger electron appears at the energy of
+    # the level above the ionisation limit. So the matrix is that of add_excitation() with the same
+    # cross section, minus the source term of one fixed-energy electron.
+    ionpot_ev = 48.0
+    n_ion = 1e8
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    extra_ev = ionpot_ev - nist[(10, 1)]
+    xs = lotz_like_xs(ionpot_ev, 1e-17)
+
+    sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf_exc.add_excitation(10, 1, n_ion, xs, epsilon_trans_ev=ionpot_ev)
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, autoionisation=True)
+    channel = sf._ionisation_channels[(10, 1)][0]
+    assert channel.autoionisation
+    assert channel.n_ejected == 1
+    assert channel.n_fixed_energy_electrons == 1
+    assert math.isclose(channel.extra_electron_energy_ev, extra_ev, rel_tol=1e-12)
+
+    expected = fixed_energy_source_term(sf, channel, n_ion)
+    assert np.allclose(sf.sfmatrix - sf_exc.sfmatrix, expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+
+def test_autoionisation_with_two_electrons() -> None:
+    # a double autoionisation: both electrons appear at half of the energy of the level above the
+    # double-ionisation limit. The cross section is an array here, so the from_xs_grid() path gets
+    # the same treatment as the function path.
+    ionpot_ev = 90.0
+    n_ion = 1e8
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    extra_ev = ionpot_ev - nist[(10, 1)] - nist[(10, 2)]
+    xs = lotz_like_xs(ionpot_ev, 1e-17)
+
+    sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf_exc.add_excitation(10, 1, n_ion, xs, epsilon_trans_ev=ionpot_ev)
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs(sf.engrid), n_ejected=2, autoionisation=True)
+    channel = sf._ionisation_channels[(10, 1)][0]
+    assert channel.n_fixed_energy_electrons == 2
+    assert math.isclose(channel.extra_electron_energy_ev, extra_ev, rel_tol=1e-12)
+
+    expected = fixed_energy_source_term(sf, channel, n_ion)
+    assert np.allclose(sf.sfmatrix - sf_exc.sfmatrix, expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+    # the function path gives the same channel
+    sf_func = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
+    sf_func.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, n_ejected=2, autoionisation=True)
+    assert sf_func._ionisation_channels[(10, 1)][0].extra_electron_energy_ev == channel.extra_electron_energy_ev
+    assert np.array_equal(sf_func.sfmatrix, sf.sfmatrix)
+
+
+def test_autoionisation_N_e_matches_excitation() -> None:
+    # without energy for the Auger electron, an autoionisation channel is an excitation in the matrix,
+    # in N(E), and in the heating fraction. Its ionisation fraction is the excitation fraction of the
+    # transition.
+    ionpot_ev = 48.0
+    n_ion = 1e8
+    xs = lotz_like_xs(ionpot_ev, 1e-17)
+    deposition = 1e8
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400) as sf_exc:
+        sf_exc.add_excitation(10, 1, n_ion, xs, epsilon_trans_ev=ionpot_ev)
+        sf_exc.override_n_e(1e6)
+        sf_exc.solve(deposition_ev_per_s_per_cm3=deposition)
+        N_e_exc = sf_exc.calculate_N_e(0.5)
+        frac_heating_exc = sf_exc.get_frac_heating()
+        frac_excitation = sf_exc.get_frac_excitation_tot()
+        matrix_exc = sf_exc.sfmatrix.copy()
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400) as sf:
+        sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, autoionisation=True, extra_electron_energy_ev=0.0)
+        sf.override_n_e(1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=deposition)
+        assert np.allclose(sf.sfmatrix, matrix_exc, rtol=1e-12, atol=0.0)
+        assert N_e_exc > 0.0
+        assert math.isclose(sf.calculate_N_e(0.5), N_e_exc, rel_tol=1e-9)
+        assert math.isclose(sf.get_frac_heating(), frac_heating_exc, rel_tol=1e-9)
+        assert math.isclose(sf.get_frac_ionisation_tot(), frac_excitation, rel_tol=1e-9)
+        assert sf.get_frac_excitation_tot() == 0.0
+
+
+def test_autoionisation_energy_fractions() -> None:
+    # An autoionisation channel returns the energy of the level above the ionisation limit to the
+    # electrons. So, compared with a direct channel of the same cross section, the ionisation fraction
+    # falls. The energy fractions sum to one in both cases. The rate coefficient counts the events,
+    # and the ionisation fraction counts the energy that the ion keeps.
+    n_ion = 1e8
+    deposition = 1e8
+    fractions = {}
+    for autoionisation in (False, True):
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=1000) as sf:
+            sf.add_ionisation_channel(10, 1, n_ion, 21.6, lotz_like_xs(21.6, 3e-16), "valence")
+            sf.add_ionisation_channel(
+                10, 1, n_ion, 48.0, lotz_like_xs(48.0, 3e-17), "auto", autoionisation=autoionisation
+            )
+            sf.override_n_e(1e6)
+            sf.solve(deposition_ev_per_s_per_cm3=deposition)
+            fractions[autoionisation] = (sf.get_frac_ionisation_tot(), sf.get_frac_heating(), sf.get_frac_sum())
+
+            channels = sf._ionisation_channels[(10, 1)]
+            xs_integrals = [float(np.dot(sf.yvec, channel.xs_grid)) for channel in channels]
+            ratecoeff = sf.deltaen * sum(xs_integrals)
+            assert math.isclose(sf.get_ionisation_ratecoeff(10, 1), ratecoeff, rel_tol=1e-12)
+            assert math.isclose(sf.get_ionisation_ratecoeff(10, 1, n_ejected=1), ratecoeff, rel_tol=1e-12)
+            frac_ionisation = sum(
+                n_ion * (channel.ionpot_ev - channel.extra_electron_energy_ev) * xs_integral * sf.deltaen / deposition
+                for channel, xs_integral in zip(channels, xs_integrals, strict=True)
+            )
+            assert math.isclose(sf.get_frac_ionisation_ion(10, 1), frac_ionisation, rel_tol=1e-12)
+            assert math.isclose(sf.get_eff_ionpot(10, 1), deposition / n_ion / ratecoeff, rel_tol=1e-12)
+
+    assert fractions[True][0] < fractions[False][0]
+    assert fractions[True][1] > fractions[False][1]
+    for autoionisation in (False, True):
+        assert math.isclose(fractions[autoionisation][2], 1.0, abs_tol=0.01)
+
+
+def test_auger_electron_gets_its_true_energy() -> None:
+    # as test_extra_electrons_get_their_true_energy(), for the electron of an autoionisation channel
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    for emin_ev in (0.1, 1.0):
+        for extra_ev in (0.05, 0.3, 5.0, 10.2, 25.0):
+            ionpot_ev = nist[(2, 1)] + extra_ev
+            frac_sums = []
+            for extra_electron_energy_ev in (0.0, extra_ev):
+                with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=300) as sf:
+                    sf.add_ionisation_channel(
+                        2, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 5e-17), autoionisation=True,
+                        extra_electron_energy_ev=extra_electron_energy_ev,
+                    )  # fmt: skip
+                    sf.override_n_e(1e6)
+                    sf.solve(deposition_ev_per_s_per_cm3=1e8)
+                    frac_sums.append(sf.get_frac_sum())
+            assert math.isclose(frac_sums[0], frac_sums[1], rel_tol=1e-12), (emin_ev, extra_ev, frac_sums)
+
+
+def test_auger_electron_below_emin_is_heating() -> None:
+    # as test_extra_electrons_below_emin_are_heating(), for the electron of an autoionisation channel
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    ionpot_ev = nist[(10, 1)] + 5.0
+    results = {}
+    for extra_ev in (0.0, 5.0):
+        with pynonthermal.SpencerFanoSolver(emin_ev=20, emax_ev=3000, npts=3000) as sf:
+            sf.add_ionisation_channel(10, 1, 1e8, 21.6, lotz_like_xs(21.6, 3e-16), "valence")
+            sf.add_ionisation_channel(
+                10, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 3e-17), "auto", autoionisation=True,
+                extra_electron_energy_ev=extra_ev,
+            )  # fmt: skip
+            sf.override_n_e(1e6)
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
+            results[extra_ev] = (sf.sfmatrix.copy(), sf.get_frac_ionisation_tot(), sf.get_frac_heating())
+
+    assert np.array_equal(results[0.0][0], results[5.0][0])
+    ionisation_moved = results[0.0][1] - results[5.0][1]
+    assert ionisation_moved > 0.0
+    assert math.isclose(results[5.0][2] - results[0.0][2], ionisation_moved, rel_tol=1e-9)
+
+    # the default comes from energy conservation, and it is the same 5 eV
+    with pynonthermal.SpencerFanoSolver(emin_ev=20, emax_ev=3000, npts=400) as sf:
+        sf.add_ionisation_channel(10, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 3e-17), autoionisation=True)
+        assert math.isclose(sf._ionisation_channels[(10, 1)][0].extra_electron_energy_ev, 5.0, rel_tol=1e-9)
+
+
+def test_autoionisation_validation() -> None:
+    xs = lotz_like_xs(48.0, 1e-17)
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        # the threshold must leave the ion at least the NIST potential, less the tolerance
+        with pytest.raises(ValueError, match="less than the sum of the ground-state"):
+            sf.add_ionisation_channel(10, 1, 1e8, 20.0, lotz_like_xs(20.0, 1e-17), autoionisation=True)
+        # the ion must keep that energy also with a value from the caller
+        with pytest.raises(ValueError, match="Set extra_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=True, extra_electron_energy_ev=48.0)
+        for autoionisation in ("yes", 1, None):
+            with pytest.raises(TypeError, match="autoionisation must be True or False"):
+                sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=autoionisation)  # ty: ignore[invalid-argument-type]
+        # a rejected call leaves the solver unchanged
+        assert not sf._ionisation_channels
+        assert not sf.ionpopdict
+
+        # a channel with n_ejected=1 can have a fixed-energy electron when it is an autoionisation
+        sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, "auto", autoionisation=True, extra_electron_energy_ev=10.0)
+        channel = sf._ionisation_channels[(10, 1)][0]
+        assert channel.autoionisation
+        assert channel.extra_electron_energy_ev == 10.0
+        assert channel.n_fixed_energy_electrons == 1
+        # IonisationChannel.from_xs() applies the same rules
+        same = pynonthermal.IonisationChannel.from_xs(
+            arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=48.0, xs=xs, key="auto", autoionisation=True
+        )
+        assert same.autoionisation
+        assert math.isclose(same.extra_electron_energy_ev, 48.0 - 21.5646, rel_tol=1e-4)
+
+
+def test_level_energy_lowers_the_nist_requirement() -> None:
+    # A channel from a metastable level has a threshold below the sum of the NIST ground-state
+    # potentials. With level_energy_ev, the ion must keep the sum less that energy, and the default
+    # energy of the fixed-energy electrons increases by it.
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    nist_sum_ev = nist[(8, 1)] + nist[(8, 2)]  # O I to O III, 48.739 eV
+    xs = lotz_like_xs(45.0, 1e-18)
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        with pytest.raises(ValueError, match="less than the sum of the ground-state"):
+            sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2)
+        # 2 eV is not enough, and the message says what was subtracted
+        with pytest.raises(ValueError, match=r"less level_energy_ev \(2\.0 eV\)"):
+            sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2, level_energy_ev=2.0)
+        for level_energy_ev in (-1.0, math.nan, math.inf):
+            with pytest.raises(ValueError, match="level_energy_ev must be at least zero and finite"):
+                sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2, level_energy_ev=level_energy_ev)
+        with pytest.raises(ValueError, match=r"level_energy_ev .* must be less than the sum"):
+            sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2, level_energy_ev=nist_sum_ev)
+        # a value from the caller: the limit rises by level_energy_ev
+        xs_100 = lotz_like_xs(100.0, 1e-18)
+        with pytest.raises(ValueError, match="Set extra_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs_100, n_ejected=2, extra_electron_energy_ev=55.0)
+        assert not sf._ionisation_channels
+        assert not sf.ionpopdict
+
+        sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, "meta", n_ejected=2, level_energy_ev=5.0)
+        channel = sf._ionisation_channels[(8, 1)][0]
+        assert channel.level_energy_ev == 5.0
+        assert math.isclose(channel.extra_electron_energy_ev, 45.0 + 5.0 - nist_sum_ev, rel_tol=1e-12)
+        sf.add_ionisation_channel(
+            8, 1, 1e8, 100.0, xs_100, "meta2", n_ejected=2, level_energy_ev=5.0, extra_electron_energy_ev=55.0
+        )
+        assert sf._ionisation_channels[(8, 1)][1].extra_electron_energy_ev == 55.0
+
+    # the level energy also raises the default energy of the Auger electron of an autoionisation
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_ionisation_channel(10, 1, 1e8, 48.0, lotz_like_xs(48.0, 1e-17), autoionisation=True, level_energy_ev=3.0)
+        channel = sf._ionisation_channels[(10, 1)][0]
+        assert math.isclose(channel.extra_electron_energy_ev, 48.0 + 3.0 - nist[(10, 1)], rel_tol=1e-12)
+
+    # a single ionisation from a metastable level has no NIST check, so the level energy only
+    # records the level and changes nothing in the matrix
+    matrices = []
+    for level_energy_ev in (0.0, 2.0):
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+            sf.add_ionisation_channel(8, 1, 1e8, 11.6, lotz_like_xs(11.6, 1e-17), level_energy_ev=level_energy_ev)
+            assert sf._ionisation_channels[(8, 1)][0].level_energy_ev == level_energy_ev
+            matrices.append(sf.sfmatrix.copy())
+    assert np.array_equal(matrices[0], matrices[1])
+
+
+def test_autoionisation_ion_balance() -> None:
+    # an autoionisation channel of He I in the ionisation balance: its fill is cached, and the balance
+    # adds it with the change of the population at each iteration
+    n_helium = 1e8
+    deposition = 1e8
+    balance_tol = 1e-6
+    ionpot_auto_ev = 60.0
+
+    def solve_helium(auto: bool) -> pynonthermal.SpencerFanoSolver:
+        sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+        sf.add_element(2, n_helium, recomb_ratecoeffs=HELIUM_ALPHAS)
+        if auto:
+            sf.add_ionisation_channel(
+                2, 1, None, ionpot_auto_ev, lotz_like_xs(ionpot_auto_ev, 5e-18), "auto", autoionisation=True
+            )
+        sf.solve(deposition_ev_per_s_per_cm3=deposition, balance_tol=balance_tol)
+        return sf
+
+    sf = solve_helium(auto=True)
+    channel = sf._ionisation_channels[(2, 1)][-1]
+    assert channel.autoionisation
+    gamma_auto = sf.deltaen * float(np.dot(sf.yvec, channel.xs_grid))
+    gamma_11 = sf.get_ionisation_ratecoeff(2, 1, n_ejected=1)
+    gamma_21 = sf.get_ionisation_ratecoeff(2, 2, n_ejected=1)
+    assert 0.0 < gamma_auto < gamma_11
+    assert gamma_11 == sf.get_ionisation_ratecoeff(2, 1)
+
+    n_1, n_2, n_3 = (sf.ionpopdict[(2, ion_stage)] for ion_stage in (1, 2, 3))
+    n_e = sf.get_n_e()
+    assert math.isclose(n_1 * gamma_11, n_2 * n_e * HELIUM_ALPHAS[2], rel_tol=2 * balance_tol)
+    assert math.isclose(n_2 * gamma_21, n_3 * n_e * HELIUM_ALPHAS[3], rel_tol=2 * balance_tol)
+    assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.02)
+
+    # the extra channel moves ions to He II
+    sf_builtin = solve_helium(auto=False)
+    assert sf.ionpopdict[(2, 2)] > sf_builtin.ionpopdict[(2, 2)]
+
+    # the matrix of the converged populations is the matrix of a fixed ion with those populations
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_fixed:
+        sf_fixed.add_element(2, ion_densities={1: n_1, 2: n_2, 3: n_3})
+        sf_fixed.add_ionisation_channel(
+            2, 1, None, ionpot_auto_ev, lotz_like_xs(ionpot_auto_ev, 5e-18), "auto", autoionisation=True
+        )
+        sf_fixed.override_n_e(n_e)
+        sf_fixed.solve(deposition_ev_per_s_per_cm3=deposition)
+        assert np.allclose(sf_fixed.sfmatrix, sf.sfmatrix, rtol=1e-9, atol=0.0)

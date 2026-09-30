@@ -424,7 +424,8 @@ thermalises below `emin_ev`, which is a small part of the heating fraction.
 
 The solver keeps the Lorentzian secondary-electron distribution of Kozma and Fransson (1992, equation 4),
 whose width comes from `pynonthermal.collion.get_J()`. The matrix fill integrates that distribution
-analytically, so its shape is not adjustable.
+analytically, so its shape is not adjustable. An [excitation autoionisation](#excitation-autoionisation)
+channel does not use that distribution.
 
 ### Multiple ionisation
 
@@ -451,7 +452,8 @@ The energy of the extra electrons comes from energy conservation, so no Auger da
 
 - The primary electron loses `ionpot_ev` plus the energy of the first ejected electron. The primary
   electron and the first ejected electron share the energy above `ionpot_ev`, as in a single
-  ionisation. The first ejected electron has the Lorentzian distribution.
+  ionisation. The first ejected electron has the Lorentzian distribution (an autoionisation channel is
+  the exception, see below).
 - By default, the ion keeps the sum of the NIST ground-state potentials from `ion_stage` to
   `ion_stage + n_ejected - 1`. In general, it keeps `ionpot_ev` minus `extra_electron_energy_ev`. The
   ionisation fraction counts only the energy that the ion keeps.
@@ -474,6 +476,55 @@ energy, and the ion keeps all of `ionpot_ev`. Give `extra_electron_energy_ev` to
 energy conservation, for example a calculated Auger electron energy. The ion must still keep at least
 the sum of the potentials, less the same 1 %. The value is also necessary for an ion that the NIST data
 does not have.
+
+### Channels from a metastable level
+
+A channel can start from a metastable level of the ion. Give `level_energy_ev`, the energy of the level
+above the ground state. The threshold `ionpot_ev` is then lower than for the ground state. For a
+multiple ionisation, the ion must keep the sum of the NIST potentials less `level_energy_ev`, and the
+default `extra_electron_energy_ev` increases by `level_energy_ev`. Then `n_ion` is the population of
+the level, not the population of the whole ion. For a balanced ion, the channel rate uses the ion
+population, so scale the cross section by the population fraction of the level.
+
+```python
+# double ionisation of Sr I from a metastable level 1.8 eV above the ground state
+ionpot_ev = nist[(38, 1)] + nist[(38, 2)] - 1.8
+sf.add_ionisation_channel(
+    38, 1, n_level, ionpot_ev, xs_vec=my_double_xs, channelkey="double_meta", n_ejected=2, level_energy_ev=1.8
+)
+```
+
+### Excitation autoionisation
+
+An excitation autoionisation is an excitation to a level above the ionisation limit, which then
+autoionises. Such a channel does not give the Lorentzian distribution of secondary electrons. The primary
+electron loses exactly the excitation threshold, as in `add_excitation()`, and the ion emits an Auger
+electron at one fixed energy. Set `autoionisation=True`, and set `ionpot_ev` to the excitation threshold
+of the autoionising level.
+
+```python
+with pynonthermal.SpencerFanoSolver() as sf:
+    sf.add_element(38, 1.0e6, recomb_ratecoeffs={2: 3e-13, 3: 1e-12})
+    # an autoionising level of Sr I at 20 eV, which is 14.3 eV above the ionisation limit
+    sf.add_ionisation_channel(38, 1, None, 20.0, xs_vec=my_eai_xs, channelkey="eai", autoionisation=True)
+    sf.solve(deposition_ev_per_s_per_cm3=1.0)
+```
+
+The energy rules follow those of a multiple ionisation:
+
+- All `n_ejected` electrons appear at the energy `extra_electron_energy_ev / n_ejected`, with the source
+  term of the Auger electrons in equation 8 of Shingles et al. (2020). By default,
+  `extra_electron_energy_ev` is `ionpot_ev` plus `level_energy_ev` minus the sum of the NIST potentials
+  from `ion_stage` to `ion_stage + n_ejected - 1`, the energy of the level above the ionisation limit.
+  Give a value to replace the default. An electron at or below `emin_ev` counts as heating.
+- The ion keeps `ionpot_ev` minus `extra_electron_energy_ev`, and the ionisation fraction counts only that
+  energy.
+- The rate coefficient and the ionisation balance count the channel as an ionisation of `n_ejected`
+  electrons. `get_ionisation_ratecoeff()` includes it in the total of the ion.
+
+Give an exclusive cross section. Do not include the events of an autoionisation channel in a
+direct-ionisation channel of the same ion. Many autoionising levels can share one channel with the sum of
+their cross sections and one representative threshold, or a few channels with binned thresholds.
 
 ## Citing pynonthermal
 
