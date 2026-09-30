@@ -1,5 +1,6 @@
 import math
 import typing as t
+import warnings
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -255,10 +256,14 @@ def get_arxs_array_shell(
     return xs
 
 
-# The relative tolerance of the ionisation potential of a multiple-ionisation channel below the sum of
-# the NIST ground-state potentials that the channel crosses. A calculated threshold can be a little
-# below the NIST sum. Inside the tolerance the extra electrons get no energy. A channel outside the
-# tolerance makes energy, so IonisationChannel.from_xs() raises a ValueError.
+# The relative tolerance of the threshold of a channel below the energy that the ion must keep. That
+# energy is the sum of the NIST ground-state potentials that the channel crosses, less the energy of
+# the initial level. The check applies to a multiple ionisation and to an autoionisation. A calculated
+# threshold can be a little below that energy. Inside the tolerance the Auger electrons get zero
+# energy. Outside the tolerance, IonisationChannel.from_xs() gives a UserWarning. The channel then
+# uses the threshold and the Auger electron energy as given, and the default Auger electron energy is
+# zero. Thresholds from other atomic data can differ from NIST by more than the tolerance, and a
+# single direct ionisation has no such check.
 MULTIPLE_IONPOT_REL_TOL: float = 0.01
 
 
@@ -276,21 +281,28 @@ class IonisationChannel:
     """
 
     ionpot_ev: float
-    """The ionisation potential of the channel [eV]."""
+    """The threshold of the channel [eV].
+
+    It is the ionisation potential, or the excitation energy of the autoionising level of an
+    autoionisation channel.
+    """
 
     xs: CrossSectionFunc
     """The cross section sigma(E) [cm^2] at any array of energies [eV].
 
     calculate_N_e() evaluates this between the grid points, just above the ionisation potential.
     The domain of that integral is narrower than one grid cell. A function is therefore necessary
-    here, and an array on the grid is not enough.
+    here, and an array on the grid is not enough. An autoionisation channel uses only xs_grid.
     """
 
     xs_grid: npt.NDArray[np.float64]
     """The cross section [cm^2] at every energy of SpencerFanoSolver.engrid."""
 
     J_ev: float
-    """The width of the secondary-electron distribution [eV], from get_J()."""
+    """The width of the secondary-electron distribution [eV], from get_J().
+
+    An autoionisation channel does not use it.
+    """
 
     key: t.Any
     """A key that identifies the channel in its ion, and names it in the verbose output."""
@@ -301,18 +313,46 @@ class IonisationChannel:
     n_ejected: int = 1
     """The number of electrons that one ionisation removes from the ion.
 
-    The ionisation takes the ion from ion_stage to ion_stage + n_ejected. The first ejected
-    electron has the Lorentzian distribution of Psecondary_vec(). The other n_ejected - 1
-    electrons share extra_electron_energy_ev.
+    The ionisation takes the ion from ion_stage to ion_stage + n_ejected. In a direct ionisation,
+    the first ejected electron has the Lorentzian distribution of Psecondary_vec(). The other
+    electrons are Auger electrons (n_auger_electrons), which share auger_electron_energy_ev.
     """
 
-    extra_electron_energy_ev: float = 0.0
-    """The total kinetic energy [eV] of the n_ejected - 1 extra electrons of one ionisation.
+    auger_electron_energy_ev: float = 0.0
+    """The total kinetic energy [eV] of the Auger electrons of one ionisation.
 
-    It is zero when n_ejected is 1. Each extra electron has the energy
-    extra_electron_energy_ev / (n_ejected - 1). The ion keeps ionpot_ev - extra_electron_energy_ev
-    as potential energy, and the ionisation fraction counts only that energy.
+    An Auger electron appears at one energy, auger_electron_energy_ev / n_auger_electrons, and
+    not with the Lorentzian distribution. The energy is zero for a direct single ionisation. The
+    ion keeps ionpot_ev - auger_electron_energy_ev as ionisation energy, and the ionisation
+    fraction counts only that energy.
     """
+
+    autoionisation: bool = False
+    """True for an excitation-autoionisation channel.
+
+    The primary electron loses exactly ionpot_ev, the excitation energy of the autoionising
+    level. No electron has the Lorentzian distribution. All n_ejected electrons appear at the
+    energy auger_electron_energy_ev / n_ejected.
+    """
+
+    @property
+    def n_auger_electrons(self) -> int:
+        """The number of Auger electrons of one ionisation.
+
+        An autoionisation channel has no Lorentzian electron, so all of its n_ejected electrons
+        are Auger electrons. A direct ionisation has n_ejected - 1 of them.
+        """
+        return self.n_ejected if self.autoionisation else self.n_ejected - 1
+
+    @property
+    def extra_electron_energy_ev(self) -> float:
+        """The former name of auger_electron_energy_ev. It is deprecated."""
+        warnings.warn(
+            "IonisationChannel.extra_electron_energy_ev is deprecated. Its name is now auger_electron_energy_ev.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.auger_electron_energy_ev
 
     @classmethod
     def from_xs_grid(
@@ -325,24 +365,35 @@ class IonisationChannel:
         key: t.Any,
         *,
         n_ejected: int = 1,
+        level_energy_ev: float = 0.0,
+        auger_electron_energy_ev: float | None = None,
+        autoionisation: bool | np.bool_ = False,
         extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
-        """Make a channel from cross sections [cm^2] at every energy of the grid arr_enev [eV]."""
+        """Make a channel from cross sections [cm^2] at every energy of the grid arr_enev [eV].
+
+        The keywords are those of from_xs().
+        """
+        auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
         name = f"The cross section of ionisation channel {key}"
         xs_grid = get_xs_on_grid(xs_vec, arr_enev, name)
         # check the array of the caller here. The interpolation below holds the cross section at
-        # zero up to the ionisation potential, so from_xs() would find nothing left to reject.
-        _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
+        # zero up to the threshold, so from_xs() would find nothing left to reject. An
+        # autoionisation channel keeps its value at the threshold, as an excitation does.
+        if not autoionisation:
+            _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
 
         return cls.from_xs(
             arr_enev=arr_enev,
             Z=Z,
             ion_stage=ion_stage,
             ionpot_ev=ionpot_ev,
-            xs=_interpolate_grid_xs(arr_enev, xs_grid, float(ionpot_ev)),
+            xs=_interpolate_grid_xs(arr_enev, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
             key=key,
             n_ejected=n_ejected,
-            extra_electron_energy_ev=extra_electron_energy_ev,
+            level_energy_ev=level_energy_ev,
+            auger_electron_energy_ev=auger_electron_energy_ev,
+            autoionisation=autoionisation,
         )
 
     @classmethod
@@ -357,6 +408,9 @@ class IonisationChannel:
         lotz: bool = False,
         *,
         n_ejected: int = 1,
+        level_energy_ev: float = 0.0,
+        auger_electron_energy_ev: float | None = None,
+        autoionisation: bool | np.bool_ = False,
         extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
         """Make a channel, and check the cross section that xs gives on the energy grid arr_enev [eV].
@@ -367,13 +421,28 @@ class IonisationChannel:
         n_ejected:
             the number of electrons that one ionisation removes. ion_stage + n_ejected must not
             be more than Z + 1, the bare nucleus.
+        level_energy_ev:
+            the energy [eV] of the initial level above the ground state. It must be less than the
+            NIST ionisation potential of the ion. For a multiple ionisation or an autoionisation,
+            it lowers the energy that the ion must keep, and it increases the default
+            auger_electron_energy_ev. The channel does not keep it.
+        auger_electron_energy_ev:
+            the total kinetic energy [eV] of the Auger electrons. None (the
+            default) gives zero for a channel with n_ejected=1 and autoionisation=False. In the
+            other cases, None gives the value from energy conservation (see
+            _get_auger_electron_energy_ev()). A value must be less than ionpot_ev. If the NIST
+            data holds the potentials that the ionisation crosses, the ion keeps at least their
+            sum, less level_energy_ev and less MULTIPLE_IONPOT_REL_TOL. A threshold or a value
+            that leaves the ion less than that gives a UserWarning, and the channel uses it.
+        autoionisation:
+            True for an excitation-autoionisation channel. Then ionpot_ev is the excitation
+            energy of the autoionising level, and all n_ejected electrons are Auger electrons.
+            The cross section below that energy is set to zero, as in
+            SpencerFanoSolver.add_excitation().
         extra_electron_energy_ev:
-            the total kinetic energy [eV] of the n_ejected - 1 extra electrons. None (the
-            default) gives zero for n_ejected=1. For a larger n_ejected, None gives the value from
-            energy conservation (see _get_extra_electron_energy_ev()). A value must be less than
-            ionpot_ev. If the NIST data holds the potentials that the ionisation crosses, the ion
-            must also keep at least their sum, less MULTIPLE_IONPOT_REL_TOL.
+            the former name of auger_electron_energy_ev. It is deprecated.
         """
+        auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
         name = f"The cross section of ionisation channel {key}"
 
         # the chained comparison also rejects nan, for which every comparison is False
@@ -386,37 +455,57 @@ class IonisationChannel:
             raise ValueError(msg)
         # a Python integer, so that the sum below cannot wrap around in a fixed-width numpy type
         n_ejected = int(n_ejected)
+        # a numpy comparison gives a numpy bool, which is not a subclass of bool
+        if not isinstance(autoionisation, bool | np.bool_):
+            msg = f"autoionisation must be True or False but is {autoionisation!r}"
+            raise TypeError(msg)
+        autoionisation = bool(autoionisation)
+        # the chained comparison also rejects nan
+        if not 0.0 <= level_energy_ev < math.inf:
+            msg = f"level_energy_ev must be at least zero and finite but is {level_energy_ev}"
+            raise ValueError(msg)
+        level_energy_ev = float(level_energy_ev)
+        _check_level_energy_ev(Z, ion_stage, level_energy_ev)
         if ion_stage + n_ejected > Z + 1:
             msg = (
                 f"Z={Z} ion_stage {ion_stage} has {Z + 1 - ion_stage} electrons, so an ionisation cannot remove"
                 f" n_ejected={n_ejected} of them"
             )
             raise ValueError(msg)
-        if n_ejected == 1:
+        if n_ejected == 1 and not autoionisation:
             # the comparison with zero also rejects nan
-            if extra_electron_energy_ev is not None and extra_electron_energy_ev != 0.0:
+            if auger_electron_energy_ev is not None and auger_electron_energy_ev != 0.0:
                 msg = (
-                    "a channel with n_ejected=1 has no extra electrons, so extra_electron_energy_ev must be zero"
-                    f" but is {extra_electron_energy_ev}"
+                    "a channel with n_ejected=1 and autoionisation=False has no Auger electrons, so"
+                    f" auger_electron_energy_ev must be zero but is {auger_electron_energy_ev}. Set"
+                    " autoionisation=True for a channel that emits its electron as an Auger electron."
                 )
                 raise ValueError(msg)
-            extra_ev = 0.0
+            auger_ev = 0.0
         else:
-            extra_ev = _get_extra_electron_energy_ev(
-                Z, ion_stage, float(ionpot_ev), n_ejected, extra_electron_energy_ev
+            auger_ev = _get_auger_electron_energy_ev(
+                Z, ion_stage, float(ionpot_ev), n_ejected, auger_electron_energy_ev, level_energy_ev
             )
-        # the extra electrons get their energy from the ionisation potential, so the ion keeps a
-        # positive energy. The chained comparison also rejects nan.
-        if not 0.0 <= extra_ev < ionpot_ev:
+        # the Auger electrons get their energy from the ionisation potential, so the ion keeps
+        # a positive energy. The chained comparison also rejects nan.
+        if not 0.0 <= auger_ev < ionpot_ev:
             msg = (
-                f"extra_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
-                f" but is {extra_ev}"
+                f"auger_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
+                f" but is {auger_ev}"
             )
             raise ValueError(msg)
 
         xs_grid = get_xs_on_grid(xs, arr_enev, name)
 
-        _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
+        if autoionisation:
+            # no electron below the threshold can excite the level, so the cross section there is
+            # zero, and the value at the threshold stays. This is the rule of
+            # SpencerFanoSolver.add_excitation(). The array is a fresh copy, so the write is safe.
+            xs_grid.flags.writeable = True
+            xs_grid[arr_enev < ionpot_ev] = 0.0
+            xs_grid.flags.writeable = False
+        else:
+            _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
 
         # calculate_N_e() evaluates the cross section between the points of the energy grid, so a
         # function that ignores its argument fails there. The probe finds that at the call site,
@@ -439,53 +528,105 @@ class IonisationChannel:
             key=key,
             lotz=lotz,
             n_ejected=n_ejected,
-            extra_electron_energy_ev=float(extra_ev),
+            auger_electron_energy_ev=float(auger_ev),
+            autoionisation=autoionisation,
         )
 
 
-def _get_extra_electron_energy_ev(
-    Z: int, ion_stage: int, ionpot_ev: float, n_ejected: int, extra_electron_energy_ev: float | None
+def _resolve_auger_electron_energy_ev(
+    auger_electron_energy_ev: float | None, extra_electron_energy_ev: float | None
+) -> float | None:
+    # the value of the Auger electron energy from either keyword. extra_electron_energy_ev
+    # is the former name, which v2026.9.23 released.
+    if extra_electron_energy_ev is None:
+        return auger_electron_energy_ev
+    warnings.warn(
+        "the extra_electron_energy_ev argument is deprecated. Its name is now auger_electron_energy_ev.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    if auger_electron_energy_ev is not None:
+        msg = "give the energy of the Auger electrons once, as auger_electron_energy_ev"
+        raise ValueError(msg)
+    return extra_electron_energy_ev
+
+
+def _check_level_energy_ev(Z: int, ion_stage: int, level_energy_ev: float) -> None:
+    # a bound level of the ion lies below its ionisation potential. The check needs the NIST data,
+    # so an ion that the data does not hold gets no check.
+    ionpot_ground_ev = get_nist_ionisation_energies_ev().get((Z, ion_stage))
+    if ionpot_ground_ev is not None and level_energy_ev >= ionpot_ground_ev:
+        msg = (
+            f"level_energy_ev ({level_energy_ev} eV) must be less than the ionisation potential of Z={Z}"
+            f" ion_stage {ion_stage} ({ionpot_ground_ev:.3f} eV)"
+        )
+        raise ValueError(msg)
+
+
+def _get_auger_electron_energy_ev(
+    Z: int,
+    ion_stage: int,
+    ionpot_ev: float,
+    n_ejected: int,
+    auger_electron_energy_ev: float | None,
+    level_energy_ev: float,
 ) -> float:
-    # the total energy [eV] of the extra electrons of a multiple ionisation. The ion must keep at
-    # least the sum of the NIST ground-state potentials that the ionisation crosses. Else the channel
-    # makes energy. Without a value from the caller, energy conservation gives the energy: the
-    # ionisation potential of the channel minus that sum.
+    # the total energy [eV] of the Auger electrons of one ionisation of a channel. The ion must
+    # keep at least the sum of the NIST ground-state potentials that the ionisation crosses, less the
+    # energy of the initial level above the ground state. Else the channel makes energy. Without a
+    # value from the caller, energy conservation gives the energy: the threshold of the channel minus
+    # that sum.
     ionpots_ev = get_nist_ionisation_energies_ev()
     stages = range(ion_stage, ion_stage + n_ejected)
     missing = [stage for stage in stages if (Z, stage) not in ionpots_ev]
     if missing:
-        if extra_electron_energy_ev is not None:
+        if auger_electron_energy_ev is not None:
             # the value of the caller is the only source for an ion that the NIST data does not hold
-            return extra_electron_energy_ev
+            return auger_electron_energy_ev
         msg = (
             f"the NIST data has no ionisation potential for Z={Z} ion_stages {missing}, so energy"
-            " conservation cannot give the energy of the extra electrons. Give extra_electron_energy_ev."
+            " conservation cannot give the energy of the Auger electrons. Give auger_electron_energy_ev."
         )
         raise ValueError(msg)
-    retained_ev = sum(ionpots_ev[(Z, stage)] for stage in stages)
+    nist_sum_ev = sum(ionpots_ev[(Z, stage)] for stage in stages)
+    # _check_level_energy_ev() keeps level_energy_ev below the first potential, so this is positive
+    retained_ev = nist_sum_ev - level_energy_ev
     retained_min_ev = retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL)
+    auger_ev = max(0.0, ionpot_ev - retained_ev) if auger_electron_energy_ev is None else auger_electron_energy_ev
+    # a value that is not a number passes here. It fails the range check of IonisationChannel.from_xs().
+    if ionpot_ev - auger_ev >= retained_min_ev:
+        return auger_ev
+    channel_str = f"a channel that takes Z={Z} ion_stage {ion_stage} to ion_stage {ion_stage + n_ejected}"
+    keep_str = (
+        f"The ion must keep at least {retained_min_ev:.3f} eV. That is the sum of the ground-state ionisation"
+        f" potentials ({nist_sum_ev:.3f} eV), less level_energy_ev ({level_energy_ev} eV), less"
+        " MULTIPLE_IONPOT_REL_TOL."
+    )
     if ionpot_ev < retained_min_ev:
+        advice = f"Set ionpot_ev to at least {retained_ev:.3f} eV."
+    else:
+        # round the limit down to three decimals. The product can round up, so the printed value is
+        # checked again until it passes.
+        auger_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+        while ionpot_ev - float(f"{auger_max_ev:.3f}") < retained_min_ev:
+            auger_max_ev -= 0.001
+        advice = f"Set auger_electron_energy_ev to at most {auger_max_ev:.3f} eV."
+    # The NIST data is a plausibility check, because thresholds from other atomic data can differ from
+    # it, and a single direct ionisation has no such check. The channel conserves energy with any
+    # value: the ion keeps ionpot_ev - auger_ev as ionisation energy.
+    if auger_electron_energy_ev is None:
         msg = (
-            f"ionpot_ev ({ionpot_ev} eV) of a channel that takes Z={Z} ion_stage {ion_stage} to ion_stage"
-            f" {ion_stage + n_ejected} is less than the sum of the ground-state ionisation potentials"
-            f" ({retained_ev:.3f} eV). Set ionpot_ev to at least that sum."
+            f"ionpot_ev ({ionpot_ev} eV) of {channel_str} is less than the energy that the ion must keep."
+            f" {keep_str} The Auger electrons get zero energy, and the ion keeps all of ionpot_ev. {advice}"
         )
-        raise ValueError(msg)
-    if extra_electron_energy_ev is None:
-        return max(0.0, ionpot_ev - retained_ev)
-    # a value that is not a number fails the range check of IonisationChannel.from_xs()
-    if ionpot_ev - extra_electron_energy_ev < retained_min_ev:
-        # round the limit down, so that the value in the message passes the check
-        extra_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+    else:
         msg = (
-            f"with extra_electron_energy_ev={extra_electron_energy_ev} eV, the ion keeps"
-            f" {ionpot_ev - extra_electron_energy_ev:.3f} eV. To go from ion_stage {ion_stage} to ion_stage"
-            f" {ion_stage + n_ejected}, it must keep at least {retained_min_ev:.3f} eV. That is the sum of the"
-            f" ground-state ionisation potentials ({retained_ev:.3f} eV), less MULTIPLE_IONPOT_REL_TOL. Set"
-            f" extra_electron_energy_ev to at most {extra_max_ev:.3f} eV."
+            f"with auger_electron_energy_ev={auger_electron_energy_ev} eV, the ion of {channel_str} keeps"
+            f" {ionpot_ev - auger_ev:.3f} eV, which is less than the NIST data give. {keep_str} The channel"
+            f" uses the value as given. {advice}"
         )
-        raise ValueError(msg)
-    return extra_electron_energy_ev
+    warnings.warn(msg, UserWarning, stacklevel=4)
+    return auger_ev
 
 
 def _check_zero_below_ionpot(
@@ -507,14 +648,19 @@ def _check_zero_below_ionpot(
 
 
 def _interpolate_grid_xs(
-    arr_enev: npt.NDArray[np.float64], xs_grid: npt.NDArray[np.float64], ionpot_ev: float
+    arr_enev: npt.NDArray[np.float64],
+    xs_grid: npt.NDArray[np.float64],
+    ionpot_ev: float,
+    keep_threshold: bool = False,
 ) -> CrossSectionFunc:
     # calculate_N_e() evaluates the cross section between the points of the energy grid, just above
     # the ionisation potential, so a channel given as an array on that grid interpolates it there.
     # The np.where keeps the function at zero below its own ionisation potential, where a straight
-    # interpolation from the last grid point below it would give a small positive value.
+    # interpolation from the last grid point below it would give a small positive value. An
+    # autoionisation channel keeps its value at the threshold (keep_threshold).
     def xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return np.where(en_ev > ionpot_ev, np.interp(en_ev, arr_enev, xs_grid, left=0.0, right=0.0), 0.0)
+        above = en_ev >= ionpot_ev if keep_threshold else en_ev > ionpot_ev
+        return np.where(above, np.interp(en_ev, arr_enev, xs_grid, left=0.0, right=0.0), 0.0)
 
     return xs
 
