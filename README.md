@@ -5,15 +5,19 @@
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/pynonthermal)](https://pypi.org/project/pynonthermal/)
 [![Build and test](https://github.com/lukeshingles/pynonthermal/actions/workflows/pytest.yml/badge.svg)](https://github.com/lukeshingles/pynonthermal/actions/workflows/pytest.yml)
 
-pynonthermal is a Python solver for the Spencer-Fano equation, which describes the energy distribution of non-thermal (fast) electrons slowing down in a plasma. When high-energy leptons — such as the Compton, photoelectric, and pair-production electrons and positrons produced by radioactive decay in supernova ejecta — are injected into a partially ionised gas, they lose energy through three competing channels: Coulomb heating of the free thermal electrons, collisional ionisation, and collisional excitation of bound states.
+pynonthermal is a Python solver for the Spencer-Fano equation. The equation describes the energy distribution of the non-thermal (fast) electrons that slow down in a plasma. Radioactive decay in supernova ejecta makes high-energy leptons: Compton, photoelectric, and pair-production electrons and positrons. A partially ionised gas takes their energy through three channels:
 
-Given a set of ions (with number densities) and an energy deposition rate, pynonthermal computes:
+- Coulomb heating of the free thermal electrons;
+- collisional ionisation;
+- collisional excitation of bound states.
 
-- the **degradation spectrum** y(E) of the non-thermal electron population,
-- the **fraction of deposited energy** going to heating, ionisation, and excitation (per channel and per ion),
-- **non-thermal ionisation rate coefficients** for each ion and **excitation rate coefficients** for individual bound-bound transitions, ready to be used in non-LTE plasma modelling.
+Given a set of ions with number densities and an energy deposition rate, pynonthermal computes:
 
-These quantities are important, for example, in modelling the late-time spectra and light curves of Type Ia and core-collapse supernovae, where non-thermal ionisation can dominate over photoionisation. The solver follows the method of [Kozma & Fransson (1992)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (see [Method background](#method-background) for details and further references) and ships with the atomic data needed to run out of the box: ionisation cross sections for a wide range of ions, and level/transition data for bound-bound excitation.
+- the **degradation spectrum** y(E) of the non-thermal electron population;
+- the **fraction of the deposited energy** that goes to heating, ionisation, and excitation, per channel and per ion;
+- the **non-thermal ionisation rate coefficients** of each ion and the **excitation rate coefficients** of bound-bound transitions, for non-LTE plasma models.
+
+These quantities are important in models of the late-time spectra and light curves of Type Ia and core-collapse supernovae, where non-thermal ionisation can dominate over photoionisation. The solver follows the method of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (see [Method background](#method-background) for details and further references). It includes the atomic data that it needs: ionisation cross sections for a wide range of ions, and level and transition data for bound-bound excitation.
 
 ## Contents
 - [Installation](#installation)
@@ -73,10 +77,10 @@ with pynonthermal.SpencerFanoSolver() as sf:
     print("ionisation rate coeff [s^-1]:", sf.get_ionisation_ratecoeff(Z=8, ion_stage=2))
 ```
 
-The solver is a builder: each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
+The solver is a builder. Each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
 solves it. The `with` block is optional and only scopes the solver.
 
-The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example, and can be launched on Binder:
+The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example. Binder can run it:
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/lukeshingles/pynonthermal/HEAD?filepath=quickstart.ipynb)
 
 ## Usage guide
@@ -90,8 +94,8 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 - `emin_ev`, `emax_ev`: the bounds of the uniform energy grid in eV (defaults `0.1` and `16000.0`). An
   electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
   Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
-  use. The default `emax_ev` covers the K-shell ionisation of iron at about 7 keV; lower it to 3000 eV
-  to match Kozma & Fransson (1992). `emin_ev` also sets the highest free electron density that the
+  use. The default `emax_ev` covers the K-shell ionisation of iron at about 7 keV. Lower it to 3000 eV
+  to match [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract). `emin_ev` also sets the highest free electron density that the
   solver accepts, because the Coulomb logarithm of the loss function must stay positive at the bottom
   of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time; check
@@ -164,9 +168,10 @@ example when species that are not in the solver also give electrons:
 sf.override_n_e(2.5e6)  # cm^-3; None takes it from the ion charges again
 ```
 
-It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality: `solve()` then finds the populations at your density, and they do not have to be neutral
-with it. The value holds until another call changes it, and a call after `solve()` discards the
-solution, so `solve()` must run again. (The `override_n_e` argument of `solve()` is deprecated.) The
+It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality. `solve()`
+then finds the populations at your density, and they do not have to be neutral with it. The value holds
+until another call changes it. A call after `solve()` discards the solution, so `solve()` must run
+again. The `override_n_e` argument of `solve()` is deprecated. The
 [iron notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
 what a given density does to a balance.
 
@@ -261,27 +266,27 @@ over stages. Then the balance holds for each cut between two adjacent stages `j`
 cut, the ionisations from all stages `i <= j` that cross the cut equal `n_{j+1} n_e alpha_{j+1}`.
 Recombination is always from one stage to the stage below it.
 
-A coefficient outside `1e-16` to `1e-8` cm^3 s^-1 raises a warning
+A coefficient outside `1e-16` to `1e-8` cm^3 s^-1 gives a warning
 (`RECOMB_RATECOEFF_MIN_WARN` and `RECOMB_RATECOEFF_MAX_WARN`). The published radiative and
-dielectronic fits stay inside that range, so a value outside it is nearly always a unit error: a
-coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1. The value is still used.
+dielectronic fits stay inside that range, so a value outside it is nearly always a unit error. A
+coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1. The solver still uses the value.
 
-The solution depends on the ion densities, so `solve()` iterates: it solves the equation, updates the
+The solution depends on the ion densities, so `solve()` iterates. It solves the equation, updates the
 densities from the balance and the free electron density from charge neutrality, and repeats until the
-ionisation rate coefficients agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations; a
-`RuntimeError` reports a balance that did not converge within 100. `sf.balance_iterations` says how many
-it took.
+ionisation rate coefficients agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations.
+A `RuntimeError` reports a balance that did not converge within 100. `sf.balance_iterations` says how
+many it took.
 
 Points to note:
 
 - The balance includes only non-thermal ionisation and the recombination that you give. It does not
   include thermal collisional ionisation, photoionisation, or charge exchange. The ion fractions
   therefore depend on the deposition rate density, unlike the fixed-population case.
-- The top stage of the chain is a sink: its ionisation is an energy loss in the matrix, but the ions
-  it makes have no stage to go to. A warning is raised if the ionisation rate out of the top stage
-  exceeds 1 % of the total ionisation rate of the element, because about that fraction of the element
-  then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage. If a
-  channel of the top stage removes `k` electrons, extend the chain to the top stage plus `k`.
+- The top stage of the chain is a sink. Its ionisation is an energy loss in the matrix, but the ions
+  it makes have no stage to go to. The solver gives a warning if the ionisation rate out of the top
+  stage exceeds 1 % of the total ionisation rate of the element, because about that fraction of the
+  element then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
+  If a channel of the top stage removes `k` electrons, extend the chain to the top stage plus `k`.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
 The functions behind the balance are in `pynonthermal.ionbalance`:
@@ -293,9 +298,9 @@ The functions behind the balance are in `pynonthermal.ionbalance`:
 
 ### The Saha equation as a comparison
 
-The Saha equation is not a population rule, because it describes a gas whose ionisation is thermal,
-and a gas with non-thermal ionisation is not in local thermodynamic equilibrium. It is still worth
-comparing against, so `pynonthermal.ionbalance` gives it as a function of its own:
+The Saha equation is not a population rule. It describes a gas whose ionisation is thermal, and a gas
+with non-thermal ionisation is not in local thermodynamic equilibrium. It is still a useful comparison,
+so `pynonthermal.ionbalance` gives it as a function of its own:
 
 ```python
 fractions = pynonthermal.ionbalance.get_saha_ion_fractions(26, [1, 2, 3, 4, 5], 6000.0, n_elem=1.0e6)
@@ -310,12 +315,12 @@ built-in data covers He, O, and Fe. For other elements give them as `partfuncs={
 or supply a level table in `adata_polars`. The bare nucleus (`ion_stage = Z + 1`) has a partition
 function of 1. `get_saha_factor()` gives one pair's ratio coefficient by itself.
 
-The [iron ionisation balance notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example: the ion fractions of iron in the core of a Type Ia supernova at 250 days, with the deposition rate from the 56Co decay, a comparison with the Saha equation, and the evolution from 150 to 400 days.
+The [iron ionisation balance notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example. It gives the ion fractions of iron in the core of a Type Ia supernova at 250 days, with the deposition rate from the 56Co decay, a comparison with the Saha equation, and the evolution from 150 to 400 days.
 
 ## Complete example: pure-oxygen plasma
 
-This reproduces Figure 2 of Kozma & Fransson (1992): a pure-oxygen plasma with electron fraction
-x_e = 0.01, including both ionisation and excitation channels. With `verbose=True` the solver prints its
+This reproduces Figure 2 of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract): a pure-oxygen plasma with the electron fraction
+x_e = 0.01, with both ionisation and excitation channels. With `verbose=True` the solver prints its
 setup and a per-ion, per-shell breakdown as it runs.
 
 ```python
@@ -338,7 +343,7 @@ with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4096, verbose=
     sf.plot_channels(xscalelog=True)
 ```
 
-The resulting plot shows the energy distribution of contributions to ionisation, excitation, and heating; the area under each curve gives the fraction of deposited energy in that channel:
+The plot shows the energy distribution of the contributions to ionisation, excitation, and heating. The area under each curve gives the fraction of the deposited energy in that channel:
 
 ![Energy deposition channels for a pure oxygen plasma](https://raw.githubusercontent.com/lukeshingles/pynonthermal/main/docs/oxygen_channels.svg)
 
@@ -354,27 +359,27 @@ The resulting plot shows the energy distribution of contributions to ionisation,
 
 ## Method background
 
-The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. 2020](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)), itself an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). A similar approach is used in [CMFGEN](https://kookaburra.phyast.pitt.edu/hillier/web/CMFGEN.htm).
+The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)). That code is an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172–1181, doi:10.1103/PhysRev.93.1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). [CMFGEN](https://kookaburra.phyast.pitt.edu/hillier/web/CMFGEN.htm) uses a similar approach.
 
-The integral form of the Kozma and Fransson degradation equation (their equation 7) is discretised on a uniform energy grid as an upper-triangular matrix equation and solved by back-substitution from the highest energy downward. The `SpencerFanoSolver` class docstring maps each term of the equation to the method that implements it, and the code comments cite the specific Kozma and Fransson equations at each site. The secondary-electron energy distribution follows [Opal, Peterson and Beaty (1971)](https://ui.adsabs.harvard.edu/abs/1971JChPh..55.4100O/abstract) as applied by Kozma and Fransson, and the energy loss rate to thermal electrons uses their Coulomb-logarithm prescription (after [Schunk and Hays 1971](https://ui.adsabs.harvard.edu/abs/1971P%26SS...19..113S/abstract)).
+The solver discretises the integral form of the Kozma and Fransson degradation equation (their equation 7) on a uniform energy grid as an upper-triangular matrix equation. It solves that equation by back-substitution from the highest energy downward. The `SpencerFanoSolver` class docstring maps each term of the equation to the method that implements it, and the code comments cite the specific Kozma and Fransson equations at each site. The secondary-electron energy distribution follows [Opal, Peterson and Beaty (1971, J. Chem. Phys., 55, 4100–4106, doi:10.1063/1.1676707)](https://ui.adsabs.harvard.edu/abs/1971JChPh..55.4100O/abstract) as Kozma and Fransson applied it. The energy loss rate to the thermal electrons uses their Coulomb-logarithm prescription, after [Schunk and Hays (1971, Planet. Space Sci., 19, 113–117, doi:10.1016/0032-0633(71)90071-7)](https://ui.adsabs.harvard.edu/abs/1971P%26SS...19..113S/abstract).
 
-If internal level/transition data are used (for example, via `add_ion_excitation()`), they are imported from the CMFGEN atomic data compilation (see the source data files for references), with excitation cross sections computed from the tabulated collision strengths ([Li, Dessart and Hillier 2012, equation 11](https://doi.org/10.1111/j.1365-2966.2012.21198.x)) or, for permitted transitions without one, from the oscillator strength via the van Regemorter (1962) approximation with the g-bar factor of [Mewe (1972)](https://ui.adsabs.harvard.edu/abs/1972A%26A....20..215M/abstract), as described in [Shingles et al. (2020, section 2.5)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
+The internal level and transition data, which `add_ion_excitation()` uses, come from the CMFGEN atomic data compilation (see the source data files for references). The solver computes the excitation cross sections from the tabulated collision strengths ([Li, Dessart and Hillier 2012, MNRAS, 426, 1671–1686, doi:10.1111/j.1365-2966.2012.21198.x, equation 11](https://doi.org/10.1111/j.1365-2966.2012.21198.x)). For a permitted transition without a collision strength, it uses the oscillator strength with the approximation of [van Regemorter (1962, ApJ, 136, 906–915, doi:10.1086/147445)](https://ui.adsabs.harvard.edu/abs/1962ApJ...136..906V/abstract) and the g-bar factor of [Mewe (1972, A&A, 20, 215–221)](https://ui.adsabs.harvard.edu/abs/1972A%26A....20..215M/abstract), as [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract) describes in section 2.5.
 
 ## Cross-section datasets
 
-Ionization cross sections from H (Z=1) to Ni (Z=28) use the shell-resolved analytical fits compiled by [Arnaud and Rothenflug (1985, A&AS, 60, 425)](https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A/abstract), with updates to Fe from [Arnaud and Raymond (1992, ApJ, 398, 394)](https://ui.adsabs.harvard.edu/abs/1992ApJ...398..394A/abstract). For heavier elements (Z>28) and any other ions missing from the fit data, the approximation of [Axelrod (1980, PhD thesis, Eq. 3.38)](https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A/abstract) is used — the high-energy limit of the [Lotz (1967, Z. Phys., 206, 205)](https://doi.org/10.1007/BF01325928) formula with relativistic corrections — with subshell binding energies from [Lotz (1970, J. Opt. Soc. Am., 60, 206)](https://doi.org/10.1364/JOSA.60.000206).
+The ionisation cross sections from H (Z=1) to Ni (Z=28) use the shell-resolved analytical fits of [Arnaud and Rothenflug (1985, A&AS, 60, 425–457)](https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A/abstract), with the updates to Fe of [Arnaud and Raymond (1992, ApJ, 398, 394–406, doi:10.1086/171864)](https://ui.adsabs.harvard.edu/abs/1992ApJ...398..394A/abstract). For the heavier elements (Z>28) and any other ion without a fit, the solver uses the approximation of [Axelrod (1980, PhD thesis, University of California, Santa Cruz, equation 3.38)](https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A/abstract). That is the high-energy limit of the formula of [Lotz (1967, Z. Phys., 206, 205–211, doi:10.1007/BF01325928)](https://doi.org/10.1007/BF01325928) with relativistic corrections, with the subshell binding energies of [Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206)](https://doi.org/10.1364/JOSA.60.000206).
 
-Passing `use_ar1985=True` to the solver selects the original Arnaud and Rothenflug (1985) compilation without the Fe updates, which can be useful for comparison with older published results.
+`use_ar1985=True` selects the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) compilation without the Fe updates, for a comparison with older published results.
 
-The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solver takes it as `lotz_a_cm2_ev2` (in cm^2 eV^2). The default of `1.33e-14` is the value of Axelrod (1980). Lotz (1967) gives `4.5e-14` for most shells, available as `pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967`. The fits of Arnaud and Rothenflug (1985) agree with the Lotz value at high energy. The default is therefore a factor of about 3 below both. The solver gives a `pynonthermal.LotzApproximationWarning` when it adds a Lotz channel, so that the ions that depend on this constant are visible. Filter on that class to silence the warning.
+The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solver takes it as `lotz_a_cm2_ev2` (in cm^2 eV^2). The default of `1.33e-14` is the value of Axelrod (1980). Lotz (1967, Z. Phys., 206, 205–211) gives `4.5e-14` for most shells, available as `pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967`. The fits of Arnaud and Rothenflug (1985) agree with the Lotz value at high energy. The default is therefore a factor of about 3 below both. The solver gives a `pynonthermal.LotzApproximationWarning` when it adds a Lotz channel, so that the ions that depend on this constant are visible. Filter on that class to silence the warning.
 
 ## Advanced usage: custom cross sections
 
 Give a cross section as a function of an array of energies in eV that returns cross sections in cm^2
-(the type `pynonthermal.CrossSectionFunc`).
-The solver calls it on its own grid, and between the grid points where it needs to, so the plasma does
-not depend on the energy grid of the solution. An array at every energy of `sf.engrid` is accepted too,
-but then the plasma is tied to that grid and the solver can only interpolate between the points.
+(the type `pynonthermal.CrossSectionFunc`). The solver calls it on its own grid, and between the grid
+points where it needs to, so the plasma does not depend on the energy grid of the solution. The solver
+also accepts an array at every energy of `sf.engrid`. Then the plasma is tied to that grid, and the
+solver can only interpolate between the points.
 
 A custom cross section follows the same path through the solver as a built-in one, so the matrix, the
 energy fractions, and the rate coefficients stay consistent.
@@ -418,9 +423,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
   level population then follows the ion population, whether it is fixed or comes from a balance.
 - `epsilon_trans_ev`: the transition energy in eV. It must be positive and no greater than `emax_ev`,
   since no electron the solver represents could otherwise drive the transition. Transitions below
-  `emin_ev` are allowed here, but `add_element(excitation=True)` drops them: Kozma and Fransson (1992)
-  take every electron below `emin_ev` to have thermalised, so that energy is accounted for as heating
-  instead.
+  `emin_ev` are allowed here, but `add_element(excitation=True)` drops them. [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract)
+  take every electron below `emin_ev` to have thermalised, so that energy counts as heating instead.
 - `xs_vec`, and `transitionkey`: the key to pass to `get_excitation_ratecoeff()`.
 
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
@@ -430,7 +434,7 @@ thermalises below `emin_ev`, which is a small part of the heating fraction. An
 [autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as
 `add_excitation()` does.
 
-The solver keeps the Lorentzian secondary-electron distribution of Kozma and Fransson (1992, equation 4),
+The solver keeps the Lorentzian secondary-electron distribution of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (their equation 4),
 whose width comes from `pynonthermal.collion.get_J()`. The matrix fill integrates that distribution
 analytically, so its shape is not adjustable. An [excitation autoionisation](#excitation-autoionisation)
 channel does not use that distribution.
@@ -587,7 +591,7 @@ The default Auger electron energy then comes from that lowest level.
 
 ## Citing pynonthermal
 
-If you use pynonthermal, please cite it via the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider citing the papers describing the method: [Kozma and Fransson (1992)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
+If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
 
 ## License
 
