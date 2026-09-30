@@ -488,8 +488,8 @@ Two cases are typical:
 - Inner-shell ionisation followed by Auger decay: set `ionpot_ev` to the potential of the shell. The
   extra electrons can then have hundreds of eV. This value ignores fluorescence and excited final
   states, so it is an upper limit.
-- Direct multiple ionisation: set `ionpot_ev` to the sum of the potentials. The extra electrons then
-  have no energy.
+- Direct multiple ionisation: set `ionpot_ev` to the sum of the potentials. There is no Auger decay,
+  and the extra electrons appear with zero energy.
 
 `ionpot_ev` must be at least the sum of the potentials, less 1 %
 (`pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL`). Inside that tolerance, the extra electrons get no
@@ -538,9 +538,9 @@ the ground-state potentials.
 
 An excitation autoionisation is an excitation to a level above the ionisation limit, which then
 autoionises. Such a channel does not give the Lorentzian distribution of secondary electrons. The primary
-electron loses exactly the excitation threshold, as in `add_excitation()`, and the ion emits an Auger
-electron at one fixed energy. Set `autoionisation=True`. Set `ionpot_ev` to the excitation threshold of
-the autoionising level. The solver sets the cross section below the threshold to zero, as
+electron loses exactly the excitation energy, as in `add_excitation()`, and the ion emits an Auger
+electron of one energy. Set `autoionisation=True`. Set `ionpot_ev` to the excitation energy of the
+autoionising level. The solver sets the cross section below that energy to zero, as
 `add_excitation()` does, and it keeps the value at the threshold.
 
 ```python

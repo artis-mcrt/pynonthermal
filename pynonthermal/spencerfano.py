@@ -1531,9 +1531,10 @@ class SpencerFanoSolver:
             must agree with the value that any other call for this ion gives. A value of exactly
             zero adds no channel and registers no population, as in add_ionisation().
         ionpot_ev:
-            the ionisation potential of the channel in eV, or the excitation threshold of an
-            autoionisation channel. It must be between emin_ev and emax_ev. The cross section must
-            be zero at and below it. An autoionisation channel keeps its value at the threshold.
+            the ionisation potential of the channel in eV, or the excitation energy of the
+            autoionising level of an autoionisation channel. It must be between emin_ev and emax_ev.
+            The cross section must be zero at and below it. An autoionisation channel keeps its
+            value at that energy.
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
             array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
@@ -1572,7 +1573,7 @@ class SpencerFanoSolver:
             pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL. For an ion that the NIST data does not
             hold, you must give a value.
         autoionisation:
-            True for an excitation-autoionisation channel. Set ionpot_ev to the excitation threshold
+            True for an excitation-autoionisation channel. Set ionpot_ev to the excitation energy
             of the autoionising level. The primary electron loses exactly ionpot_ev, as in
             add_excitation(). No electron has the Lorentzian distribution. All n_ejected electrons
             appear at the energy auger_electron_energy_ev / n_ejected. The default
@@ -1584,8 +1585,8 @@ class SpencerFanoSolver:
             the former name of auger_electron_energy_ev. It is deprecated.
 
         For an inner-shell ionisation followed by Auger decay, set ionpot_ev to the potential of the
-        shell. For a direct multiple ionisation, set ionpot_ev to the sum of the potentials. Then the
-        Auger electrons get no energy.
+        shell. For a direct multiple ionisation, set ionpot_ev to the sum of the potentials. There is
+        no Auger decay, and the extra electrons appear with zero energy.
 
         In a direct ionisation, the primary electron and the first ejected electron share the energy
         above ionpot_ev, as in a single ionisation. Each Auger electron appears at the energy

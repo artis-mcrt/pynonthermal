@@ -259,7 +259,7 @@ def get_arxs_array_shell(
 # The relative tolerance of the threshold of a channel below the energy that the ion must keep. That
 # energy is the sum of the NIST ground-state potentials that the channel crosses, less the energy of
 # the initial level. The check applies to a multiple ionisation and to an autoionisation. A calculated
-# threshold can be a little below that energy. Inside the tolerance the Auger electrons get no
+# threshold can be a little below that energy. Inside the tolerance the Auger electrons get zero
 # energy. A channel outside the tolerance makes energy, so IonisationChannel.from_xs() raises a
 # ValueError.
 MULTIPLE_IONPOT_REL_TOL: float = 0.01
@@ -281,7 +281,8 @@ class IonisationChannel:
     ionpot_ev: float
     """The threshold of the channel [eV].
 
-    It is the ionisation potential, or the excitation threshold of an autoionisation channel.
+    It is the ionisation potential, or the excitation energy of the autoionising level of an
+    autoionisation channel.
     """
 
     xs: CrossSectionFunc
@@ -320,14 +321,14 @@ class IonisationChannel:
 
     An Auger electron appears at one energy, auger_electron_energy_ev / n_auger_electrons, and
     not with the Lorentzian distribution. The energy is zero for a direct single ionisation. The
-    ion keeps ionpot_ev - auger_electron_energy_ev as potential energy, and the ionisation
+    ion keeps ionpot_ev - auger_electron_energy_ev as ionisation energy, and the ionisation
     fraction counts only that energy.
     """
 
     autoionisation: bool = False
     """True for an excitation-autoionisation channel.
 
-    The primary electron loses exactly ionpot_ev, the excitation threshold of the autoionising
+    The primary electron loses exactly ionpot_ev, the excitation energy of the autoionising
     level. No electron has the Lorentzian distribution. All n_ejected electrons appear at the
     energy auger_electron_energy_ev / n_ejected.
     """
@@ -432,8 +433,9 @@ class IonisationChannel:
             their sum, less level_energy_ev and less MULTIPLE_IONPOT_REL_TOL.
         autoionisation:
             True for an excitation-autoionisation channel. Then ionpot_ev is the excitation
-            threshold, and all n_ejected electrons are Auger electrons. The cross section
-            below the threshold is set to zero, as in SpencerFanoSolver.add_excitation().
+            energy of the autoionising level, and all n_ejected electrons are Auger electrons.
+            The cross section below that energy is set to zero, as in
+            SpencerFanoSolver.add_excitation().
         extra_electron_energy_ev:
             the former name of auger_electron_energy_ev. It is deprecated.
         """
