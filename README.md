@@ -456,11 +456,11 @@ The energy of the extra electrons comes from energy conservation, so no Auger da
   ionisation. The first ejected electron has the Lorentzian distribution (an autoionisation channel is
   the exception, see below).
 - By default, the ion keeps the sum of the NIST ground-state potentials from `ion_stage` to
-  `ion_stage + n_ejected - 1`. In general, it keeps `ionpot_ev` minus `fixed_electron_energy_ev`. The
+  `ion_stage + n_ejected - 1`. In general, it keeps `ionpot_ev` minus `auger_electron_energy_ev`. The
   ionisation fraction counts only the energy that the ion keeps.
-- The `n_ejected - 1` extra electrons share the rest of the energy equally. They appear at a fixed
-  energy, with the source term of the Auger electrons in equation 8 of Shingles et al. (2020), MNRAS,
-  492, 2029–2043, doi:10.1093/mnras/stz3412. An extra electron at or below `emin_ev` counts as
+- The `n_ejected - 1` extra electrons are Auger electrons. They share the rest of the energy equally,
+  and each appears at that one energy, with the source term of equation 8 of Shingles et al. (2020,
+  MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412). An Auger electron at or below `emin_ev` counts as
   heating.
 
 Two cases are typical:
@@ -473,7 +473,7 @@ Two cases are typical:
 
 `ionpot_ev` must be at least the sum of the potentials, less 1 %
 (`pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL`). Inside that tolerance, the extra electrons get no
-energy, and the ion keeps all of `ionpot_ev`. Give `fixed_electron_energy_ev` to replace the value from
+energy, and the ion keeps all of `ionpot_ev`. Give `auger_electron_energy_ev` to replace the value from
 energy conservation, for example a calculated Auger electron energy. The ion must still keep at least
 the sum of the potentials, less the same 1 %. The value is also necessary for an ion that the NIST data
 does not have. In v2026.9.23 the keyword was `extra_electron_energy_ev`. That name still works, with a
@@ -485,7 +485,7 @@ A channel can start from a metastable level of the ion. Give `level_energy_ev`, 
 above the ground state. It must be less than the ionisation potential of the ion. The threshold
 `ionpot_ev` is then lower than for the ground state. For a multiple ionisation or an autoionisation, the
 ion must keep the sum of the NIST potentials less `level_energy_ev`, and the default
-`fixed_electron_energy_ev` increases by `level_energy_ev`. A single direct ionisation has no such check.
+`auger_electron_energy_ev` increases by `level_energy_ev`. A single direct ionisation has no such check.
 `n_ion` stays the population of the whole ion, as for every channel. The channel rate uses that
 population. Scale the cross section by the population fraction of the level.
 
@@ -524,13 +524,13 @@ with pynonthermal.SpencerFanoSolver() as sf:
 
 The energy rules follow those of a multiple ionisation:
 
-- All `n_ejected` electrons appear at the energy `fixed_electron_energy_ev / n_ejected`, with the source
+- All `n_ejected` electrons appear at the energy `auger_electron_energy_ev / n_ejected`, with the source
   term of the Auger electrons in equation 8 of Shingles et al. (2020, MNRAS, 492, 2029–2043,
-  doi:10.1093/mnras/stz3412). By default, `fixed_electron_energy_ev` is `ionpot_ev` plus
+  doi:10.1093/mnras/stz3412). By default, `auger_electron_energy_ev` is `ionpot_ev` plus
   `level_energy_ev` minus the sum of the NIST potentials from `ion_stage` to `ion_stage + n_ejected - 1`.
   That is the energy of the level above the ionisation limit. Give a value to replace the default. An
   electron at or below `emin_ev` counts as heating.
-- The ion keeps `ionpot_ev` minus `fixed_electron_energy_ev`, and the ionisation fraction counts only that
+- The ion keeps `ionpot_ev` minus `auger_electron_energy_ev`, and the ionisation fraction counts only that
   energy.
 - The rate coefficient and the ionisation balance count the channel as an ionisation of `n_ejected`
   electrons. `get_ionisation_ratecoeff()` includes it in the total of the ion.

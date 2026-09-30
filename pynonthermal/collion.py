@@ -259,7 +259,7 @@ def get_arxs_array_shell(
 # The relative tolerance of the threshold of a channel below the energy that the ion must keep. That
 # energy is the sum of the NIST ground-state potentials that the channel crosses, less the energy of
 # the initial level. The check applies to a multiple ionisation and to an autoionisation. A calculated
-# threshold can be a little below that energy. Inside the tolerance the fixed-energy electrons get no
+# threshold can be a little below that energy. Inside the tolerance the Auger electrons get no
 # energy. A channel outside the tolerance makes energy, so IonisationChannel.from_xs() raises a
 # ValueError.
 MULTIPLE_IONPOT_REL_TOL: float = 0.01
@@ -310,20 +310,18 @@ class IonisationChannel:
     n_ejected: int = 1
     """The number of electrons that one ionisation removes from the ion.
 
-    The ionisation takes the ion from ion_stage to ion_stage + n_ejected. For a channel that is
-    not an autoionisation, the first ejected electron has the Lorentzian distribution of
-    Psecondary_vec(). The other electrons (n_fixed_electrons) share
-    fixed_electron_energy_ev.
+    The ionisation takes the ion from ion_stage to ion_stage + n_ejected. In a direct ionisation,
+    the first ejected electron has the Lorentzian distribution of Psecondary_vec(). The other
+    electrons are Auger electrons (n_auger_electrons), which share auger_electron_energy_ev.
     """
 
-    fixed_electron_energy_ev: float = 0.0
-    """The total kinetic energy [eV] of the electrons that appear at a fixed energy.
+    auger_electron_energy_ev: float = 0.0
+    """The total kinetic energy [eV] of the Auger electrons of one ionisation.
 
-    It is zero for a channel with n_ejected=1 that is not an autoionisation. Each of the
-    n_fixed_electrons electrons has the energy
-    fixed_electron_energy_ev / n_fixed_electrons. The ion keeps
-    ionpot_ev - fixed_electron_energy_ev as potential energy, and the ionisation fraction counts
-    only that energy.
+    An Auger electron appears at one energy, auger_electron_energy_ev / n_auger_electrons, and
+    not with the Lorentzian distribution. The energy is zero for a direct single ionisation. The
+    ion keeps ionpot_ev - auger_electron_energy_ev as potential energy, and the ionisation
+    fraction counts only that energy.
     """
 
     autoionisation: bool = False
@@ -331,27 +329,27 @@ class IonisationChannel:
 
     The primary electron loses exactly ionpot_ev, the excitation threshold of the autoionising
     level. No electron has the Lorentzian distribution. All n_ejected electrons appear at the
-    energy fixed_electron_energy_ev / n_ejected.
+    energy auger_electron_energy_ev / n_ejected.
     """
 
     @property
-    def n_fixed_electrons(self) -> int:
-        """The number of electrons of one ionisation that appear at a fixed energy.
+    def n_auger_electrons(self) -> int:
+        """The number of Auger electrons of one ionisation.
 
         An autoionisation channel has no Lorentzian electron, so all of its n_ejected electrons
-        are here. Any other channel has n_ejected - 1 of them.
+        are Auger electrons. A direct ionisation has n_ejected - 1 of them.
         """
         return self.n_ejected if self.autoionisation else self.n_ejected - 1
 
     @property
     def extra_electron_energy_ev(self) -> float:
-        """The former name of fixed_electron_energy_ev. It is deprecated."""
+        """The former name of auger_electron_energy_ev. It is deprecated."""
         warnings.warn(
-            "IonisationChannel.extra_electron_energy_ev is deprecated. Its name is now fixed_electron_energy_ev.",
+            "IonisationChannel.extra_electron_energy_ev is deprecated. Its name is now auger_electron_energy_ev.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.fixed_electron_energy_ev
+        return self.auger_electron_energy_ev
 
     @classmethod
     def from_xs_grid(
@@ -365,7 +363,7 @@ class IonisationChannel:
         *,
         n_ejected: int = 1,
         level_energy_ev: float = 0.0,
-        fixed_electron_energy_ev: float | None = None,
+        auger_electron_energy_ev: float | None = None,
         autoionisation: bool | np.bool_ = False,
         extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
@@ -373,7 +371,7 @@ class IonisationChannel:
 
         The keywords are those of from_xs().
         """
-        fixed_electron_energy_ev = _resolve_fixed_electron_energy_ev(fixed_electron_energy_ev, extra_electron_energy_ev)
+        auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
         name = f"The cross section of ionisation channel {key}"
         xs_grid = get_xs_on_grid(xs_vec, arr_enev, name)
         # check the array of the caller here. The interpolation below holds the cross section at
@@ -391,7 +389,7 @@ class IonisationChannel:
             key=key,
             n_ejected=n_ejected,
             level_energy_ev=level_energy_ev,
-            fixed_electron_energy_ev=fixed_electron_energy_ev,
+            auger_electron_energy_ev=auger_electron_energy_ev,
             autoionisation=autoionisation,
         )
 
@@ -408,7 +406,7 @@ class IonisationChannel:
         *,
         n_ejected: int = 1,
         level_energy_ev: float = 0.0,
-        fixed_electron_energy_ev: float | None = None,
+        auger_electron_energy_ev: float | None = None,
         autoionisation: bool | np.bool_ = False,
         extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
@@ -424,22 +422,22 @@ class IonisationChannel:
             the energy [eV] of the initial level above the ground state. It must be less than the
             NIST ionisation potential of the ion. For a multiple ionisation or an autoionisation,
             it lowers the energy that the ion must keep, and it increases the default
-            fixed_electron_energy_ev. The channel does not keep it.
-        fixed_electron_energy_ev:
-            the total kinetic energy [eV] of the electrons that appear at a fixed energy. None (the
+            auger_electron_energy_ev. The channel does not keep it.
+        auger_electron_energy_ev:
+            the total kinetic energy [eV] of the Auger electrons. None (the
             default) gives zero for a channel with n_ejected=1 and autoionisation=False. In the
             other cases, None gives the value from energy conservation (see
-            _get_fixed_electron_energy_ev()). A value must be less than ionpot_ev. If the NIST
+            _get_auger_electron_energy_ev()). A value must be less than ionpot_ev. If the NIST
             data holds the potentials that the ionisation crosses, the ion must also keep at least
             their sum, less level_energy_ev and less MULTIPLE_IONPOT_REL_TOL.
         autoionisation:
             True for an excitation-autoionisation channel. Then ionpot_ev is the excitation
-            threshold, and all n_ejected electrons appear at a fixed energy. The cross section
+            threshold, and all n_ejected electrons are Auger electrons. The cross section
             below the threshold is set to zero, as in SpencerFanoSolver.add_excitation().
         extra_electron_energy_ev:
-            the former name of fixed_electron_energy_ev. It is deprecated.
+            the former name of auger_electron_energy_ev. It is deprecated.
         """
-        fixed_electron_energy_ev = _resolve_fixed_electron_energy_ev(fixed_electron_energy_ev, extra_electron_energy_ev)
+        auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
         name = f"The cross section of ionisation channel {key}"
 
         # the chained comparison also rejects nan, for which every comparison is False
@@ -471,24 +469,24 @@ class IonisationChannel:
             raise ValueError(msg)
         if n_ejected == 1 and not autoionisation:
             # the comparison with zero also rejects nan
-            if fixed_electron_energy_ev is not None and fixed_electron_energy_ev != 0.0:
+            if auger_electron_energy_ev is not None and auger_electron_energy_ev != 0.0:
                 msg = (
-                    "a channel with n_ejected=1 and autoionisation=False has no fixed-energy electrons, so"
-                    f" fixed_electron_energy_ev must be zero but is {fixed_electron_energy_ev}. Set"
-                    " autoionisation=True for a channel that emits its electron at a fixed energy."
+                    "a channel with n_ejected=1 and autoionisation=False has no Auger electrons, so"
+                    f" auger_electron_energy_ev must be zero but is {auger_electron_energy_ev}. Set"
+                    " autoionisation=True for a channel that emits its electron as an Auger electron."
                 )
                 raise ValueError(msg)
-            fixed_ev = 0.0
+            auger_ev = 0.0
         else:
-            fixed_ev = _get_fixed_electron_energy_ev(
-                Z, ion_stage, float(ionpot_ev), n_ejected, fixed_electron_energy_ev, level_energy_ev
+            auger_ev = _get_auger_electron_energy_ev(
+                Z, ion_stage, float(ionpot_ev), n_ejected, auger_electron_energy_ev, level_energy_ev
             )
-        # the fixed-energy electrons get their energy from the ionisation potential, so the ion keeps
+        # the Auger electrons get their energy from the ionisation potential, so the ion keeps
         # a positive energy. The chained comparison also rejects nan.
-        if not 0.0 <= fixed_ev < ionpot_ev:
+        if not 0.0 <= auger_ev < ionpot_ev:
             msg = (
-                f"fixed_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
-                f" but is {fixed_ev}"
+                f"auger_electron_energy_ev must be at least zero and less than ionpot_ev ({ionpot_ev} eV)"
+                f" but is {auger_ev}"
             )
             raise ValueError(msg)
 
@@ -525,25 +523,25 @@ class IonisationChannel:
             key=key,
             lotz=lotz,
             n_ejected=n_ejected,
-            fixed_electron_energy_ev=float(fixed_ev),
+            auger_electron_energy_ev=float(auger_ev),
             autoionisation=autoionisation,
         )
 
 
-def _resolve_fixed_electron_energy_ev(
-    fixed_electron_energy_ev: float | None, extra_electron_energy_ev: float | None
+def _resolve_auger_electron_energy_ev(
+    auger_electron_energy_ev: float | None, extra_electron_energy_ev: float | None
 ) -> float | None:
-    # the value of the fixed-energy electron energy from either keyword. extra_electron_energy_ev
+    # the value of the Auger electron energy from either keyword. extra_electron_energy_ev
     # is the former name, which v2026.9.23 released.
     if extra_electron_energy_ev is None:
-        return fixed_electron_energy_ev
+        return auger_electron_energy_ev
     warnings.warn(
-        "the extra_electron_energy_ev argument is deprecated. Its name is now fixed_electron_energy_ev.",
+        "the extra_electron_energy_ev argument is deprecated. Its name is now auger_electron_energy_ev.",
         DeprecationWarning,
         stacklevel=3,
     )
-    if fixed_electron_energy_ev is not None:
-        msg = "give the energy of the fixed-energy electrons once, as fixed_electron_energy_ev"
+    if auger_electron_energy_ev is not None:
+        msg = "give the energy of the Auger electrons once, as auger_electron_energy_ev"
         raise ValueError(msg)
     return extra_electron_energy_ev
 
@@ -560,15 +558,15 @@ def _check_level_energy_ev(Z: int, ion_stage: int, level_energy_ev: float) -> No
         raise ValueError(msg)
 
 
-def _get_fixed_electron_energy_ev(
+def _get_auger_electron_energy_ev(
     Z: int,
     ion_stage: int,
     ionpot_ev: float,
     n_ejected: int,
-    fixed_electron_energy_ev: float | None,
+    auger_electron_energy_ev: float | None,
     level_energy_ev: float,
 ) -> float:
-    # the total energy [eV] of the electrons of a channel that appear at a fixed energy. The ion must
+    # the total energy [eV] of the Auger electrons of one ionisation of a channel. The ion must
     # keep at least the sum of the NIST ground-state potentials that the ionisation crosses, less the
     # energy of the initial level above the ground state. Else the channel makes energy. Without a
     # value from the caller, energy conservation gives the energy: the threshold of the channel minus
@@ -577,22 +575,22 @@ def _get_fixed_electron_energy_ev(
     stages = range(ion_stage, ion_stage + n_ejected)
     missing = [stage for stage in stages if (Z, stage) not in ionpots_ev]
     if missing:
-        if fixed_electron_energy_ev is not None:
+        if auger_electron_energy_ev is not None:
             # the value of the caller is the only source for an ion that the NIST data does not hold
-            return fixed_electron_energy_ev
+            return auger_electron_energy_ev
         msg = (
             f"the NIST data has no ionisation potential for Z={Z} ion_stages {missing}, so energy"
-            " conservation cannot give the energy of the fixed-energy electrons. Give fixed_electron_energy_ev."
+            " conservation cannot give the energy of the Auger electrons. Give auger_electron_energy_ev."
         )
         raise ValueError(msg)
     nist_sum_ev = sum(ionpots_ev[(Z, stage)] for stage in stages)
     # _check_level_energy_ev() keeps level_energy_ev below the first potential, so this is positive
     retained_ev = nist_sum_ev - level_energy_ev
     retained_min_ev = retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL)
-    fixed_ev = max(0.0, ionpot_ev - retained_ev) if fixed_electron_energy_ev is None else fixed_electron_energy_ev
+    auger_ev = max(0.0, ionpot_ev - retained_ev) if auger_electron_energy_ev is None else auger_electron_energy_ev
     # a value that is not a number passes here. It fails the range check of IonisationChannel.from_xs().
-    if ionpot_ev - fixed_ev >= retained_min_ev:
-        return fixed_ev
+    if ionpot_ev - auger_ev >= retained_min_ev:
+        return auger_ev
     channel_str = f"a channel that takes Z={Z} ion_stage {ion_stage} to ion_stage {ion_stage + n_ejected}"
     keep_str = (
         f"The ion must keep at least {retained_min_ev:.3f} eV. That is the sum of the ground-state ionisation"
@@ -607,12 +605,12 @@ def _get_fixed_electron_energy_ev(
         raise ValueError(msg)
     # round the limit down to three decimals. The product can round up, so the printed value is
     # checked again until it passes.
-    fixed_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
-    while ionpot_ev - float(f"{fixed_max_ev:.3f}") < retained_min_ev:
-        fixed_max_ev -= 0.001
+    auger_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+    while ionpot_ev - float(f"{auger_max_ev:.3f}") < retained_min_ev:
+        auger_max_ev -= 0.001
     msg = (
-        f"with fixed_electron_energy_ev={fixed_electron_energy_ev} eV, the ion of {channel_str} keeps"
-        f" {ionpot_ev - fixed_ev:.3f} eV. {keep_str} Set fixed_electron_energy_ev to at most {fixed_max_ev:.3f} eV."
+        f"with auger_electron_energy_ev={auger_electron_energy_ev} eV, the ion of {channel_str} keeps"
+        f" {ionpot_ev - auger_ev:.3f} eV. {keep_str} Set auger_electron_energy_ev to at most {auger_max_ev:.3f} eV."
     )
     raise ValueError(msg)
 

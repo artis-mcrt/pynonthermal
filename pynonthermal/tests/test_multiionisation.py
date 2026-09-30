@@ -1,10 +1,10 @@
-"""Tests of ionisation channels with electrons at a fixed energy.
+"""Tests of ionisation channels with Auger electrons.
 
 These channels remove more than one electron (n_ejected > 1), start from a metastable level
 (level_energy_ev), or are an excitation autoionisation (autoionisation=True). These tests check:
 
 - the cut coefficients of the ionisation balance;
-- the source term of the fixed-energy electrons;
+- the source term of the Auger electrons;
 - the band of the loss term of an autoionisation channel;
 - the energy fractions;
 - the error paths.
@@ -52,27 +52,27 @@ def solve_helium(**channel_kwargs: t.Any) -> pynonthermal.SpencerFanoSolver:
     return sf
 
 
-def fixed_energy_source_term(
+def auger_source_term(
     sf: pynonthermal.SpencerFanoSolver, channel: pynonthermal.IonisationChannel, n_ion: float
 ) -> npt.NDArray[np.float64]:
-    # the expected source term of the fixed-energy electrons of a channel: each row below the energy
+    # the expected source term of the Auger electrons of a channel: each row below the energy
     # of one electron gets the full source, and the last row gets the weight that gives the electron
     # its true energy
-    en_electron_ev = channel.fixed_electron_energy_ev / channel.n_fixed_electrons
+    en_electron_ev = channel.auger_electron_energy_ev / channel.n_auger_electrons
     row_weights = np.clip((en_electron_ev - sf.engrid) / sf.deltaen, 0.0, 1.0)
     assert 0.0 < row_weights[row_weights < 1.0].max() < 1.0
     column_values = np.where(
         sf.engrid >= channel.ionpot_ev,
-        -n_ion * channel.xs_grid * sf.deltaen * channel.n_fixed_electrons,
+        -n_ion * channel.xs_grid * sf.deltaen * channel.n_auger_electrons,
         0.0,
     )
     return np.outer(row_weights, column_values)
 
 
-# the two kinds of channel with fixed-energy electrons: a double ionisation, whose one extra electron
-# takes the fixed energy, and an autoionisation, whose one electron takes it. Each entry gives the
-# channel options and the ion stages whose NIST potentials the ion must keep.
-FIXED_ENERGY_KINDS: tuple[tuple[dict[str, t.Any], tuple[int, ...]], ...] = (
+# the two kinds of channel with Auger electrons: a double ionisation, whose one extra electron is
+# the Auger electron, and an autoionisation, whose one electron is. Each entry gives the channel
+# options and the ion stages whose NIST potentials the ion must keep.
+AUGER_KINDS: tuple[tuple[dict[str, t.Any], tuple[int, ...]], ...] = (
     ({"n_ejected": 2}, (1, 2)),
     ({"autoionisation": True}, (1,)),
 )
@@ -171,7 +171,7 @@ def test_helium_double_ionisation_balance() -> None:
     )
     channel = sf._ionisation_channels[(2, 1)][-1]
     assert channel.n_ejected == 2
-    assert channel.fixed_electron_energy_ev == 0.0
+    assert channel.auger_electron_energy_ev == 0.0
 
     gamma_11 = sf.get_ionisation_ratecoeff(2, 1, n_ejected=1)
     gamma_12 = sf.get_ionisation_ratecoeff(2, 1, n_ejected=2)
@@ -235,7 +235,7 @@ def test_extra_electron_source_term() -> None:
     ionpot_ev = 870.0
     n_ion = 1e8
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-    fixed_ev = ionpot_ev - sum(nist[(10, ion_stage)] for ion_stage in (1, 2, 3))
+    auger_ev = ionpot_ev - sum(nist[(10, ion_stage)] for ion_stage in (1, 2, 3))
     xs = lotz_like_xs(ionpot_ev, 1e-19)
 
     sf_single = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
@@ -243,35 +243,35 @@ def test_extra_electron_source_term() -> None:
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
     sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, n_ejected=3)
     channel = sf._ionisation_channels[(10, 1)][0]
-    assert math.isclose(channel.fixed_electron_energy_ev, fixed_ev, rel_tol=1e-12)
+    assert math.isclose(channel.auger_electron_energy_ev, auger_ev, rel_tol=1e-12)
 
-    assert channel.n_fixed_electrons == 2
-    expected = fixed_energy_source_term(sf, channel, n_ion)
+    assert channel.n_auger_electrons == 2
+    expected = auger_source_term(sf, channel, n_ion)
     assert np.allclose(sf.sfmatrix - sf_single.sfmatrix, expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
 
-def test_fixed_energy_electrons_get_their_true_energy() -> None:
-    # The matrix and the heating term give each fixed-energy electron its true energy, also for an
+def test_auger_electrons_get_their_true_energy() -> None:
+    # The matrix and the heating term give each Auger electron its true energy, also for an
     # energy between two grid points and in the first grid interval. So the energy fractions sum to
     # the same value with and without the energy of the electron. A coarse grid (10 eV) makes the
     # test strict: without the weight of the last row, an electron of 0.3 eV counts as 10 eV. The
     # test runs for both kinds of channel.
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-    for channel_kwargs, stages in FIXED_ENERGY_KINDS:
+    for channel_kwargs, stages in AUGER_KINDS:
         for emin_ev in (0.1, 1.0):
-            for fixed_ev in (0.05, 0.3, 5.0, 10.2, 25.0):
-                ionpot_ev = sum(nist[(2, stage)] for stage in stages) + fixed_ev
+            for auger_ev in (0.05, 0.3, 5.0, 10.2, 25.0):
+                ionpot_ev = sum(nist[(2, stage)] for stage in stages) + auger_ev
                 frac_sums = []
-                for fixed_electron_energy_ev in (0.0, fixed_ev):
+                for auger_electron_energy_ev in (0.0, auger_ev):
                     with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=300) as sf:
                         sf.add_ionisation_channel(
                             2, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 5e-17),
-                            fixed_electron_energy_ev=fixed_electron_energy_ev, **channel_kwargs,
+                            auger_electron_energy_ev=auger_electron_energy_ev, **channel_kwargs,
                         )  # fmt: skip
                         sf.override_n_e(1e6)
                         sf.solve(deposition_ev_per_s_per_cm3=1e8)
                         frac_sums.append(sf.get_frac_sum())
-                assert math.isclose(frac_sums[0], frac_sums[1], rel_tol=1e-12), (channel_kwargs, emin_ev, fixed_ev)
+                assert math.isclose(frac_sums[0], frac_sums[1], rel_tol=1e-12), (channel_kwargs, emin_ev, auger_ev)
 
 
 def test_auger_channel_energy_accounting() -> None:
@@ -294,25 +294,25 @@ def test_auger_channel_energy_accounting() -> None:
         assert math.isclose(fractions[n_ejected][2], 1.0, abs_tol=0.01)
 
 
-def test_fixed_energy_electrons_below_emin_are_heating() -> None:
-    # A fixed-energy electron at or below emin_ev never enters the grid, so its energy is heating. The
+def test_auger_electrons_below_emin_are_heating() -> None:
+    # A Auger electron at or below emin_ev never enters the grid, so its energy is heating. The
     # matrix does not change, so the energy moves from the ionisation fraction to the heating fraction
     # and nothing more. The grid spacing near the thresholds sets the error of the sum, so the grid is
     # fine. The test runs for both kinds of channel.
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-    for channel_kwargs, stages in FIXED_ENERGY_KINDS:
+    for channel_kwargs, stages in AUGER_KINDS:
         ionpot_ev = sum(nist[(10, stage)] for stage in stages) + 5.0
         results = {}
-        for fixed_ev in (0.0, 5.0):
+        for auger_ev in (0.0, 5.0):
             with pynonthermal.SpencerFanoSolver(emin_ev=20, emax_ev=3000, npts=3000) as sf:
                 sf.add_ionisation_channel(10, 1, 1e8, 21.6, lotz_like_xs(21.6, 3e-16), "valence")
                 sf.add_ionisation_channel(
-                    10, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 3e-17), "fixed",
-                    fixed_electron_energy_ev=fixed_ev, **channel_kwargs,
+                    10, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 3e-17), "auger",
+                    auger_electron_energy_ev=auger_ev, **channel_kwargs,
                 )  # fmt: skip
                 sf.override_n_e(1e6)
                 sf.solve(deposition_ev_per_s_per_cm3=1e8)
-                results[fixed_ev] = (sf.sfmatrix.copy(), sf.get_frac_ionisation_tot(), sf.get_frac_heating())
+                results[auger_ev] = (sf.sfmatrix.copy(), sf.get_frac_ionisation_tot(), sf.get_frac_heating())
 
         assert np.array_equal(results[0.0][0], results[5.0][0])
         ionisation_moved = results[0.0][1] - results[5.0][1]
@@ -322,7 +322,7 @@ def test_fixed_energy_electrons_below_emin_are_heating() -> None:
         # the default comes from energy conservation, and it is the same 5 eV
         with pynonthermal.SpencerFanoSolver(emin_ev=20, emax_ev=3000, npts=400) as sf:
             sf.add_ionisation_channel(10, 1, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 3e-17), **channel_kwargs)
-            assert math.isclose(sf._ionisation_channels[(10, 1)][0].fixed_electron_energy_ev, 5.0, rel_tol=1e-9)
+            assert math.isclose(sf._ionisation_channels[(10, 1)][0].auger_electron_energy_ev, 5.0, rel_tol=1e-9)
 
 
 def test_strontium_multiple_ionisation_balance() -> None:
@@ -366,33 +366,33 @@ def test_multiple_ionisation_validation() -> None:
                 sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=n_ejected)  # ty: ignore[invalid-argument-type]
         with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
             sf.add_ionisation_channel(8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2)
-        with pytest.raises(ValueError, match="no fixed-energy electrons"):
-            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, fixed_electron_energy_ev=10.0)
+        with pytest.raises(ValueError, match="no Auger electrons"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, auger_electron_energy_ev=10.0)
         # the ion must keep the sum of the NIST potentials (48.7 eV for O I to O III), also with a value
         # from the caller
-        with pytest.raises(ValueError, match="Set fixed_electron_energy_ev to at most"):
-            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=2, fixed_electron_energy_ev=60.0)
+        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=2, auger_electron_energy_ev=60.0)
         # the limit in the message includes MULTIPLE_IONPOT_REL_TOL. For He I to He III, 79.0 eV is
         # inside the tolerance below the NIST sum (79.005 eV), so the limit is 0.784 eV and not a
         # negative value.
         with pytest.raises(ValueError, match=r"at most 0\.784 eV"):
             sf.add_ionisation_channel(
-                2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, fixed_electron_energy_ev=1.0
+                2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, auger_electron_energy_ev=1.0
             )
         with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
             sf.add_ionisation_channel(
-                8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2, fixed_electron_energy_ev=0.0
+                8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2, auger_electron_energy_ev=0.0
             )
         # a rejected call leaves the solver unchanged
         assert not sf._ionisation_channels
         assert not sf.ionpopdict
 
         # a value from the caller that leaves the ion at least the NIST sum is kept as it is
-        sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "auger", n_ejected=2, fixed_electron_energy_ev=30.0)
-        assert sf._ionisation_channels[(8, 1)][0].fixed_electron_energy_ev == 30.0
+        sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "auger", n_ejected=2, auger_electron_energy_ev=30.0)
+        assert sf._ionisation_channels[(8, 1)][0].auger_electron_energy_ev == 30.0
         # the limit of the message above passes the check
         sf.add_ionisation_channel(
-            2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, fixed_electron_energy_ev=0.784
+            2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, auger_electron_energy_ev=0.784
         )
 
     # IonisationChannel.from_xs() applies the same rules as add_ionisation_channel(), so a channel has
@@ -402,11 +402,11 @@ def test_multiple_ionisation_validation() -> None:
         channel = pynonthermal.IonisationChannel.from_xs(
             arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=870.0, xs=lotz_like_xs(870.0, 1e-19), key=0, n_ejected=3
         )
-        assert channel.fixed_electron_energy_ev == sf._ionisation_channels[(10, 1)][0].fixed_electron_energy_ev
-        with pytest.raises(ValueError, match="Set fixed_electron_energy_ev to at most"):
+        assert channel.auger_electron_energy_ev == sf._ionisation_channels[(10, 1)][0].auger_electron_energy_ev
+        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
             pynonthermal.IonisationChannel.from_xs(
                 arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=870.0, xs=lotz_like_xs(870.0, 1e-19), key=0,
-                n_ejected=3, fixed_electron_energy_ev=860.0,
+                n_ejected=3, auger_electron_energy_ev=860.0,
             )  # fmt: skip
 
     # an ion that the NIST data does not hold needs the value from the caller
@@ -416,7 +416,7 @@ def test_multiple_ionisation_validation() -> None:
     )
     ionpot_ev = 2000.0
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        with pytest.raises(ValueError, match="Give fixed_electron_energy_ev"):
+        with pytest.raises(ValueError, match="Give auger_electron_energy_ev"):
             sf.add_ionisation_channel(
                 Z_missing, stage_missing, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-20), n_ejected=2
             )
@@ -424,13 +424,13 @@ def test_multiple_ionisation_validation() -> None:
         with pytest.raises(ValueError, match="less than ionpot_ev"):
             sf.add_ionisation_channel(
                 Z_missing, stage_missing, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-20), n_ejected=2,
-                fixed_electron_energy_ev=ionpot_ev,
+                auger_electron_energy_ev=ionpot_ev,
             )  # fmt: skip
         sf.add_ionisation_channel(
             Z_missing, stage_missing, 1e8, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-20), n_ejected=2,
-            fixed_electron_energy_ev=100.0,
+            auger_electron_energy_ev=100.0,
         )  # fmt: skip
-        assert sf._ionisation_channels[(Z_missing, stage_missing)][0].fixed_electron_energy_ev == 100.0
+        assert sf._ionisation_channels[(Z_missing, stage_missing)][0].auger_electron_energy_ev == 100.0
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(8, 1e8, recomb_ratecoeffs=OXYGEN_ALPHAS)
@@ -476,11 +476,11 @@ def test_autoionisation_matrix_is_an_excitation_plus_the_source_term() -> None:
     # An autoionisation channel of Ne I with a threshold of 48 eV: the primary loses exactly 48 eV, as
     # in an excitation with that transition energy, and the Auger electron appears at the energy of
     # the level above the ionisation limit. So the matrix is that of add_excitation() with the same
-    # cross section, minus the source term of one fixed-energy electron.
+    # cross section, minus the source term of one Auger electron.
     ionpot_ev = 48.0
     n_ion = 1e8
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-    fixed_ev = ionpot_ev - nist[(10, 1)]
+    auger_ev = ionpot_ev - nist[(10, 1)]
     xs = lotz_like_xs(ionpot_ev, 1e-17)
 
     sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
@@ -490,10 +490,10 @@ def test_autoionisation_matrix_is_an_excitation_plus_the_source_term() -> None:
     channel = sf._ionisation_channels[(10, 1)][0]
     assert channel.autoionisation
     assert channel.n_ejected == 1
-    assert channel.n_fixed_electrons == 1
-    assert math.isclose(channel.fixed_electron_energy_ev, fixed_ev, rel_tol=1e-12)
+    assert channel.n_auger_electrons == 1
+    assert math.isclose(channel.auger_electron_energy_ev, auger_ev, rel_tol=1e-12)
 
-    expected = fixed_energy_source_term(sf, channel, n_ion)
+    expected = auger_source_term(sf, channel, n_ion)
     assert np.allclose(sf.sfmatrix - sf_exc.sfmatrix, expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
 
@@ -504,7 +504,7 @@ def test_autoionisation_with_two_electrons() -> None:
     ionpot_ev = 90.0
     n_ion = 1e8
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-    fixed_ev = ionpot_ev - nist[(10, 1)] - nist[(10, 2)]
+    auger_ev = ionpot_ev - nist[(10, 1)] - nist[(10, 2)]
     xs = lotz_like_xs(ionpot_ev, 1e-17)
 
     sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
@@ -512,16 +512,16 @@ def test_autoionisation_with_two_electrons() -> None:
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
     sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs(sf.engrid), n_ejected=2, autoionisation=True)
     channel = sf._ionisation_channels[(10, 1)][0]
-    assert channel.n_fixed_electrons == 2
-    assert math.isclose(channel.fixed_electron_energy_ev, fixed_ev, rel_tol=1e-12)
+    assert channel.n_auger_electrons == 2
+    assert math.isclose(channel.auger_electron_energy_ev, auger_ev, rel_tol=1e-12)
 
-    expected = fixed_energy_source_term(sf, channel, n_ion)
+    expected = auger_source_term(sf, channel, n_ion)
     assert np.allclose(sf.sfmatrix - sf_exc.sfmatrix, expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
     # the function path gives the same channel
     sf_func = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
     sf_func.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, n_ejected=2, autoionisation=True)
-    assert sf_func._ionisation_channels[(10, 1)][0].fixed_electron_energy_ev == channel.fixed_electron_energy_ev
+    assert sf_func._ionisation_channels[(10, 1)][0].auger_electron_energy_ev == channel.auger_electron_energy_ev
     assert np.array_equal(sf_func.sfmatrix, sf.sfmatrix)
 
 
@@ -544,7 +544,7 @@ def test_autoionisation_N_e_matches_excitation() -> None:
         matrix_exc = sf_exc.sfmatrix.copy()
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400) as sf:
-        sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, autoionisation=True, fixed_electron_energy_ev=0.0)
+        sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs, autoionisation=True, auger_electron_energy_ev=0.0)
         sf.override_n_e(1e6)
         sf.solve(deposition_ev_per_s_per_cm3=deposition)
         assert np.allclose(sf.sfmatrix, matrix_exc, rtol=1e-12, atol=0.0)
@@ -579,7 +579,7 @@ def test_autoionisation_energy_fractions() -> None:
             assert math.isclose(sf.get_ionisation_ratecoeff(10, 1), ratecoeff, rel_tol=1e-12)
             assert math.isclose(sf.get_ionisation_ratecoeff(10, 1, n_ejected=1), ratecoeff, rel_tol=1e-12)
             frac_ionisation = sum(
-                n_ion * (channel.ionpot_ev - channel.fixed_electron_energy_ev) * xs_integral * sf.deltaen / deposition
+                n_ion * (channel.ionpot_ev - channel.auger_electron_energy_ev) * xs_integral * sf.deltaen / deposition
                 for channel, xs_integral in zip(channels, xs_integrals, strict=True)
             )
             assert math.isclose(sf.get_frac_ionisation_ion(10, 1), frac_ionisation, rel_tol=1e-12)
@@ -598,8 +598,8 @@ def test_autoionisation_validation() -> None:
         with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
             sf.add_ionisation_channel(10, 1, 1e8, 20.0, lotz_like_xs(20.0, 1e-17), autoionisation=True)
         # the ion must keep that energy also with a value from the caller
-        with pytest.raises(ValueError, match="Set fixed_electron_energy_ev to at most"):
-            sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=True, fixed_electron_energy_ev=48.0)
+        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=True, auger_electron_energy_ev=48.0)
         for autoionisation in ("yes", 1, None):
             with pytest.raises(TypeError, match="autoionisation must be True or False"):
                 sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=autoionisation)  # ty: ignore[invalid-argument-type]
@@ -613,20 +613,20 @@ def test_autoionisation_validation() -> None:
         sf.add_ionisation_channel(10, 1, 1e8, 21.6, lotz_like_xs(21.6, 1e-17), "plain", autoionisation=np.False_)
         assert sf._ionisation_channels[(10, 1)][1].autoionisation is False
 
-        # a channel with n_ejected=1 can have a fixed-energy electron when it is an autoionisation
-        sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, "auto", autoionisation=True, fixed_electron_energy_ev=10.0)
+        # a channel with n_ejected=1 can have a Auger electron when it is an autoionisation
+        sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, "auto", autoionisation=True, auger_electron_energy_ev=10.0)
         channel = sf._ionisation_channels[(10, 1)][-1]
         assert channel.key == "auto"
         assert channel.autoionisation
-        assert channel.fixed_electron_energy_ev == 10.0
-        assert channel.n_fixed_electrons == 1
+        assert channel.auger_electron_energy_ev == 10.0
+        assert channel.n_auger_electrons == 1
         # IonisationChannel.from_xs() applies the same rules
         same = pynonthermal.IonisationChannel.from_xs(
             arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=48.0, xs=xs, key="auto", autoionisation=True
         )
         assert same.autoionisation
         nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-        assert math.isclose(same.fixed_electron_energy_ev, 48.0 - nist[(10, 1)], rel_tol=1e-12)
+        assert math.isclose(same.auger_electron_energy_ev, 48.0 - nist[(10, 1)], rel_tol=1e-12)
 
 
 def test_autoionisation_cross_section_at_the_threshold() -> None:
@@ -643,7 +643,7 @@ def test_autoionisation_cross_section_at_the_threshold() -> None:
     assert sf_exc.excitationlists[(10, 1)][0].xs_vec[sf_exc.get_energyindex_gteq(30.0)] == 1e-17
     for xs_vec in (step, step(sf_exc.engrid)):
         sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3001, npts=3001)
-        sf.add_ionisation_channel(10, 1, 1e8, 30.0, xs_vec, autoionisation=True, fixed_electron_energy_ev=0.0)
+        sf.add_ionisation_channel(10, 1, 1e8, 30.0, xs_vec, autoionisation=True, auger_electron_energy_ev=0.0)
         channel = sf._ionisation_channels[(10, 1)][0]
         assert channel.xs_grid[sf.get_energyindex_gteq(30.0)] == 1e-17
         assert np.allclose(sf.sfmatrix, sf_exc.sfmatrix, rtol=1e-12, atol=0.0)
@@ -653,50 +653,50 @@ def test_autoionisation_cross_section_at_the_threshold() -> None:
 
 
 def test_deprecated_extra_electron_energy_argument() -> None:
-    # the former name of fixed_electron_energy_ev still works on every path
+    # the former name of auger_electron_energy_ev still works on every path
     xs = lotz_like_xs(100.0, 1e-18)
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        with pytest.warns(DeprecationWarning, match="fixed_electron_energy_ev"):
+        with pytest.warns(DeprecationWarning, match="auger_electron_energy_ev"):
             sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "old", n_ejected=2, extra_electron_energy_ev=30.0)
         channel = sf._ionisation_channels[(8, 1)][0]
-        assert channel.fixed_electron_energy_ev == 30.0
-        with pytest.warns(DeprecationWarning, match="fixed_electron_energy_ev"):
+        assert channel.auger_electron_energy_ev == 30.0
+        with pytest.warns(DeprecationWarning, match="auger_electron_energy_ev"):
             assert channel.extra_electron_energy_ev == 30.0
         with (
-            pytest.warns(DeprecationWarning, match="fixed_electron_energy_ev"),
+            pytest.warns(DeprecationWarning, match="auger_electron_energy_ev"),
             pytest.raises(ValueError, match="once"),
         ):
             sf.add_ionisation_channel(
-                8, 1, 1e8, 100.0, xs, "both", n_ejected=2, fixed_electron_energy_ev=30.0, extra_electron_energy_ev=30.0
+                8, 1, 1e8, 100.0, xs, "both", n_ejected=2, auger_electron_energy_ev=30.0, extra_electron_energy_ev=30.0
             )
         for from_xs, xs_arg in (
             (pynonthermal.IonisationChannel.from_xs, xs),
             (pynonthermal.IonisationChannel.from_xs_grid, xs(sf.engrid)),
         ):
-            with pytest.warns(DeprecationWarning, match="fixed_electron_energy_ev"):
+            with pytest.warns(DeprecationWarning, match="auger_electron_energy_ev"):
                 same = from_xs(sf.engrid, 8, 1, 100.0, xs_arg, "old", n_ejected=2, extra_electron_energy_ev=30.0)  # ty: ignore[invalid-argument-type]
-            assert same.fixed_electron_energy_ev == 30.0
+            assert same.auger_electron_energy_ev == 30.0
 
 
-def test_fixed_energy_limit_in_the_message_passes_the_check() -> None:
+def test_auger_energy_limit_in_the_message_passes_the_check() -> None:
     # The limit in the message is rounded to three decimals. The rounding can go up by one unit in
     # the last place, so the message takes one step down until the printed value passes the check.
     # Z=100 with a threshold of 10.931 eV is such a case.
     xs = lotz_like_xs(10.931, 1e-18)
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         with pytest.raises(ValueError, match="at most") as excinfo:
-            sf.add_ionisation_channel(100, 1, 1e8, 10.931, xs, autoionisation=True, fixed_electron_energy_ev=9.0)
+            sf.add_ionisation_channel(100, 1, 1e8, 10.931, xs, autoionisation=True, auger_electron_energy_ev=9.0)
         match = re.search(r"at most (\d+\.\d{3}) eV", str(excinfo.value))
         assert match is not None
         limit_ev = float(match.group(1))
-        sf.add_ionisation_channel(100, 1, 1e8, 10.931, xs, autoionisation=True, fixed_electron_energy_ev=limit_ev)
-        assert sf._ionisation_channels[(100, 1)][0].fixed_electron_energy_ev == limit_ev
+        sf.add_ionisation_channel(100, 1, 1e8, 10.931, xs, autoionisation=True, auger_electron_energy_ev=limit_ev)
+        assert sf._ionisation_channels[(100, 1)][0].auger_electron_energy_ev == limit_ev
 
 
 def test_level_energy_lowers_the_nist_requirement() -> None:
     # A channel from a metastable level has a threshold below the sum of the NIST ground-state
     # potentials. With level_energy_ev, the ion must keep the sum less that energy, and the default
-    # energy of the fixed-energy electrons increases by it.
+    # energy of the Auger electrons increases by it.
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
     nist_sum_ev = nist[(8, 1)] + nist[(8, 2)]  # O I to O III, 48.739 eV
     xs = lotz_like_xs(45.0, 1e-18)
@@ -718,24 +718,24 @@ def test_level_energy_lowers_the_nist_requirement() -> None:
             sf.add_ionisation_channel(8, 1, 1e8, 11.6, lotz_like_xs(11.6, 1e-17), level_energy_ev=500.0)
         # a value from the caller: the limit rises by level_energy_ev
         xs_100 = lotz_like_xs(100.0, 1e-18)
-        with pytest.raises(ValueError, match="Set fixed_electron_energy_ev to at most"):
-            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs_100, n_ejected=2, fixed_electron_energy_ev=55.0)
+        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs_100, n_ejected=2, auger_electron_energy_ev=55.0)
         assert not sf._ionisation_channels
         assert not sf.ionpopdict
 
         sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, "meta", n_ejected=2, level_energy_ev=5.0)
         channel = sf._ionisation_channels[(8, 1)][0]
-        assert math.isclose(channel.fixed_electron_energy_ev, 45.0 + 5.0 - nist_sum_ev, rel_tol=1e-12)
+        assert math.isclose(channel.auger_electron_energy_ev, 45.0 + 5.0 - nist_sum_ev, rel_tol=1e-12)
         sf.add_ionisation_channel(
-            8, 1, 1e8, 100.0, xs_100, "meta2", n_ejected=2, level_energy_ev=5.0, fixed_electron_energy_ev=55.0
+            8, 1, 1e8, 100.0, xs_100, "meta2", n_ejected=2, level_energy_ev=5.0, auger_electron_energy_ev=55.0
         )
-        assert sf._ionisation_channels[(8, 1)][1].fixed_electron_energy_ev == 55.0
+        assert sf._ionisation_channels[(8, 1)][1].auger_electron_energy_ev == 55.0
 
     # the level energy also raises the default energy of the Auger electron of an autoionisation
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_ionisation_channel(10, 1, 1e8, 48.0, lotz_like_xs(48.0, 1e-17), autoionisation=True, level_energy_ev=3.0)
         channel = sf._ionisation_channels[(10, 1)][0]
-        assert math.isclose(channel.fixed_electron_energy_ev, 48.0 + 3.0 - nist[(10, 1)], rel_tol=1e-12)
+        assert math.isclose(channel.auger_electron_energy_ev, 48.0 + 3.0 - nist[(10, 1)], rel_tol=1e-12)
 
     # a single direct ionisation from a metastable level has no NIST check of its threshold, so the
     # level energy changes nothing in the matrix
