@@ -434,16 +434,36 @@ A channel of `add_ionisation_channel()` can remove more than one electron. Set `
 number of electrons that one ionisation removes. The ionisation balance of `add_element()` then sends
 the ions of that channel from `ion_stage` to `ion_stage + n_ejected`.
 
+The examples below use a made-up cross section with the shape of the Lotz formula. It is zero at and
+below its threshold, as every channel of `add_ionisation_channel()` must be.
+
 ```python
+import numpy as np
+import pynonthermal
+
+
+def lotz_like_xs(threshold_ev, scale_cm2):
+    def xs(en_ev):
+        u = np.maximum(np.asarray(en_ev, dtype=float) / threshold_ev, 1.0)
+        return np.where(u > 1.0, scale_cm2 * np.log(u) / u, 0.0)
+
+    return xs
+
+
 nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+recomb = {2: 3e-13, 3: 1e-12, 4: 3e-12}
 with pynonthermal.SpencerFanoSolver() as sf:
-    sf.add_element(38, 1.0e6, recomb_ratecoeffs={2: 3e-13, 3: 1e-12, 4: 3e-12})
+    sf.add_element(38, 1.0e6, recomb_ratecoeffs=recomb)
     # direct double ionisation of Sr I: the threshold is the sum of the two potentials
     ionpot_ev = nist[(38, 1)] + nist[(38, 2)]
-    sf.add_ionisation_channel(38, 1, None, ionpot_ev, xs_vec=my_double_xs, channelkey="double", n_ejected=2)
+    sf.add_ionisation_channel(38, 1, None, ionpot_ev, lotz_like_xs(ionpot_ev, 1e-17), "double", n_ejected=2)
     sf.solve(deposition_ev_per_s_per_cm3=1.0)
-    gamma_double = sf.get_ionisation_ratecoeff(38, 1, n_ejected=2)
+    print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(38, 1, n_ejected=2):.2e} /s")
+    print(f"Sr III fraction {sf.get_ion_fractions(38)[3]:.3f}")
 ```
+
+The double ionisation sends Sr I ions straight to Sr III, so the Sr III fraction rises above the value
+without the channel.
 
 Give exclusive channels. Do not include the events of a multiple-ionisation channel in a
 single-ionisation cross section of the same ion. If you include them, the solver counts those events
@@ -490,20 +510,29 @@ ion must keep the sum of the NIST potentials less `level_energy_ev`, and the def
 population. Scale the cross section by the population fraction of the level.
 
 ```python
-# double ionisation of Sr I from a metastable level 1.8 eV above the ground state, which holds
-# a fraction level_popfrac of the Sr I ions
-ionpot_ev = nist[(38, 1)] + nist[(38, 2)] - 1.8
-sf.add_ionisation_channel(
-    38,
-    1,
-    None,
-    ionpot_ev,
-    xs_vec=lambda en_ev: level_popfrac * my_double_xs(en_ev),
-    channelkey="double_meta",
-    n_ejected=2,
-    level_energy_ev=1.8,
-)
+level_energy_ev = 1.8  # a metastable level of Sr I, 1.8 eV above the ground state
+level_popfrac = 0.2  # the fraction of the Sr I ions in that level
+with pynonthermal.SpencerFanoSolver() as sf:
+    sf.add_element(38, 1.0e6, recomb_ratecoeffs=recomb)
+    # double ionisation from the level: the threshold is the ground-state sum less the level energy
+    ionpot_ev = nist[(38, 1)] + nist[(38, 2)] - level_energy_ev
+    double_xs = lotz_like_xs(ionpot_ev, 1e-17)
+    sf.add_ionisation_channel(
+        38,
+        1,
+        None,
+        ionpot_ev,
+        xs_vec=lambda en_ev: level_popfrac * double_xs(en_ev),
+        channelkey="double_meta",
+        n_ejected=2,
+        level_energy_ev=level_energy_ev,
+    )
+    sf.solve(deposition_ev_per_s_per_cm3=1.0)
+    print(f"double ionisation rate coefficient {sf.get_ionisation_ratecoeff(38, 1, n_ejected=2):.2e} /s")
 ```
+
+Without `level_energy_ev`, the same call raises a `ValueError`, because the threshold is below the sum of
+the ground-state potentials.
 
 ### Excitation autoionisation
 
@@ -516,11 +545,18 @@ the autoionising level. The solver sets the cross section below the threshold to
 
 ```python
 with pynonthermal.SpencerFanoSolver() as sf:
-    sf.add_element(38, 1.0e6, recomb_ratecoeffs={2: 3e-13, 3: 1e-12})
-    # an autoionising level of Sr I at 20 eV, which is 14.3 eV above the ionisation limit
-    sf.add_ionisation_channel(38, 1, None, 20.0, xs_vec=my_eai_xs, channelkey="eai", autoionisation=True)
+    sf.add_element(38, 1.0e6, recomb_ratecoeffs=recomb)
+    # an autoionising level of Sr I at 20 eV, which is 14.3 eV above the ionisation limit. The
+    # Auger electron gets those 14.3 eV, and the ion keeps the 5.7 eV ionisation potential.
+    sf.add_ionisation_channel(38, 1, None, 20.0, lotz_like_xs(20.0, 1e-16), "eai", autoionisation=True)
     sf.solve(deposition_ev_per_s_per_cm3=1.0)
+    print(f"Sr I ionisation rate coefficient {sf.get_ionisation_ratecoeff(38, 1):.2e} /s (built-in shells + eai)")
+    print(f"Sr I ionisation fraction {sf.get_frac_ionisation_ion(38, 1):.4f}")
 ```
+
+The same cross section as a direct channel (`autoionisation=False`) would count all 20 eV as ionisation
+energy and would give the ejected electron the Lorentzian distribution. With `autoionisation=True`, the
+ionisation fraction of Sr I is lower, and the heating fraction is higher.
 
 The energy rules follow those of a multiple ionisation:
 
