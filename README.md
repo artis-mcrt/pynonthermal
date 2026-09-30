@@ -494,9 +494,10 @@ Two cases are typical:
 `ionpot_ev` must be at least the sum of the potentials, less 1 %
 (`pynonthermal.collion.MULTIPLE_IONPOT_REL_TOL`). Inside that tolerance, the extra electrons get no
 energy, and the ion keeps all of `ionpot_ev`. Give `auger_electron_energy_ev` to replace the value from
-energy conservation, for example a calculated Auger electron energy. The ion must still keep at least
-the sum of the potentials, less the same 1 %. The value is also necessary for an ion that the NIST data
-does not have.
+energy conservation, for example a calculated Auger electron energy. If the value leaves the ion less
+than the sum of the potentials, less the same 1 %, the solver gives a `UserWarning` and uses the value.
+So thresholds from other atomic data, for example calculated level energies, can differ from NIST. The
+value is also necessary for an ion that the NIST data does not have.
 
 ### Channels from a metastable level
 

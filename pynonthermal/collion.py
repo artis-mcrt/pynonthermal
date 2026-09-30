@@ -260,8 +260,9 @@ def get_arxs_array_shell(
 # energy is the sum of the NIST ground-state potentials that the channel crosses, less the energy of
 # the initial level. The check applies to a multiple ionisation and to an autoionisation. A calculated
 # threshold can be a little below that energy. Inside the tolerance the Auger electrons get zero
-# energy. A channel outside the tolerance makes energy, so IonisationChannel.from_xs() raises a
-# ValueError.
+# energy. A channel outside the tolerance makes energy. IonisationChannel.from_xs() then raises a
+# ValueError for the default Auger electron energy, and gives a UserWarning for a value from the
+# caller, which it uses as given.
 MULTIPLE_IONPOT_REL_TOL: float = 0.01
 
 
@@ -429,8 +430,9 @@ class IonisationChannel:
             default) gives zero for a channel with n_ejected=1 and autoionisation=False. In the
             other cases, None gives the value from energy conservation (see
             _get_auger_electron_energy_ev()). A value must be less than ionpot_ev. If the NIST
-            data holds the potentials that the ionisation crosses, the ion must also keep at least
-            their sum, less level_energy_ev and less MULTIPLE_IONPOT_REL_TOL.
+            data holds the potentials that the ionisation crosses, the ion keeps at least their
+            sum, less level_energy_ev and less MULTIPLE_IONPOT_REL_TOL. A value that leaves the
+            ion less than that gives a UserWarning, and the channel uses the value.
         autoionisation:
             True for an excitation-autoionisation channel. Then ionpot_ev is the excitation
             energy of the autoionising level, and all n_ejected electrons are Auger electrons.
@@ -600,21 +602,31 @@ def _get_auger_electron_energy_ev(
         " MULTIPLE_IONPOT_REL_TOL."
     )
     if ionpot_ev < retained_min_ev:
+        advice = f"Set ionpot_ev to at least {retained_ev:.3f} eV."
+    else:
+        # round the limit down to three decimals. The product can round up, so the printed value is
+        # checked again until it passes.
+        auger_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+        while ionpot_ev - float(f"{auger_max_ev:.3f}") < retained_min_ev:
+            auger_max_ev -= 0.001
+        advice = f"Set auger_electron_energy_ev to at most {auger_max_ev:.3f} eV."
+    if auger_electron_energy_ev is None:
+        # the default comes from the NIST data alone, so a threshold below the NIST energy gives a
+        # channel that makes energy
         msg = (
             f"ionpot_ev ({ionpot_ev} eV) of {channel_str} is less than the energy that the ion must keep."
-            f" {keep_str} Set ionpot_ev to at least {retained_ev:.3f} eV."
+            f" {keep_str} {advice}"
         )
         raise ValueError(msg)
-    # round the limit down to three decimals. The product can round up, so the printed value is
-    # checked again until it passes.
-    auger_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
-    while ionpot_ev - float(f"{auger_max_ev:.3f}") < retained_min_ev:
-        auger_max_ev -= 0.001
+    # the caller gave the split of the threshold, so energy is conserved with any value. The NIST
+    # data is then only a plausibility check, for example against thresholds from other atomic data.
     msg = (
         f"with auger_electron_energy_ev={auger_electron_energy_ev} eV, the ion of {channel_str} keeps"
-        f" {ionpot_ev - auger_ev:.3f} eV. {keep_str} Set auger_electron_energy_ev to at most {auger_max_ev:.3f} eV."
+        f" {ionpot_ev - auger_ev:.3f} eV, which is less than the NIST data give. {keep_str} The channel uses"
+        f" the value as given. {advice}"
     )
-    raise ValueError(msg)
+    warnings.warn(msg, UserWarning, stacklevel=4)
+    return auger_electron_energy_ev
 
 
 def _check_zero_below_ionpot(

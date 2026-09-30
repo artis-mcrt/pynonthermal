@@ -368,21 +368,6 @@ def test_multiple_ionisation_validation() -> None:
             sf.add_ionisation_channel(8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2)
         with pytest.raises(ValueError, match="no Auger electrons"):
             sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, auger_electron_energy_ev=10.0)
-        # the ion must keep the sum of the NIST potentials (48.7 eV for O I to O III), also with a value
-        # from the caller
-        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
-            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, n_ejected=2, auger_electron_energy_ev=60.0)
-        # the limit in the message includes MULTIPLE_IONPOT_REL_TOL. For He I to He III, 79.0 eV is
-        # inside the tolerance below the NIST sum (79.005 eV), so the limit is 0.784 eV and not a
-        # negative value.
-        with pytest.raises(ValueError, match=r"at most 0\.784 eV"):
-            sf.add_ionisation_channel(
-                2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, auger_electron_energy_ev=1.0
-            )
-        with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
-            sf.add_ionisation_channel(
-                8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), n_ejected=2, auger_electron_energy_ev=0.0
-            )
         # a rejected call leaves the solver unchanged
         assert not sf._ionisation_channels
         assert not sf.ionpopdict
@@ -390,10 +375,28 @@ def test_multiple_ionisation_validation() -> None:
         # a value from the caller that leaves the ion at least the NIST sum is kept as it is
         sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "auger", n_ejected=2, auger_electron_energy_ev=30.0)
         assert sf._ionisation_channels[(8, 1)][0].auger_electron_energy_ev == 30.0
-        # the limit of the message above passes the check
+        # a value that leaves the ion less than the NIST sum (48.7 eV for O I to O III) gives a warning,
+        # and the channel uses the value. The caller gave the split of the threshold, so energy is
+        # conserved.
+        with pytest.warns(UserWarning, match="Set auger_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs, "warned", n_ejected=2, auger_electron_energy_ev=60.0)
+        assert sf._ionisation_channels[(8, 1)][1].auger_electron_energy_ev == 60.0
+        # the limit in the message includes MULTIPLE_IONPOT_REL_TOL. For He I to He III, 79.0 eV is
+        # inside the tolerance below the NIST sum (79.005 eV), so the limit is 0.784 eV and not a
+        # negative value.
+        with pytest.warns(UserWarning, match=r"at most 0\.784 eV"):
+            sf.add_ionisation_channel(
+                2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), "warned", n_ejected=2, auger_electron_energy_ev=1.0
+            )
+        # the limit of the message above passes the check without a warning
         sf.add_ionisation_channel(
-            2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), n_ejected=2, auger_electron_energy_ev=0.784
+            2, 1, 1e8, 79.0, lotz_like_xs(79.0, 1e-18), "limit", n_ejected=2, auger_electron_energy_ev=0.784
         )
+        # with a threshold below the NIST energy, no value can agree with the NIST data
+        with pytest.warns(UserWarning, match="Set ionpot_ev to at least"):
+            sf.add_ionisation_channel(
+                8, 1, 1e8, 40.0, lotz_like_xs(40.0, 1e-18), "low", n_ejected=2, auger_electron_energy_ev=0.0
+            )
 
     # IonisationChannel.from_xs() applies the same rules as add_ionisation_channel(), so a channel has
     # the same energy for its extra electrons on both paths
@@ -403,7 +406,7 @@ def test_multiple_ionisation_validation() -> None:
             arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=870.0, xs=lotz_like_xs(870.0, 1e-19), key=0, n_ejected=3
         )
         assert channel.auger_electron_energy_ev == sf._ionisation_channels[(10, 1)][0].auger_electron_energy_ev
-        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
+        with pytest.warns(UserWarning, match="Set auger_electron_energy_ev to at most"):
             pynonthermal.IonisationChannel.from_xs(
                 arr_enev=sf.engrid, Z=10, ion_stage=1, ionpot_ev=870.0, xs=lotz_like_xs(870.0, 1e-19), key=0,
                 n_ejected=3, auger_electron_energy_ev=860.0,
@@ -597,8 +600,12 @@ def test_autoionisation_validation() -> None:
         # the threshold must leave the ion at least the NIST potential, less the tolerance
         with pytest.raises(ValueError, match="less than the energy that the ion must keep"):
             sf.add_ionisation_channel(10, 1, 1e8, 20.0, lotz_like_xs(20.0, 1e-17), autoionisation=True)
-        # the ion must keep that energy also with a value from the caller
-        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
+        # a value from the caller gives a warning when the ion keeps less than the NIST potential, and
+        # it must leave the ion a positive energy
+        with (
+            pytest.warns(UserWarning, match="Set auger_electron_energy_ev to at most"),
+            pytest.raises(ValueError, match="less than ionpot_ev"),
+        ):
             sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=True, auger_electron_energy_ev=48.0)
         for autoionisation in ("yes", 1, None):
             with pytest.raises(TypeError, match="autoionisation must be True or False"):
@@ -684,13 +691,18 @@ def test_auger_energy_limit_in_the_message_passes_the_check() -> None:
     # Z=100 with a threshold of 10.931 eV is such a case.
     xs = lotz_like_xs(10.931, 1e-18)
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        with pytest.raises(ValueError, match="at most") as excinfo:
-            sf.add_ionisation_channel(100, 1, 1e8, 10.931, xs, autoionisation=True, auger_electron_energy_ev=9.0)
-        match = re.search(r"at most (\d+\.\d{3}) eV", str(excinfo.value))
+        with pytest.warns(UserWarning, match="at most") as record:
+            sf.add_ionisation_channel(
+                100, 1, 1e8, 10.931, xs, "warned", autoionisation=True, auger_electron_energy_ev=9.0
+            )
+        match = re.search(r"at most (\d+\.\d{3}) eV", str(record[0].message))
         assert match is not None
         limit_ev = float(match.group(1))
-        sf.add_ionisation_channel(100, 1, 1e8, 10.931, xs, autoionisation=True, auger_electron_energy_ev=limit_ev)
-        assert sf._ionisation_channels[(100, 1)][0].auger_electron_energy_ev == limit_ev
+        # the limit passes without a warning (the tests turn warnings into errors)
+        sf.add_ionisation_channel(
+            100, 1, 1e8, 10.931, xs, "limit", autoionisation=True, auger_electron_energy_ev=limit_ev
+        )
+        assert sf._ionisation_channels[(100, 1)][1].auger_electron_energy_ev == limit_ev
 
 
 def test_level_energy_lowers_the_nist_requirement() -> None:
@@ -716,16 +728,17 @@ def test_level_energy_lowers_the_nist_requirement() -> None:
                 sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, n_ejected=2, level_energy_ev=level_energy_ev)
         with pytest.raises(ValueError, match="must be less than the ionisation potential"):
             sf.add_ionisation_channel(8, 1, 1e8, 11.6, lotz_like_xs(11.6, 1e-17), level_energy_ev=500.0)
-        # a value from the caller: the limit rises by level_energy_ev
-        xs_100 = lotz_like_xs(100.0, 1e-18)
-        with pytest.raises(ValueError, match="Set auger_electron_energy_ev to at most"):
-            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs_100, n_ejected=2, auger_electron_energy_ev=55.0)
         assert not sf._ionisation_channels
         assert not sf.ionpopdict
 
         sf.add_ionisation_channel(8, 1, 1e8, 45.0, xs, "meta", n_ejected=2, level_energy_ev=5.0)
         channel = sf._ionisation_channels[(8, 1)][0]
         assert math.isclose(channel.auger_electron_energy_ev, 45.0 + 5.0 - nist_sum_ev, rel_tol=1e-12)
+        # a value from the caller: the limit rises by level_energy_ev. Without the level energy, 55 eV
+        # leaves the ion less than the NIST sum and gives a warning.
+        xs_100 = lotz_like_xs(100.0, 1e-18)
+        with pytest.warns(UserWarning, match="Set auger_electron_energy_ev to at most"):
+            sf.add_ionisation_channel(8, 1, 1e8, 100.0, xs_100, "warned", n_ejected=2, auger_electron_energy_ev=55.0)
         sf.add_ionisation_channel(
             8, 1, 1e8, 100.0, xs_100, "meta2", n_ejected=2, level_energy_ev=5.0, auger_electron_energy_ev=55.0
         )
