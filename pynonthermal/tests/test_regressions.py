@@ -1121,12 +1121,27 @@ def test_lotz_constant_is_configurable() -> None:
 def test_heating_of_an_excitation_below_emin() -> None:
     # The excitation term of N(E) needs y(E + eps), which is zero below emin_ev. For eps < emin_ev
     # the integrand of the heating below E_0 therefore has a step at E_0 - eps. Simpson's rule on
-    # 9 nodes gave a heating 8 times too large and a fraction sum of 1.25 for this plasma.
-    with pynonthermal.SpencerFanoSolver(emin_ev=100, emax_ev=3000, npts=3000) as sf:
-        sf.add_excitation(1, 1, 1e9, lambda en_ev: np.where(en_ev >= 0.5, 1e-16, 0.0), epsilon_trans_ev=0.5)
-        sf.override_n_e(1e3)
-        sf.solve(deposition_ev_per_s_per_cm3=1.0)
-        assert math.isclose(sf.get_frac_sum(), 1.0, rel_tol=1e-3)
+    # 9 nodes gave a heating 8 times too large and a fraction sum of 1.25 for the first plasma. The
+    # energy of the excitation terms below E_0 comes from their bands in the matrix, so the sum is one
+    # to rounding with a cross section that starts inside the range (the second plasma, where an
+    # interpolation of N(E) gave 12.8), and for a transition energy near emax_ev (the third plasma).
+    cases = (
+        (100.0, 3000, 0.5, 0.5),
+        (100.0, 500, 50.0, 130.3),
+        (1.0, 200, 2999.5, 2999.5),
+    )
+    for emin_ev, npts, epsilon_trans_ev, xs_start_ev in cases:
+        with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=npts) as sf:
+            sf.add_excitation(
+                1,
+                1,
+                1e9,
+                lambda en_ev, xs_start_ev=xs_start_ev: np.where(en_ev >= xs_start_ev, 1e-16, 0.0),
+                epsilon_trans_ev=epsilon_trans_ev,
+            )
+            sf.override_n_e(1e3)
+            sf.solve(deposition_ev_per_s_per_cm3=1.0)
+            assert math.isclose(sf.get_frac_sum(), 1.0, rel_tol=1e-9)
 
 
 def test_energy_fractions_of_the_heating_only_case_sum_to_one() -> None:
@@ -1139,7 +1154,7 @@ def test_energy_fractions_of_the_heating_only_case_sum_to_one() -> None:
             assert math.isclose(sf.get_frac_heating(), 1.0, rel_tol=1e-12)
 
 
-def test_verbose_analysis_does_not_raise_where_the_quiet_analysis_succeeds(capsys: pytest.CaptureFixture[str]) -> None:
+def test_verbose_analysis_does_not_raise_where_the_quiet_analysis_succeeds() -> None:
     # the work function estimate of the verbose output needs the shell tables, which stop at Z=108,
     # and a total population above zero
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, verbose=True) as sf:
@@ -1148,12 +1163,14 @@ def test_verbose_analysis_does_not_raise_where_the_quiet_analysis_succeeds(capsy
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         sf.get_frac_sum()
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, verbose=True) as sf:
-        sf.add_ionisation_channel(8, 2, 0.0, 40.0, lambda en_ev: np.where(en_ev > 40.0, 1e-17, 0.0))
-        sf.add_excitation(8, 2, 0.0, np.zeros(200), 5.0)
+        # add_ion_excitation() registers the zero population, so the ionisation channels go into the
+        # solver and the verbose analysis reaches the work function estimate
+        sf.set_temperature(6000)
+        sf.add_ion_excitation(8, 2, n_ion=0.0)
+        sf.add_ionisation(8, 2, None)
         sf.override_n_e(1e6)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         sf.get_frac_sum()
-    capsys.readouterr()
 
 
 def test_rejected_calls_leave_the_solver_unchanged() -> None:
@@ -1194,23 +1211,39 @@ def test_ionisation_channel_checks_the_ion() -> None:
 
 
 def test_shared_tables_are_not_writable() -> None:
-    # the cached tables are shared by every solver and every channel
+    # every solver and every channel share the cached tables, so a caller gets a copy of each
     nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
-    with pytest.raises(TypeError):
-        nist[(8, 1)] = 1.0  # ty: ignore[invalid-assignment]
+    ionpot_ev = nist[(8, 1)]
+    nist[(8, 1)] = 1.0
+    assert pynonthermal.collion.get_nist_ionisation_energies_ev()[(8, 1)] == ionpot_ev
+    assert pickle.loads(pickle.dumps(nist)) == nist  # noqa: S301
     with pynonthermal.SpencerFanoSolver(npts=100) as sf:
         sf.dfcollion[0, "A"] = 1e3
+    with pynonthermal.SpencerFanoSolver(npts=100) as sf_later:
+        assert sf_later.dfcollion[0, "A"] != 1e3
     assert pynonthermal.collion.read_colliondata()[0, "A"] != 1e3
+    # the cross section of a built-in channel cannot change after the channel holds its grid values
+    channel = pynonthermal.collion.get_ion_ionisation_channels(
+        pynonthermal.collion.read_colliondata(), 8, 2, np.linspace(1.0, 3000.0, 100)
+    )[0]
+    with pytest.raises(TypeError):
+        channel.xs.shell["A"] = 0.0  # ty: ignore[unresolved-attribute]
 
 
 def test_solver_with_channels_can_be_pickled() -> None:
-    # multiprocessing and joblib pickle a solver, so the cross sections of the channels must not be closures
+    # multiprocessing and joblib pickle a solver, so the cross sections of the channels must not be
+    # closures, and the state must leave out the internal level database, whose polars Object columns
+    # pickle cannot serialise
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.set_temperature(6000)
         sf.add_ionisation(8, 2, 1e8)
+        sf.add_ion_excitation(8, 2)
         sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid > 60.0, 1e-18, 0.0))
         sf.solve(deposition_ev_per_s_per_cm3=1e3)
         sf_copy = pickle.loads(pickle.dumps(sf))  # noqa: S301
         assert sf_copy.get_frac_sum() == sf.get_frac_sum()
+        assert sf.adata_polars is not None
+        assert sf_copy.adata_polars is None
 
 
 def test_population_of_a_numpy_float32_is_a_python_float() -> None:
@@ -1229,3 +1262,41 @@ def test_auger_energy_warning_names_the_line_of_the_caller() -> None:
             with pytest.warns(UserWarning, match="less than the energy that the ion must keep") as record:
                 sf.add_ionisation_channel(8, 1, 1e8, 40.0, xs, n_ejected=2)
             assert {warning.filename for warning in record} == {__file__}
+
+
+def test_auger_energy_warning_comes_after_every_check() -> None:
+    # a call that a check rejects gives only its error, also with warnings as errors
+    xs = lambda en_ev: np.where(en_ev > 40.0, 1e-17, 0.0)  # noqa: E731
+    with pynonthermal.SpencerFanoSolver(emin_ev=45, emax_ev=3000, npts=200) as sf, warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="below emin_ev"):
+            sf.add_ionisation_channel(8, 1, 1e8, 40.0, xs, n_ejected=2)
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        with pytest.warns(UserWarning, match="less than the energy that the ion must keep"):
+            sf.add_ionisation_channel(8, 1, 1e8, 40.0, xs, "double", n_ejected=2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(ValueError, match="already added"):
+                sf.add_ionisation_channel(8, 1, 1e8, 40.0, xs, "double", n_ejected=2)
+            with pytest.raises(ValueError, match="must be zero at and below"):
+                sf.add_ionisation_channel(8, 1, 1e8, 40.0, np.full(200, 1e-17), "below", n_ejected=2)
+
+
+def test_negative_level_weight_rejects_the_call() -> None:
+    # a negative statistical weight gives a negative population fraction, which the check of each level
+    # weight rejects before the first write, on the fixed and on the balanced path
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        adata = sf._get_adata_polars().filter((pl.col("Z") == 8) & (pl.col("ion_stage") == 2))
+        levels = adata["levels"].item()
+        levels = levels.with_columns(g=pl.when(pl.col("levelindex") == 1).then(-pl.col("g")).otherwise(pl.col("g")))
+        adata = adata.with_columns(pl.Series("levels", [levels], dtype=pl.Object))
+        sf.set_temperature(6000)
+        sf.set_atomic_data(adata_polars=adata)
+        with pytest.raises(ValueError, match="give no valid LTE populations"):
+            sf.add_element(8, ion_densities={2: 1e8}, excitation=True)
+        assert sf.ionpopdict == {}
+        assert sf.excitationlists == {}
+        with pytest.raises(ValueError, match="give no valid LTE populations"):
+            sf.add_element(8, 1e8, recomb_ratecoeffs={3: 3e-12}, excitation=True)
+        assert sf.ionpopdict == {}
+        assert sf.excitationlists == {}

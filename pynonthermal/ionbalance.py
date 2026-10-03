@@ -34,11 +34,14 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 
 import artistools as at
+import numpy as np
+import numpy.typing as npt
 import polars as pl
 
 import pynonthermal
 from pynonthermal.base import _check_ion
 from pynonthermal.base import _is_integer
+from pynonthermal.collion import _get_nist_ionisation_energies_ev_cached
 from pynonthermal.constants import EV
 from pynonthermal.constants import H
 from pynonthermal.constants import K_B
@@ -330,6 +333,30 @@ def solve_charge_neutral_n_e_cuts(
     return solve_charge_neutral_n_e(n_e_fixed, charge_density, charge_density_min, charge_density_max)
 
 
+def _get_lte_boltzmann_weights(
+    levels: pl.DataFrame, temperature: float, Z: int, ion_stage: int
+) -> npt.NDArray[np.float64]:
+    # the Boltzmann weights g exp(-E / (k_B T)) of the levels of one ion, in the order of the rows of
+    # levels. Their sum is the LTE partition function. Each weight must be finite and at least zero,
+    # and the sum must be greater than zero. Else the population fraction of a level is nan or
+    # negative. Level energies on an absolute scale, a nan energy, or a negative g give such weights.
+    weights = (
+        levels.select(pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp())
+        .to_series()
+        .to_numpy()
+        .astype(np.float64)
+    )
+    partfunc = float(weights.sum())
+    if not (np.isfinite(weights).all() and (weights >= 0.0).all() and 0.0 < partfunc < math.inf):
+        msg = (
+            f"the levels of Z={Z} ion_stage {ion_stage} give no valid LTE populations at {temperature} K."
+            f" The partition function is {partfunc}, and each level weight g exp(-E / (k_B T)) must be finite"
+            " and at least zero. Check the energies and the statistical weights g of the levels."
+        )
+        raise ValueError(msg)
+    return weights
+
+
 def get_saha_ion_fractions(
     Z: int,
     ion_stages: Sequence[int],
@@ -422,15 +449,13 @@ def get_saha_ion_fractions(
                     " Give it in partfuncs or supply a level table in adata_polars."
                 )
                 raise ValueError(msg)
-            partfunc = float(
-                ion["levels"].item().select(pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp()).sum().item()
-            )
+            partfunc = float(_get_lte_boltzmann_weights(ion["levels"].item(), temperature, Z, ion_stage).sum())
         if not 0.0 < partfunc < math.inf:
             msg = f"the partition function of Z={Z} ion_stage {ion_stage} must be greater than zero but is {partfunc}"
             raise ValueError(msg)
         partfunc_of_stage[ion_stage] = partfunc
 
-    ionpots_ev = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    ionpots_ev = _get_nist_ionisation_energies_ev_cached()
     saha_factors = []
     for ion_stage in stages[:-1]:
         ionpot_ev = ionpots_ev.get((Z, ion_stage))

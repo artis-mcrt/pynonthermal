@@ -20,15 +20,24 @@ DATADIR = Path(__file__).absolute().parent / "data"
 # neutral atom, so the messages that reject a stage below 1 give this hint.
 ION_STAGE_HINT: str = "ion_stage is one more than the charge, so a neutral atom is ion_stage 1"
 
-# The warnings of the package name the line of the caller outside the modules of the package,
-# whatever the depth of the call inside them. A fixed stacklevel names a line in the package when the
-# depth changes. The prefixes are the module files and not the directory, because the directory
-# also holds the tests, whose lines a warning must name.
-_PACKAGE_MODULE_FILES: tuple[str, ...] = tuple(str(path) for path in Path(__file__).parent.glob("*.py"))
-
 
 def _warn(message: str, category: type[Warning] = UserWarning) -> None:
     warnings.warn(message, category, stacklevel=2, skip_file_prefixes=_PACKAGE_MODULE_FILES)
+
+
+# The warnings of the package name the line of the caller outside the modules of the package,
+# whatever the depth of the call inside them. A fixed stacklevel names a line in the package when the
+# depth changes. The prefixes are the module files and not the directory. The directory also holds
+# the tests, and a warning must name a line in a test.
+# The directory comes from the file name of a code object of this module, because the frames give that
+# form of the path. pathlib removes a doubled separator, so a pathlib path can fail to match. The
+# module names come from the source files, or from the compiled files of an install without them.
+_PACKAGE_MODULE_FILES: tuple[str, ...] = tuple(
+    _warn.__code__.co_filename.removesuffix("base.py") + f"{module_name}.py"
+    for module_name in sorted(
+        {path.name.split(".")[0] for path in Path(__file__).parent.iterdir() if path.suffix in {".py", ".pyc"}}
+    )
+)
 
 
 def _is_integer(value: object) -> bool:
@@ -135,8 +144,8 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
         msg = f"the free-electron loss function requires a positive finite energy but energy_ev is {energy_ev}"
         raise ValueError(msg)
 
-    # Python floats, because a numpy float32 argument would make the products below float32. The
-    # factor QE**4 is about 5e-37, so the loss rate would then underflow to zero.
+    # Python floats, because a numpy float32 argument makes the products below float32. The factor
+    # QE**4 is about 5e-37, so the loss rate then underflows to zero.
     n_e_cgs = float(n_e_cgs)
     n_e = n_e_cgs
     energy = float(energy_ev) * EV  # convert eV to erg

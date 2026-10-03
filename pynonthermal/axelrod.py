@@ -1,6 +1,7 @@
 # functions related to Axelrod 1980 non-thermal treatment
 
 import math
+from collections.abc import Mapping
 from functools import cache
 from functools import lru_cache
 from pathlib import Path
@@ -157,7 +158,7 @@ def get_workfn_ev(
 
 
 def get_lotz_xs_ionisation_vec(
-    shell: dict[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
+    shell: Mapping[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
     # Axelrod 1980 Eq 3.38 evaluated at an array of energies [eV], with the constant A of the Lotz
     # formula lotz_a_cm2_ev2 [cm^2 eV^2]

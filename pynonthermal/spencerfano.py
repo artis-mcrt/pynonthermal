@@ -28,8 +28,8 @@ from pynonthermal.base import get_Zbar
 from pynonthermal.collion import _resolve_auger_electron_energy_ev
 from pynonthermal.collion import IonisationChannel
 from pynonthermal.constants import CLIGHT
-from pynonthermal.constants import K_B
 from pynonthermal.excitation import ExcitationTransition
+from pynonthermal.ionbalance import _get_lte_boltzmann_weights
 from pynonthermal.ionbalance import get_ion_fractions_cuts
 from pynonthermal.ionbalance import solve_charge_neutral_n_e_cuts
 
@@ -78,6 +78,10 @@ RECOMB_RATECOEFF_MAX_WARN: float = 1e-8
 # ion_stage is one more than the charge. A caller who uses the charge gives a stage of 0 for a
 # neutral atom, so the messages that reject a stage below 1 give this hint.
 ION_STAGE_HINT: str = pynonthermal.base.ION_STAGE_HINT
+
+# The columns of the transitions that artistools.atomic.get_levels() derives from the levels only when
+# a caller asks for them. The excitation cross sections need them.
+DERIVED_TRANSITIONS_COLUMNS: tuple[str, ...] = ("epsilon_trans_ev", "lower_g", "upper_g")
 
 
 class LotzApproximationWarning(UserWarning):
@@ -235,8 +239,9 @@ NPTS_SUBGRID_PER_J: int = 32
 NCELLS_SECOND_INTEGRAL_SUBGRID: int = 2
 
 # Number of nodes for the integral over E in [0, E_0] of Kozma & Fransson equation 8. This one is not
-# free: every node costs a full calculate_N_e() over all ions and shells, so it dominates the cost of
-# the analysis. It is integrated by Simpson's rule, which is fourth order here and reaches an accuracy
+# free: every node costs the ionisation terms of calculate_N_e() over all ions and shells, so it dominates
+# the cost of the analysis. The excitation terms come from the matrix instead (see
+# _band_energy_below_e0()). It is integrated by Simpson's rule, which is fourth order here and reaches an accuracy
 # at 9 nodes that the trapezoid rule needs several hundred for. The node count is a property of this
 # integral alone: the old ceil(E_0 / deltaen) * 5 tied it to the main grid, which gave 5 nodes when
 # emin_ev was below the grid spacing and several hundred when it was well above.
@@ -489,13 +494,15 @@ class SpencerFanoSolver:
 
         # E_init_ev is the deposition rate density that we assume when solving the SF equation.
         # The solution will be scaled to the true deposition rate later.
-        # rhsvec[i] includes the source of bin i itself, so the matrix carries each source electron
-        # of bin j through the rows 0 to j, which is the energy engrid[j] + deltaen in the heating
-        # sum of calculate_frac_heating(). With engrid[j] alone, every energy fraction was too large by
-        # deltaen / E_init_ev: 2.5e-4 on the default grid, and 5e-3 at npts=200.
+        # rhsvec[i] includes the source of bin i itself. The matrix therefore carries each source
+        # electron of bin j through the rows 0 to j. In the heating sum of calculate_frac_heating(),
+        # these rows give the energy engrid[j] + deltaen. With engrid[j] alone, every energy fraction
+        # was too large by deltaen / E_init_ev: 2.5e-4 on the default grid, and 5e-3 at npts=200.
         self.E_init_ev = np.dot(self.engrid + self.deltaen, sourcevec) * self.deltaen
 
         self.adata_polars = None
+        # True when adata_polars holds the internal database, which the solver can read again
+        self._adata_polars_is_internal = False
         # the options of set_atomic_data() for the excitations from the level data
         self._use_collstrengths = True
         self._maxnlevelslower: int | None = 5
@@ -512,6 +519,19 @@ class SpencerFanoSolver:
             )
 
         self.sfmatrix = np.zeros((npts, npts))
+
+    def __getstate__(self) -> dict[str, t.Any]:
+        """Get the state that pickle serialises.
+
+        The internal level database has polars Object columns, which pickle cannot serialise. The
+        solver reads the database again when it needs it, so the state leaves it out. A level table
+        from set_atomic_data() stays in the state.
+        """
+        state = self.__dict__.copy()
+        if self._adata_polars_is_internal:
+            state["adata_polars"] = None
+            state["_adata_polars_is_internal"] = False
+        return state
 
     @property
     def lotz_a_cm2_ev2(self) -> float:
@@ -614,6 +634,7 @@ class SpencerFanoSolver:
         self._require_not_solved("set the atomic data")
         if adata_polars is not None:
             self.adata_polars = adata_polars
+            self._adata_polars_is_internal = False
         if not isinstance(use_collstrengths, _Omitted):
             self._use_collstrengths = use_collstrengths
         if not isinstance(maxnlevelslower, _Omitted):
@@ -851,6 +872,8 @@ class SpencerFanoSolver:
         if not 0.0 <= levelnumberdensity < math.inf:
             msg = f"levelnumberdensity must be non-negative and finite but is {levelnumberdensity}"
             raise ValueError(msg)
+        # a Python float, as for an ion population. The analysis multiplies by this value.
+        levelnumberdensity = float(levelnumberdensity)
         if transitionkey is None:
             transitionkey = len(self.excitationlists.get((Z, ion_stage), {}))  # simple number index
 
@@ -1056,11 +1079,12 @@ class SpencerFanoSolver:
             DeprecationWarning,
             stacklevel=2,
         )
-        # a rejected call leaves the solver unchanged, as the other add methods do. Else a failed call
-        # would fix the temperature at 3000 K, and the corrected call would raise.
+        # a rejected call leaves the solver unchanged, as the other add methods do. Without the
+        # restore, a failed call fixes the temperature at 3000 K, and the corrected call then raises.
         settings_before = (
             self.temperature,
             self.adata_polars,
+            self._adata_polars_is_internal,
             self._use_collstrengths,
             self._maxnlevelslower,
             self._maxnlevelsupper,
@@ -1083,6 +1107,7 @@ class SpencerFanoSolver:
             (
                 self.temperature,
                 self.adata_polars,
+                self._adata_polars_is_internal,
                 self._use_collstrengths,
                 self._maxnlevelslower,
                 self._maxnlevelsupper,
@@ -1092,10 +1117,13 @@ class SpencerFanoSolver:
     def _check_excitation_keys(self, Z: int, ion_stage: int, keys: list[t.Any]) -> None:
         # every transition of an ion needs its own key, as every channel does
         # (_check_ionisation_channel_keys). This runs before any transition is stored, so a rejected
-        # call leaves the solver unchanged.
-        seen = set(self.excitationlists.get((Z, ion_stage), {}))
+        # call leaves the solver unchanged. The membership test hashes the key, so an unhashable key
+        # also raises here. The stored keys stay in their dict, because a copy of them for each call
+        # made the storage of n transitions take a time proportional to n^2.
+        stored = self.excitationlists.get((Z, ion_stage), {})
+        seen = set()
         for key in keys:
-            if key in seen:
+            if key in stored or key in seen:
                 msg = f"Transition {key} already added for Z={Z} ion_stage={ion_stage}"
                 raise ValueError(msg)
             seen.add(key)
@@ -1145,8 +1173,9 @@ class SpencerFanoSolver:
             self.adata_polars = at.atomic.get_levels(
                 Path(pynonthermal.DATADIR, "artis_files"),
                 get_transitions=True,
-                derived_transitions_columns=["epsilon_trans_ev", "lambda_angstroms", "lower_g", "upper_g"],
+                derived_transitions_columns=list(DERIVED_TRANSITIONS_COLUMNS),
             )
+            self._adata_polars_is_internal = True
 
         return self.adata_polars
 
@@ -1175,32 +1204,27 @@ class SpencerFanoSolver:
 
         dfpops_thision = ion["levels"].item()
 
-        boltzmann_weight = pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp()
-        ltepartfunc = float(dfpops_thision.select(boltzmann_weight).sum().item())
-        # the same check as get_saha_ion_fractions(). Level energies on an absolute scale, or a nan
-        # energy, would otherwise give nan population fractions and a nan matrix.
-        if not 0.0 < ltepartfunc < math.inf:
-            msg = (
-                f"the LTE partition function of Z={Z} ion_stage {ion_stage} at {temperature} K must be greater"
-                f" than zero and finite but is {ltepartfunc}. Check the level energies of the level table."
-            )
-            raise ValueError(msg)
+        # the check of each weight runs before any write, so bad level data rejects the call and leaves
+        # the solver unchanged. Without it, a negative or nan population fraction reached the matrix.
+        boltzmann_weights = _get_lte_boltzmann_weights(dfpops_thision, temperature, Z, ion_stage)
         dfpops_thision = (
-            dfpops_thision.rename({"levelindex": "level"}).with_columns(ion_popfrac=boltzmann_weight / ltepartfunc)
+            dfpops_thision.rename({"levelindex": "level"}).with_columns(
+                ion_popfrac=pl.Series(boltzmann_weights / boltzmann_weights.sum())
+            )
         ).select(["level", "ion_popfrac"])
 
         # lazy() accepts an eager DataFrame and a LazyFrame, because a table of the caller can hold either
         lzdftransitions = ion["transitions"].item().lazy()
         missing_columns = sorted(
-            {"A", "collstr", "epsilon_trans_ev", "forbidden", "lower", "lower_g", "upper", "upper_g"}.difference(
+            {"A", "collstr", "forbidden", "lower", "upper", *DERIVED_TRANSITIONS_COLUMNS}.difference(
                 lzdftransitions.collect_schema().names()
             )
         )
         if missing_columns:
             msg = (
-                f"the transitions of Z={Z} ion_stage {ion_stage} in the level table have no columns {missing_columns}."
-                " Read the table with artistools.atomic.get_levels(..., get_transitions=True,"
-                ' derived_transitions_columns=["epsilon_trans_ev", "lower_g", "upper_g"]).'
+                f"the transitions of Z={Z} ion_stage {ion_stage} in the level/transition table have no columns"
+                f" {missing_columns}. Read the table with artistools.atomic.get_levels(..., get_transitions=True,"
+                f" derived_transitions_columns={list(DERIVED_TRANSITIONS_COLUMNS)})."
             )
             raise ValueError(msg)
         lzdftransitions = lzdftransitions.filter((pl.col("collstr") >= 0).or_(pl.col("forbidden") == 0))
@@ -1524,6 +1548,8 @@ class SpencerFanoSolver:
             self._check_ion_population(Z, ion_stage, n_ion)
             if n_ion == 0.0:
                 return
+            # a Python float, because the matrix fill multiplies by it
+            n_ion = float(n_ion)
 
         channels = self._build_builtin_channels(Z, ion_stage)
 
@@ -1646,6 +1672,8 @@ class SpencerFanoSolver:
             n_ion = self._get_registered_population(Z, ion_stage, "n_ion")
         else:
             self._check_ion_population(Z, ion_stage, n_ion)
+            # a Python float, because the matrix fill multiplies by it
+            n_ion = float(n_ion)
 
         if ionpot_ev > self.engrid[-1]:
             # the matrix fill would write nothing and the channel would be inert. The equivalent
@@ -1658,6 +1686,27 @@ class SpencerFanoSolver:
 
         if channelkey is None:
             channelkey = len(self._ionisation_channels.get((Z, ion_stage), []))
+
+        # the checks of the solver run before the call builds the channel. The build gives the Auger
+        # warning after its own last check, so a call that a check rejects gives only its error.
+        # IonisationChannel.from_xs() rejects an ionpot_ev that is not greater than zero and finite,
+        # with a message that names the fault.
+        if 0.0 < ionpot_ev < math.inf:
+            self._check_ionpot_above_emin(Z, ion_stage, [ionpot_ev])
+        self._check_ionisation_channel_keys(Z, ion_stage, [channelkey])
+        element = self._balanced_elements.get(Z)
+        # IonisationChannel.from_xs() rejects an n_ejected that is not an integer
+        if element is not None and _is_integer(n_ejected):
+            top = element.ion_stages[-1]
+            # the top stage is a sink for all of its channels (see _warn_top_stage_leak()), but a
+            # lower stage must send its ions to a stage of the chain
+            if ion_stage < top < ion_stage + n_ejected:
+                msg = (
+                    f"the channel takes Z={Z} ion_stage {ion_stage} to ion_stage {ion_stage + n_ejected},"
+                    f" but the top stage of the ionisation balance is {top}. Add recombination rate coefficients"
+                    f" up to ion_stage {ion_stage + n_ejected} in add_element()."
+                )
+                raise ValueError(msg)
 
         # every check runs before anything is recorded, so a rejected call leaves the solver
         # unchanged. The cross section is checked even for a zero population, which adds no channel.
@@ -1690,21 +1739,6 @@ class SpencerFanoSolver:
                 autoionisation=autoionisation,
             )
         )
-        self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev])
-        self._check_ionisation_channel_keys(Z, ion_stage, [channel.key])
-
-        element = self._balanced_elements.get(Z)
-        if element is not None:
-            top = element.ion_stages[-1]
-            # the top stage is a sink for all of its channels (see _warn_top_stage_leak()), but a
-            # lower stage must send its ions to a stage of the chain
-            if ion_stage < top < ion_stage + channel.n_ejected:
-                msg = (
-                    f"the channel takes Z={Z} ion_stage {ion_stage} to ion_stage {ion_stage + channel.n_ejected},"
-                    f" but the top stage of the ionisation balance is {top}. Add recombination rate coefficients"
-                    f" up to ion_stage {ion_stage + channel.n_ejected} in add_element()."
-                )
-                raise ValueError(msg)
 
         if not registered and n_ion == 0.0:
             return
@@ -1753,10 +1787,12 @@ class SpencerFanoSolver:
             n_ejected > 1 (see add_ionisation_channel()) jumps over stages, and then the balance
             holds for the flux across each cut between adjacent stages (see
             pynonthermal.ionbalance). The chain of stages runs from one below the lowest key to the
-            highest key, and solve() iterates it. A coefficient outside the plausible range of an
-            atomic ion raises a warning. Thermal collisional ionisation, photoionisation, and
-            charge exchange are not included, so these populations depend on the deposition rate
-            density.
+            highest key, and solve() iterates it. The top stage is a sink: its ionisation is an
+            energy loss in the matrix, but the ions that it makes have no stage to go to. Extend the
+            chain to a stage whose ionisation is negligible, or solve() warns. A coefficient outside
+            the plausible range of an atomic ion raises a warning. Thermal collisional ionisation,
+            photoionisation, and charge exchange are not included, so these populations depend on the
+            deposition rate density.
 
         Every stage gets the built-in ionisation channels, unless builtin_channels is False: then
         add the channels of each stage yourself with add_ionisation() or add_ionisation_channel()
@@ -1831,8 +1867,6 @@ class SpencerFanoSolver:
         ion_stages = _check_element_rule(Z, ion_densities, recomb_ratecoeffs)
         # Python integers and floats from here on, so that a numpy type does not reach ionpopdict
         Z = int(Z)
-        if n_elem is not None:
-            n_elem = float(n_elem)
         if ion_densities is not None:
             ion_densities = {int(ion_stage): float(n_ion) for ion_stage, n_ion in ion_densities.items()}
 
@@ -1840,7 +1874,16 @@ class SpencerFanoSolver:
 
         if recomb_ratecoeffs is not None:
             assert n_elem is not None
-            self._add_element_ionbalance(Z, n_elem, ion_stages, recomb_ratecoeffs, builtin_channels)
+            # _check_element_rule() has checked every value of recomb_ratecoeffs
+            self._add_balanced_element(
+                _BalancedElement(
+                    Z=Z,
+                    n_elem=float(n_elem),
+                    ion_stages=ion_stages,
+                    recomb_ratecoeffs={int(ion_stage): float(alpha) for ion_stage, alpha in recomb_ratecoeffs.items()},
+                ),
+                builtin_channels,
+            )
         else:
             assert ion_densities is not None
             self._add_element_fixed(Z, ion_densities, builtin_channels)
@@ -1881,55 +1924,6 @@ class SpencerFanoSolver:
             self._register_ion_population(Z, ion_stage, n_ion)
             self._apply_ion_channels(Z, ion_stage, n_ion, channels)
 
-    def _add_element_ionbalance(
-        self,
-        Z: int,
-        n_elem: float,
-        ion_stages: tuple[int, ...],
-        recomb_ratecoeffs: Mapping[int, float],
-        builtin_channels: bool,
-    ) -> None:
-        """Add an element whose ion populations solve() finds from an ionisation/recombination balance.
-
-        For each pair of adjacent ion stages i and i+1, the balance is
-        n_i Gamma_i = n_{i+1} n_e alpha_{i+1}, with Gamma_i the non-thermal ionisation rate
-        coefficient [s^-1] of stage i from the Spencer-Fano solution and alpha_{i+1} the
-        recombination rate coefficient of stage i+1. With multiple ionisation, the upward flux
-        across the cut between stages j and j+1 comes from every stage i <= j with a channel of
-        n_ejected > j - i, and it equals n_{j+1} n_e alpha_{j+1}. The solution depends on the
-        populations, so solve() iterates until the populations converge, and it finds the free
-        electron density from charge neutrality or from override_n_e(). Thermal collisional
-        ionisation, photoionisation, and charge exchange are not included, so the populations
-        depend on deposition_ev_per_s_per_cm3.
-
-        The chain of ion stages runs from one below the lowest key to the highest key. The top
-        stage is a sink: its ionisation is an energy loss in the matrix, but the ions it makes have
-        no stage to go to. Extend the chain to a stage whose ionisation is negligible, or solve()
-        warns. Every stage gets the built-in ionisation channels of add_ionisation(). To add LTE
-        excitations of a stage, call add_ion_excitation() with n_ion=None.
-
-        Until solve() runs, ionpopdict holds a provisional population that is concentrated in the
-        lowest stage, and get_n_e() and get_n_ion_tot() include it.
-
-        n_elem:
-            the number density of the element in cm^-3, summed over the stages of the chain
-        recomb_ratecoeffs:
-            the recombination rate coefficients in cm^3 s^-1, keyed by the ion stage that
-            recombines (the upper stage of each pair). The keys must be contiguous and lie between
-            2 and Z + 1. A value outside the plausible range of an atomic ion raises a warning
-            (see RECOMB_RATECOEFF_MIN_WARN and RECOMB_RATECOEFF_MAX_WARN).
-        """
-        # _check_element_rule() has checked every value of recomb_ratecoeffs
-        self._add_balanced_element(
-            _BalancedElement(
-                Z=Z,
-                n_elem=n_elem,
-                ion_stages=ion_stages,
-                recomb_ratecoeffs={int(ion_stage): float(alpha) for ion_stage, alpha in recomb_ratecoeffs.items()},
-            ),
-            builtin_channels,
-        )
-
     def _add_balanced_element(self, element: _BalancedElement, builtin_channels: bool) -> None:
         # record a checked element, give its stages a provisional population that is concentrated
         # in the lowest stage, and add its built-in ionisation channels to the matrix at that
@@ -1947,8 +1941,8 @@ class SpencerFanoSolver:
         }
         self._warn_lotz_stages(Z, channels_of_stage)
 
-        # the channels of every stage are built, so no later step rejects the call, and a rejected
-        # call warns about nothing
+        # the channels of every stage exist now, so no later step rejects the call. Thus a rejected
+        # call warns about nothing.
         for ion_stage, alpha in sorted(element.recomb_ratecoeffs.items()):
             if not RECOMB_RATECOEFF_MIN_WARN <= alpha <= RECOMB_RATECOEFF_MAX_WARN:
                 _warn(
@@ -2497,11 +2491,11 @@ class SpencerFanoSolver:
         """
         # both this method and calculate_frac_heating() read yvec, which exists only after solve()
         self._require_solved()
-        return self._calculate_N_e(energy_ev, skip_step_terms=False)
+        return self._calculate_N_e(energy_ev, include_excitation_terms=True)
 
-    def _calculate_N_e(self, energy_ev: float, skip_step_terms: bool) -> float:
-        # N(E) of calculate_N_e(). skip_step_terms leaves out each excitation-like term that has a
-        # step in [0, E_0] (see calculate_frac_heating()), which integrates those terms exactly.
+    def _calculate_N_e(self, energy_ev: float, include_excitation_terms: bool) -> float:
+        # N(E) of calculate_N_e(). Without include_excitation_terms, N(E) holds only the ionisation
+        # terms. calculate_frac_heating() gets the energy of the excitation terms from the matrix.
         # N(E) of Kozma & Fransson 1992 equation 11: the rate at which electrons appear at an
         # energy E below the solved grid. Its three terms are electrons that excited an ion
         # from E + epsilon_trans, primaries degraded by an ionisation energy loss (with the
@@ -2537,9 +2531,8 @@ class SpencerFanoSolver:
             N_e_ion = 0.0
             n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
 
-            for trans in self.excitationlists.get((Z, ion_stage), {}).values():
-                if skip_step_terms and not e_min <= trans.epsilon_trans_ev <= e_max - e_min:
-                    continue
+            transitions = self.excitationlists.get((Z, ion_stage), {}) if include_excitation_terms else {}
+            for trans in transitions.values():
                 # Interpolate y and the cross section at energy_ev + epsilon_trans_ev, as the two
                 # ionisation integrals below also do, rather than snapping down to the grid point under
                 # it. Snapping lands below the transition energy whenever E has not yet carried the sum
@@ -2557,7 +2550,7 @@ class SpencerFanoSolver:
                     # term above, with the ion population as the level population, and it has no
                     # secondary integrals. The cross section comes from the grid array, as for an
                     # excitation, so the two terms agree to machine precision.
-                    if not skip_step_terms or e_min <= ionpot_ev <= e_max - e_min:
+                    if include_excitation_terms:
                         N_e_ion += y_times_xs(energy_ev + ionpot_ev, channel.xs_grid)
                     continue
 
@@ -2631,25 +2624,30 @@ class SpencerFanoSolver:
 
         return N_e
 
-    def _integrate_e_y_xs_shifted(self, xs_grid: npt.NDArray[np.float64], epsilon_ev: float) -> float:
-        # the integral over E in [0, E_0] of E y(E + eps) sigma(E + eps). y and sigma are linear between
-        # the grid points and zero outside the grid, as in y_times_xs() of calculate_N_e(). With
-        # E' = E + eps, the integrand (E' - eps) y(E') sigma(E') is a cubic in each grid cell. Simpson's
-        # rule on each cell part is therefore exact.
-        e_min = float(self.engrid[0])
-        e_max = float(self.engrid[-1])
-        lower = max(epsilon_ev, e_min)
-        upper = min(e_min + epsilon_ev, e_max)
-        if upper <= lower:
+    def _band_energy_below_e0(self, xs_vec: npt.NDArray[np.float64], epsilon_ev: float) -> float:
+        # the integral over [0, E_0] of E N(E) for the electrons of one excitation band (a transition or
+        # an autoionisation channel), for a unit level population. The value comes from the weights of
+        # the band in the matrix (see _add_excitation_band()), so the analysis and the matrix agree to
+        # rounding. An interpolation of N(E) between the grid points did not agree with the matrix where
+        # a cross section starts inside the range, and the heating was wrong by orders of magnitude.
+        # An excitation in column j of the band has the weight 1 in each row in (j - k, j], and the weight
+        # frac in row j - k. Each unit of weight takes deltaen from the electron, and a unit of weight in
+        # row 0 takes E_0 more (see E_init_ev in __init__). The excitation takes epsilon_ev. The rest is
+        # the energy of the electron below E_0. Only the columns j <= k have a weight in row 0, so the
+        # rest is zero in the other columns.
+        deltaen = self.deltaen
+        k = int(epsilon_ev / deltaen)
+        frac = epsilon_ev / deltaen - k
+        # the band has no cross section below this column (see _excitation_band_vectors())
+        jstart = self.get_energyindex_gteq(en_ev=epsilon_ev)
+        jstop = min(k, len(self.engrid) - 1) + 1
+        if jstart >= jstop:
             return 0.0
-        bounds = np.concatenate(([lower], self.engrid[(self.engrid > lower) & (self.engrid < upper)], [upper]))
-        nodes = np.concatenate((bounds, 0.5 * (bounds[:-1] + bounds[1:])))
-        values = (
-            (nodes - epsilon_ev) * np.interp(nodes, self.engrid, self.yvec) * np.interp(nodes, self.engrid, xs_grid)
-        )
-        values_bounds = values[: len(bounds)]
-        values_mid = values[len(bounds) :]
-        return float(np.sum(np.diff(bounds) / 6.0 * (values_bounds[:-1] + 4.0 * values_mid + values_bounds[1:])))
+        j = np.arange(jstart, jstop)
+        weight_total = np.minimum(j + 1, k) + np.where(j >= k, frac, 0.0)
+        weight_row0 = np.where(j < k, 1.0, frac)
+        energy_below_e0_ev = deltaen * weight_total + float(self.engrid[0]) * weight_row0 - epsilon_ev
+        return float(np.dot(xs_vec[jstart:jstop] * self.yvec[jstart:jstop], energy_below_e0_ev) * deltaen)
 
     def calculate_frac_heating(self) -> float:
         # fraction of the deposited energy that heats the free thermal electrons: Kozma &
@@ -2682,31 +2680,27 @@ class SpencerFanoSolver:
         # N_e term below E_0 would count the same energy twice. calculate_N_e() itself still
         # gives the secondary-electron rate of the approximate solution.
         if not self.heating_only_approximation:
-            # the ionisation terms of E * N_e(E) are smooth over [0, E_0], so Simpson's rule gives
-            # 5e-5 of the converged value at 9 nodes, where the trapezoid rule needs several hundred.
-            # Every node costs a full calculate_N_e().
+            # the ionisation terms of E * N_e(E) are smooth over [0, E_0]. Simpson's rule therefore
+            # gives 5e-5 of the converged value at 9 nodes. The trapezoid rule needs several hundred.
             arr_en = np.linspace(0.0, E_0, num=NPTS_SUB_E0_INTEGRAL, endpoint=True, dtype=np.float64)
             arr_en_N_e = np.array(
-                [en_ev * self._calculate_N_e(en_ev, skip_step_terms=True) for en_ev in arr_en], dtype=np.float64
+                [en_ev * self._calculate_N_e(en_ev, include_excitation_terms=False) for en_ev in arr_en],
+                dtype=np.float64,
             )
             integral_e_n_e = integrate_simpson_uniform(arr_en_N_e, arr_en)
 
-            # An excitation-like term y(E + eps) sigma(E + eps) is zero where E + eps is outside the
-            # grid. For eps < E_0, or for eps > emax_ev - E_0, it has a step inside [0, E_0], and Simpson's
-            # rule on 9 nodes cannot resolve the step: for eps=0.5 eV and emin_ev=100 eV the heating was
-            # 8 times too large. These terms get an exact integral.
-            e_min = float(self.engrid[0])
-            e_max = float(self.engrid[-1])
+            # the excitation terms of N(E): every transition, and every autoionisation channel. A term is
+            # zero where E + eps is outside the grid, so it can have a step inside [0, E_0]. The rule
+            # of Simpson cannot resolve a step, so the energy comes from the band of the term in the matrix.
             for Z, ion_stage in self._get_all_ions():
                 for trans in self.excitationlists.get((Z, ion_stage), {}).values():
-                    if not e_min <= trans.epsilon_trans_ev <= e_max - e_min:
-                        integral_e_n_e += trans.levelnumberdensity * self._integrate_e_y_xs_shifted(
-                            trans.xs_vec, trans.epsilon_trans_ev
-                        )
+                    integral_e_n_e += trans.levelnumberdensity * self._band_energy_below_e0(
+                        trans.xs_vec, trans.epsilon_trans_ev
+                    )
                 n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
                 for channel in self._ionisation_channels.get((Z, ion_stage), ()):
-                    if channel.autoionisation and not e_min <= channel.ionpot_ev <= e_max - e_min:
-                        integral_e_n_e += n_ion * self._integrate_e_y_xs_shifted(channel.xs_grid, channel.ionpot_ev)
+                    if channel.autoionisation:
+                        integral_e_n_e += n_ion * self._band_energy_below_e0(channel.xs_grid, channel.ionpot_ev)
 
             frac_heating_N_e = integral_e_n_e / self.deposition_ev_per_s_per_cm3
 
@@ -3194,10 +3188,6 @@ class SpencerFanoSolver:
             ax = axis
 
         E_0 = self.engrid[0]
-
-        # E_init_ev = np.dot(engrid, sourcevec) * deltaen
-        # d_etasource_by_d_en_vec = engrid * sourcevec / E_init_ev
-        # axes[0].plot(engrid[1:], d_etasource_by_d_en_vec[1:], marker="None", lw=1.5, color='blue', label='Source')
 
         d_etaion_by_d_en_vec = self.get_d_etaion_by_d_en_vec()
 
