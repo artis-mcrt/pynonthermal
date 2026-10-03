@@ -410,10 +410,11 @@ class SpencerFanoSolver:
         lotz_a_cm2_ev2 is the constant A [cm^2 eV^2] of the Lotz formula
         sigma = A q ln(E / P) / (E P). The built-in cross section of every shell without a fit
         uses this formula (every element above Ni, and some ions below it). The default is the
-        Axelrod value of 1.33e-14, and pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967 is the Lotz
-        value of 4.5e-14. See the comment in pynonthermal.axelrod for the references. The solver
-        warns with a LotzApproximationWarning when it adds a Lotz channel. The estimate of the
-        work function in the verbose output also uses the constant, for every shell.
+        Lotz value of 4.5e-14, and pynonthermal.axelrod.LOTZ_A_CM2_EV2_AXELROD1980 is the
+        alternative Axelrod value of 1.33e-14. See the comment in pynonthermal.axelrod for the
+        references. The solver warns with a LotzApproximationWarning when it adds a Lotz channel.
+        The estimate of the work function in the verbose output also uses the constant, for every
+        shell.
 
         Every method takes Z and ion_stage as integers, with ion_stage from 1 to Z + 1.
         """

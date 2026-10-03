@@ -107,7 +107,7 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   with the heating loss alone. The rates still follow from that approximate solution, so the fractions do
   not sum to one.
 - `lotz_a_cm2_ev2`: the constant of the Lotz formula for the shells without a fitted cross section
-  (default `1.33e-14`, the Axelrod value; see [Cross-section datasets](#cross-section-datasets)).
+  (default `4.5e-14`, the Lotz value; see [Cross-section datasets](#cross-section-datasets)).
 
 ### 2. Set the temperature and the atomic data
 
@@ -373,7 +373,7 @@ The ionisation cross sections from H (Z=1) to Ni (Z=28) use the shell-resolved a
 
 `use_ar1985=True` selects the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) compilation without the Fe updates, for a comparison with older published results.
 
-The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solver takes it as `lotz_a_cm2_ev2` (in cm^2 eV^2). The default of `1.33e-14` is the value of Axelrod (1980). Lotz (1967, Z. Phys., 206, 205–211) gives `4.5e-14` for most shells, available as `pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967`. The fits of Arnaud and Rothenflug (1985) agree with the Lotz value at high energy. The default is therefore a factor of about 3 below both. The solver gives a `pynonthermal.LotzApproximationWarning` when it adds a Lotz channel, so that the ions that depend on this constant are visible. Filter on that class to silence the warning.
+The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solver takes it as `lotz_a_cm2_ev2` (in cm^2 eV^2). The default of `4.5e-14` is the value that Lotz (1967, Z. Phys., 206, 205–211) gives for most shells in the form of the formula with one parameter. Lotz gives this form for highly charged ions, so the value is less accurate for a neutral atom or an ion of low charge. The fits of Arnaud and Rothenflug (1985) agree with the Lotz value at high energy. Axelrod (1980) used the alternative value `1.33e-14`, which he normalised at 10 keV. It is a factor of about 3 below the Lotz value, and it is available as `pynonthermal.axelrod.LOTZ_A_CM2_EV2_AXELROD1980`. The solver gives a `pynonthermal.LotzApproximationWarning` when it adds a Lotz channel, so that the ions that depend on this constant are visible. Filter on that class to silence the warning.
 
 ## Advanced usage: custom cross sections
 
