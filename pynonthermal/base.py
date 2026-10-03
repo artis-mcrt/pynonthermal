@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import warnings
 from collections.abc import Callable
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,6 +19,16 @@ DATADIR = Path(__file__).absolute().parent / "data"
 # ion_stage is one more than the charge. A caller who uses the charge gives a stage of 0 for a
 # neutral atom, so the messages that reject a stage below 1 give this hint.
 ION_STAGE_HINT: str = "ion_stage is one more than the charge, so a neutral atom is ion_stage 1"
+
+# The warnings of the package name the line of the caller outside the modules of the package,
+# whatever the depth of the call inside them. A fixed stacklevel names a line in the package when the
+# depth changes. The prefixes are the module files and not the directory, because the directory
+# also holds the tests, whose lines a warning must name.
+_PACKAGE_MODULE_FILES: tuple[str, ...] = tuple(str(path) for path in Path(__file__).parent.glob("*.py"))
+
+
+def _warn(message: str, category: type[Warning] = UserWarning) -> None:
+    warnings.warn(message, category, stacklevel=2, skip_file_prefixes=_PACKAGE_MODULE_FILES)
 
 
 def _is_integer(value: object) -> bool:
@@ -124,8 +135,11 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
         msg = f"the free-electron loss function requires a positive finite energy but energy_ev is {energy_ev}"
         raise ValueError(msg)
 
+    # Python floats, because a numpy float32 argument would make the products below float32. The
+    # factor QE**4 is about 5e-37, so the loss rate would then underflow to zero.
+    n_e_cgs = float(n_e_cgs)
     n_e = n_e_cgs
-    energy = energy_ev * EV  # convert eV to erg
+    energy = float(energy_ev) * EV  # convert eV to erg
 
     omegap = math.sqrt(4 * math.pi * n_e_cgs * QE**2 / ME)
     zetae = H * omegap / 2 / math.pi

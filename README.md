@@ -120,7 +120,8 @@ The solver has one temperature. Set it before any excitation with LTE level popu
 needed otherwise.
 
 `set_atomic_data()` chooses the level data for the excitations and how to build their cross sections.
-`adata_polars` takes your own level/transition table in the format of `artistools.atomic.get_levels()`;
+`adata_polars` takes your own level/transition table in the format of `artistools.atomic.get_levels()`
+with `get_transitions=True` and `derived_transitions_columns=["epsilon_trans_ev", "lower_g", "upper_g"]`;
 the other options default to the ARTIS values (collision strengths where available, and transitions from
 the lowest 5 levels up to the lowest 250). Without this call the solver uses the internal database with
 those defaults.

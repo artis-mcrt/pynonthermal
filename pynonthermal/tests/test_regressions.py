@@ -7,6 +7,7 @@ add noise to the tracked benchmark set. Performance-relevant cases live in test_
 
 import itertools
 import math
+import pickle
 import typing as t
 import warnings
 
@@ -371,10 +372,12 @@ def test_quadrature_resolution_constants_are_adequate() -> None:
 
     # emin_ev has to cover the large values add_ionisation's own error message steers users towards
     # ("set emin_ev <= {lowest ionpot} eV"), not just the default grid where this term is negligible
+    # read the constant before the monkeypatch, which changes it to 129 for the converged value
+    npts_configured = spencerfano.NPTS_SUB_E0_INTEGRAL
     for emin_ev, Z in ((7.9, 26), (15.7, 18), (24.5, 2)):
         with pytest.MonkeyPatch.context() as mp:
             converged = frac_heating(mp, 129, emin_ev, Z)
-            asconfigured = frac_heating(mp, spencerfano.NPTS_SUB_E0_INTEGRAL, emin_ev, Z)
+            asconfigured = frac_heating(mp, npts_configured, emin_ev, Z)
         assert math.isclose(asconfigured, converged, rel_tol=1e-3), (
             f"emin_ev={emin_ev}: the configured resolution gives frac_heating={asconfigured}"
             f" against a converged {converged}"
@@ -1113,3 +1116,116 @@ def test_lotz_constant_is_configurable() -> None:
                     channel_scaled.xs(arr_en_ev), expected_factor * channel_default.xs(arr_en_ev), rtol=1e-12
                 )
                 assert np.allclose(channel_scaled.xs_grid, expected_factor * channel_default.xs_grid, rtol=1e-12)
+
+
+def test_heating_of_an_excitation_below_emin() -> None:
+    # The excitation term of N(E) needs y(E + eps), which is zero below emin_ev. For eps < emin_ev
+    # the integrand of the heating below E_0 therefore has a step at E_0 - eps. Simpson's rule on
+    # 9 nodes gave a heating 8 times too large and a fraction sum of 1.25 for this plasma.
+    with pynonthermal.SpencerFanoSolver(emin_ev=100, emax_ev=3000, npts=3000) as sf:
+        sf.add_excitation(1, 1, 1e9, lambda en_ev: np.where(en_ev >= 0.5, 1e-16, 0.0), epsilon_trans_ev=0.5)
+        sf.override_n_e(1e3)
+        sf.solve(deposition_ev_per_s_per_cm3=1.0)
+        assert math.isclose(sf.get_frac_sum(), 1.0, rel_tol=1e-3)
+
+
+def test_energy_fractions_of_the_heating_only_case_sum_to_one() -> None:
+    # the source normalisation and rhsvec must agree. They disagreed by deltaen per source
+    # electron, which made every energy fraction too large by deltaen / E_init_ev.
+    for npts in (30, 200, 4096):
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=npts) as sf:
+            sf.override_n_e(1e6)
+            sf.solve(deposition_ev_per_s_per_cm3=1.0)
+            assert math.isclose(sf.get_frac_heating(), 1.0, rel_tol=1e-12)
+
+
+def test_verbose_analysis_does_not_raise_where_the_quiet_analysis_succeeds(capsys: pytest.CaptureFixture[str]) -> None:
+    # the work function estimate of the verbose output needs the shell tables, which stop at Z=108,
+    # and a total population above zero
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, verbose=True) as sf:
+        sf.add_ionisation_channel(110, 2, 1e8, 20.0, lambda en_ev: np.where(en_ev > 20.0, 1e-16, 0.0))
+        sf.override_n_e(1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        sf.get_frac_sum()
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, verbose=True) as sf:
+        sf.add_ionisation_channel(8, 2, 0.0, 40.0, lambda en_ev: np.where(en_ev > 40.0, 1e-17, 0.0))
+        sf.add_excitation(8, 2, 0.0, np.zeros(200), 5.0)
+        sf.override_n_e(1e6)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        sf.get_frac_sum()
+    capsys.readouterr()
+
+
+def test_rejected_calls_leave_the_solver_unchanged() -> None:
+    with pynonthermal.SpencerFanoSolver(npts=200) as sf:
+        # an unhashable key raises before the first write
+        with pytest.raises(TypeError):
+            sf.add_excitation(26, 2, 1e5, np.zeros(200), 5.0, transitionkey=[0, 1])
+        assert sf.excitationlists == {}
+
+        # the deprecated method restores the temperature and the options of the solver
+        with (
+            pytest.warns(DeprecationWarning, match="add_ion_ltepopexcitation"),
+            pytest.raises(ValueError, match="n_ion must be non-negative"),
+        ):
+            sf.add_ion_ltepopexcitation(26, 2, -1.0, maxnlevelslower=10)
+        assert sf.temperature is None
+        assert sf._maxnlevelslower == 5
+
+        # a bad rate coefficient raises before the level data is read or the temperature is needed
+        with pytest.raises(ValueError, match="recombination rate coefficient of Z=8 ion_stage 2"):
+            sf.add_element(8, 1e8, recomb_ratecoeffs={2: math.nan}, excitation=True)
+        assert sf.adata_polars is None
+
+    with pynonthermal.SpencerFanoSolver(emin_ev=12, npts=200) as sf, warnings.catch_warnings():
+        # the rate coefficient warning comes only after every check of the call
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="below emin_ev"):
+            sf.add_element(26, 1e8, recomb_ratecoeffs={2: 1e-19, 3: 1e-12})
+
+
+def test_ionisation_channel_checks_the_ion() -> None:
+    # a charge in place of the ion stage gave a channel with the J of the wrong stage
+    engrid = np.linspace(1.0, 3000.0, 200)
+    with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
+        pynonthermal.IonisationChannel.from_xs(
+            engrid, 2, 0, 24.59, lambda en_ev: np.where(en_ev > 24.59, 1e-16, 0.0), "k"
+        )
+
+
+def test_shared_tables_are_not_writable() -> None:
+    # the cached tables are shared by every solver and every channel
+    nist = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    with pytest.raises(TypeError):
+        nist[(8, 1)] = 1.0  # ty: ignore[invalid-assignment]
+    with pynonthermal.SpencerFanoSolver(npts=100) as sf:
+        sf.dfcollion[0, "A"] = 1e3
+    assert pynonthermal.collion.read_colliondata()[0, "A"] != 1e3
+
+
+def test_solver_with_channels_can_be_pickled() -> None:
+    # multiprocessing and joblib pickle a solver, so the cross sections of the channels must not be closures
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_ionisation(8, 2, 1e8)
+        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid > 60.0, 1e-18, 0.0))
+        sf.solve(deposition_ev_per_s_per_cm3=1e3)
+        sf_copy = pickle.loads(pickle.dumps(sf))  # noqa: S301
+        assert sf_copy.get_frac_sum() == sf.get_frac_sum()
+
+
+def test_population_of_a_numpy_float32_is_a_python_float() -> None:
+    # a float32 population made the loss function float32, which underflowed to zero
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_ionisation(26, 2, np.float32(1e-10))  # ty: ignore[invalid-argument-type]
+        sf.solve(deposition_ev_per_s_per_cm3=1.0)
+        assert type(sf.get_n_e()) is float
+
+
+def test_auger_energy_warning_names_the_line_of_the_caller() -> None:
+    # the warning must name this file on every path, whatever the depth of the call in the package
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        xs_vec = np.where(sf.engrid > 40.0, 1e-17, 0.0)
+        for xs in (xs_vec, lambda en_ev: np.where(en_ev > 40.0, 1e-17, 0.0)):
+            with pytest.warns(UserWarning, match="less than the energy that the ion must keep") as record:
+                sf.add_ionisation_channel(8, 1, 1e8, 40.0, xs, n_ejected=2)
+            assert {warning.filename for warning in record} == {__file__}
