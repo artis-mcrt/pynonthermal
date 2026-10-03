@@ -17,7 +17,7 @@ Given a set of ions with number densities and an energy deposition rate, pynonth
 - the **fraction of the deposited energy** that goes to heating, ionisation, and excitation, per channel and per ion;
 - the **non-thermal ionisation rate coefficients** of each ion and the **excitation rate coefficients** of bound-bound transitions, for non-LTE plasma models.
 
-These quantities are important in models of the late-time spectra and light curves of Type Ia and core-collapse supernovae, where non-thermal ionisation can dominate over photoionisation. The solver follows the method of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (see [Method background](#method-background) for details and further references). It includes the atomic data that it needs: ionisation cross sections for a wide range of ions, and level and transition data for bound-bound excitation.
+These quantities are important in models of the late-time spectra and light curves of Type Ia and core-collapse supernovae, where non-thermal ionisation can dominate over photoionisation. The solver follows the method of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (see [Method background](#method-background) for details and further references). It includes the atomic data that it needs: ionisation cross sections for a wide range of ions, and level and transition data for bound-bound excitation.
 
 ## Contents
 - [Installation](#installation)
@@ -95,13 +95,13 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
   Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
   use. The default `emax_ev` covers the K-shell ionisation of iron at about 7 keV. Lower it to 3000 eV
-  to match [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract). `emin_ev` also sets the highest free electron density that the
+  to match [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract). `emin_ev` also sets the highest free electron density that the
   solver accepts, because the Coulomb logarithm of the loss function must stay positive at the bottom
   of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time; check
   `get_frac_sum()`.
 - `verbose`: print the setup, each added ionisation channel, and a per-ion, per-shell breakdown.
-- `use_ar1985`: use the original Arnaud & Rothenflug (1985) ionisation cross sections
+- `use_ar1985`: use the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) ionisation cross sections
   (see [Cross-section datasets](#cross-section-datasets)).
 - `heating_only_approximation`: leave the excitation and ionisation loss terms out of the matrix and solve
   with the heating loss alone. The rates still follow from that approximate solution, so the fractions do
@@ -321,7 +321,7 @@ The [iron ionisation balance notebook](https://github.com/lukeshingles/pynonther
 
 ## Complete example: pure-oxygen plasma
 
-This reproduces Figure 2 of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract): a pure-oxygen plasma with the electron fraction
+This reproduces Figure 2 of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract): a pure-oxygen plasma with the electron fraction
 x_e = 0.01, with both ionisation and excitation channels. With `verbose=True` the solver prints its
 setup and a per-ion, per-shell breakdown as it runs.
 
@@ -361,11 +361,11 @@ The plot shows the energy distribution of the contributions to ionisation, excit
 
 ## Method background
 
-The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)). That code is an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172–1181, doi:10.1103/PhysRev.93.1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). [CMFGEN](https://kookaburra.phyast.pitt.edu/hillier/web/CMFGEN.htm) uses a similar approach.
+The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)). That code is an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172–1181, doi:10.1103/PhysRev.93.1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). [CMFGEN](https://kookaburra.phyast.pitt.edu/hillier/web/CMFGEN.htm) uses a similar approach.
 
 The solver discretises the integral form of the Kozma and Fransson degradation equation (their equation 7) on a uniform energy grid as an upper-triangular matrix equation. It solves that equation by back-substitution from the highest energy downward. The `SpencerFanoSolver` class docstring maps each term of the equation to the method that implements it, and the code comments cite the specific Kozma and Fransson equations at each site. The secondary-electron energy distribution follows [Opal, Peterson and Beaty (1971, J. Chem. Phys., 55, 4100–4106, doi:10.1063/1.1676707)](https://ui.adsabs.harvard.edu/abs/1971JChPh..55.4100O/abstract) as Kozma and Fransson applied it. The energy loss rate to the thermal electrons uses their Coulomb-logarithm prescription, after [Schunk and Hays (1971, Planet. Space Sci., 19, 113–117, doi:10.1016/0032-0633(71)90071-7)](https://ui.adsabs.harvard.edu/abs/1971P%26SS...19..113S/abstract).
 
-The internal level and transition data, which `add_ion_excitation()` uses, come from the CMFGEN atomic data compilation (see the source data files for references). The solver computes the excitation cross sections from the tabulated collision strengths ([Li, Dessart and Hillier 2012, MNRAS, 426, 1671–1686, doi:10.1111/j.1365-2966.2012.21198.x, equation 11](https://doi.org/10.1111/j.1365-2966.2012.21198.x)). For a permitted transition without a collision strength, it uses the oscillator strength with the approximation of [van Regemorter (1962, ApJ, 136, 906–915, doi:10.1086/147445)](https://ui.adsabs.harvard.edu/abs/1962ApJ...136..906V/abstract) and the g-bar factor of [Mewe (1972, A&A, 20, 215–221)](https://ui.adsabs.harvard.edu/abs/1972A%26A....20..215M/abstract), as [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract) describes in section 2.5.
+The internal level and transition data, which `add_ion_excitation()` uses, come from the CMFGEN atomic data compilation (see the source data files for references). The solver computes the excitation cross sections from the tabulated collision strengths ([Li, Hillier and Dessart 2012, MNRAS, 426, 1671–1686, doi:10.1111/j.1365-2966.2012.21198.x, equation 11](https://doi.org/10.1111/j.1365-2966.2012.21198.x)). For a permitted transition without a collision strength, it uses the oscillator strength with the approximation of [van Regemorter (1962, ApJ, 136, 906–915, doi:10.1086/147445)](https://ui.adsabs.harvard.edu/abs/1962ApJ...136..906V/abstract) and the g-bar factor of [Mewe (1972, A&A, 20, 215–221)](https://ui.adsabs.harvard.edu/abs/1972A%26A....20..215M/abstract), as [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract) describes in section 2.5.
 
 ## Cross-section datasets
 
@@ -433,7 +433,7 @@ with pynonthermal.SpencerFanoSolver() as sf:
   level population then follows the ion population, whether it is fixed or comes from a balance.
 - `epsilon_trans_ev`: the transition energy in eV. It must be positive and no greater than `emax_ev`,
   since no electron the solver represents could otherwise drive the transition. Transitions below
-  `emin_ev` are allowed here, but `add_element(excitation=True)` drops them. [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract)
+  `emin_ev` are allowed here, but `add_element(excitation=True)` drops them. [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract)
   take every electron below `emin_ev` to have thermalised, so that energy counts as heating instead.
 - `xs_vec`, and `transitionkey`: the key to pass to `get_excitation_ratecoeff()`.
 
@@ -444,7 +444,7 @@ thermalises below `emin_ev`, which is a small part of the heating fraction. An
 [autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as
 `add_excitation()` does.
 
-The solver keeps the Lorentzian secondary-electron distribution of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (their equation 4),
+The solver keeps the Lorentzian secondary-electron distribution of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (their equation 4),
 whose width comes from `pynonthermal.collion.get_J()`. The matrix fill integrates that distribution
 analytically, so its shape is not adjustable. An [excitation autoionisation](#excitation-autoionisation)
 channel does not use that distribution.
@@ -620,7 +620,7 @@ The default Auger electron energy then comes from that lowest level.
 
 ## Citing pynonthermal
 
-If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171296)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
+If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
 
 ## License
 
