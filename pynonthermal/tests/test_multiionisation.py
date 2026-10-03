@@ -607,13 +607,16 @@ def test_autoionisation_validation() -> None:
         assert sf_low._ionisation_channels[(10, 1)][0].auger_electron_energy_ev == 0.0
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        # a value from the caller gives a warning when the ion keeps less than the NIST potential, and
-        # it must leave the ion a positive energy
-        with (
-            pytest.warns(UserWarning, match="Set auger_electron_energy_ev to at most"),
-            pytest.raises(ValueError, match="less than ionpot_ev"),
-        ):
-            sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=True, auger_electron_energy_ev=48.0)
+        # a value from the caller must leave the ion a positive energy. A value outside the range, or
+        # nan, gives only the error and no warning first, so that warnings as errors still show it.
+        for auger_ev in (48.0, math.nan):
+            with pytest.raises(ValueError, match="less than ionpot_ev"):
+                sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=True, auger_electron_energy_ev=auger_ev)
+        # a value in the range that leaves the ion less than the NIST potential gives a warning
+        with pytest.warns(UserWarning, match="Set auger_electron_energy_ev to at most"):
+            pynonthermal.IonisationChannel.from_xs(
+                sf.engrid, 10, 1, 48.0, xs, "warned", autoionisation=True, auger_electron_energy_ev=40.0
+            )
         for autoionisation in ("yes", 1, None):
             with pytest.raises(TypeError, match="autoionisation must be True or False"):
                 sf.add_ionisation_channel(10, 1, 1e8, 48.0, xs, autoionisation=autoionisation)  # ty: ignore[invalid-argument-type]
