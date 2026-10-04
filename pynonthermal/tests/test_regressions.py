@@ -1300,3 +1300,145 @@ def test_negative_level_weight_rejects_the_call() -> None:
             sf.add_element(8, 1e8, recomb_ratecoeffs={3: 3e-12}, excitation=True)
         assert sf.ionpopdict == {}
         assert sf.excitationlists == {}
+
+
+def test_heating_at_a_low_free_electron_fraction() -> None:
+    # N(E) took y between the grid points from a linear interpolation, also from the grid point below
+    # the threshold, where y holds only the losses to the free electrons. At a low free electron
+    # fraction that y is much larger, and the heating was 2.6 times too large at x_e = 1e-6.
+    for x_e in (1e-3, 1e-6):
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=1000) as sf:
+            sf.add_element(26, ion_densities={1: 1e8 * (1 - x_e), 2: 1e8 * x_e})
+            sf.solve(deposition_ev_per_s_per_cm3=1e3)
+            assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=0.03)
+
+
+def test_numpy_scalar_inputs_give_python_floats() -> None:
+    # a numpy float16 overflowed in the products of the analysis and of the balance
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        sf.add_element(8, ion_densities={1: 0.99e8, 2: 0.01e8})
+        sf.add_excitation(8, 1, 1e5, np.full(300, 1e-17), np.float16(5.0))  # ty: ignore[invalid-argument-type]
+        sf.solve(deposition_ev_per_s_per_cm3=np.float16(1000.0))  # ty: ignore[invalid-argument-type]
+        assert type(sf.deposition_ev_per_s_per_cm3) is float
+        assert math.isfinite(sf.get_frac_sum())
+        assert 10.0 < sf.get_eff_ionpot(8, 1) < 1e3
+    assert math.isclose(
+        pynonthermal.ionbalance.get_saha_factor(np.float16(1e4), 13.6, 2.0, 1.0),  # ty: ignore[invalid-argument-type]
+        pynonthermal.ionbalance.get_saha_factor(1e4, 13.6, 2.0, 1.0),
+        rel_tol=1e-12,
+    )
+
+
+def test_getters_and_flags_check_their_arguments() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_element(8, ion_densities={1: 0.99e8, 2: 0.01e8})
+        sf.solve(deposition_ev_per_s_per_cm3=1e3)
+        # the charge in place of the ion stage, and a string, give the ion check and not 0.0
+        with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
+            sf.calculate_nt_frac_excitation_ion(8, 0)
+        assert sf.calculate_nt_frac_excitation_ion(8, 1) == 0.0
+        with pytest.raises(ValueError, match="Z must be an integer"):
+            sf.get_frac_ionisation_ion("8", 2)  # ty: ignore[invalid-argument-type]
+        with pytest.raises(ValueError, match="Z must be an integer"):
+            sf.get_ion_fractions("8")  # ty: ignore[invalid-argument-type]
+        with pytest.raises(ValueError, match="energy_ev must be at least zero"):
+            sf.calculate_N_e(-1.0)
+        assert isinstance(sf.get_d_etaheating_by_d_en_vec(), np.ndarray)
+    # a string is true in a condition, so a flag must be a bool
+    with pytest.raises(TypeError, match="heating_only_approximation must be True or False"):
+        pynonthermal.SpencerFanoSolver(npts=100, heating_only_approximation="False")  # ty: ignore[invalid-argument-type]
+    with pynonthermal.SpencerFanoSolver(npts=100) as sf:
+        with pytest.raises(TypeError, match="builtin_channels must be True or False"):
+            sf.add_element(8, ion_densities={2: 1e8}, builtin_channels="False")  # ty: ignore[invalid-argument-type]
+        # a nan cutoff disabled the cutoff, and a cutoff below one dropped every transition
+        for cutoff in (math.nan, 0, "5"):
+            with pytest.raises(ValueError, match="maxnlevelslower must be None or an integer"):
+                sf.set_atomic_data(maxnlevelslower=cutoff)  # ty: ignore[invalid-argument-type]
+        assert sf._maxnlevelslower == 5
+        with pytest.raises(TypeError, match="use_collstrengths must be True or False"):
+            sf.set_atomic_data(use_collstrengths="False")  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError, match="ion_stage is one more than the charge"):
+        pynonthermal.axelrod.get_shell_occupancies(26, 0)
+
+
+def test_plot_spec_channels_on_an_unsolved_solver_opens_no_figure() -> None:
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    figures_before = len(plt.get_fignums())
+    with pynonthermal.SpencerFanoSolver(npts=100) as sf, pytest.raises(RuntimeError, match="must be solved first"):
+        sf.plot_spec_channels()
+    assert len(plt.get_fignums()) == figures_before
+
+
+def test_ionbalance_checks_and_edge_cases() -> None:
+    ionbalance = pynonthermal.ionbalance
+    # an iterator gave one stage, because the check used it up
+    assert ionbalance.get_ion_fractions(iter([1e3, 1e2]), 1e2) == ionbalance.get_ion_fractions([1e3, 1e2], 1e2)  # ty: ignore[invalid-argument-type]
+    # a first lower bracket that underflows gives the message of the module
+    with pytest.raises(ValueError, match="below the range of a double precision number"):
+        ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e-270, 1, [1e-3])])
+    with pytest.raises(ValueError, match="the lowest ion stage must be an integer"):
+        ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e6, 1.5, [1e5])])  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError, match="ratio coefficients must be non-negative"):
+        ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e6, 1, [-1.0])])
+
+
+def test_balance_with_a_low_free_electron_density_converges() -> None:
+    # with a free electron density far below the ion charges, the ions take most of the energy, and the
+    # mixing alone needed more than BALANCE_MAXITER iterations. Anderson acceleration fixes that.
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf,
+        warnings.catch_warnings(),
+    ):
+        # the top stage of this short chain takes a part of the ionisation, which is not the subject here
+        warnings.simplefilter("ignore", UserWarning)
+        sf.add_element(8, 1e8, recomb_ratecoeffs={2: 1e-11, 3: 3e-11, 4: 1e-10})
+        sf.override_n_e(1.0)
+        sf.solve(deposition_ev_per_s_per_cm3=0.1)
+        assert sf.balance_iterations < spencerfano.BALANCE_MAXITER
+
+
+def test_balance_without_any_ionisation_names_the_cause() -> None:
+    # every threshold of O I is above emax_ev, so no ion leaves the neutral stage
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=12, npts=200) as sf:
+        sf.add_element(8, 1e8, recomb_ratecoeffs={2: 1e-12, 3: 3e-12})
+        with pytest.raises(ValueError, match="zero at every energy of the grid"):
+            sf.solve(deposition_ev_per_s_per_cm3=1e8)
+
+
+def test_charge_neutral_root_find_checks_the_charge_density() -> None:
+    # a charge density outside the bounds, or nan, gave a wrong root with no error
+    for charge_density, bounds in ((lambda _n_e: 5.0, (0.0, 1.0)), (lambda _n_e: math.nan, (0.0, 10.0))):
+        with pytest.raises(ValueError, match="which is not between charge_density_min"):
+            pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, charge_density, *bounds)
+
+
+def test_pickle_protocol_4_keeps_the_arrays_read_only() -> None:
+    # numpy keeps the read-only flag only with protocol 5, and multiprocessing can use protocol 4
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_element(8, ion_densities={1: 1e5, 2: 1e4})
+        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid > 60.0, 1e-18, 0.0))
+        sf.solve(deposition_ev_per_s_per_cm3=1e3)
+        sf_copy = pickle.loads(pickle.dumps(sf, protocol=4))  # noqa: S301
+        for array in (sf_copy.engrid, sf_copy.yvec, sf_copy._ionisation_channels[(8, 2)][0].xs_grid):
+            with pytest.raises(ValueError, match="read-only"):
+                array[0] = 0.0
+
+
+def test_default_key_does_not_collide_with_a_named_key() -> None:
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
+        sf.add_excitation(8, 2, 1e3, np.full(200, 1e-18), 10.0, transitionkey=1)
+        sf.add_excitation(8, 2, 1e3, np.full(200, 1e-18), 12.0)
+        assert set(sf.excitationlists[(8, 2)]) == {1, 2}
+        xs = np.where(sf.engrid > 60.0, 1e-18, 0.0)
+        sf.add_ionisation_channel(8, 2, 1e4, 60.0, xs, channelkey=1)
+        sf.add_ionisation_channel(8, 2, 1e4, 70.0, np.where(sf.engrid > 70.0, 1e-18, 0.0))
+        assert [channel.key for channel in sf._ionisation_channels[(8, 2)]] == [1, 2]
+
+
+def test_population_arguments_check_their_types() -> None:
+    with pynonthermal.SpencerFanoSolver(npts=100) as sf:
+        with pytest.raises(ValueError, match="n_ion must be non-negative and finite but is True"):
+            sf.add_ionisation(8, 1, True)
+        with pytest.raises(TypeError, match="ion_fractions must be a mapping"):
+            sf.add_element(8, 1e8, ion_fractions=[0.3, 0.7])  # ty: ignore[invalid-argument-type]

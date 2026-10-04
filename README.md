@@ -94,7 +94,8 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 - `emin_ev`, `emax_ev`: the bounds of the uniform energy grid in eV (defaults `0.1` and `16000.0`). An
   electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
   Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
-  use. The default `emax_ev` covers the K-shell ionisation of iron at about 7 keV. Lower it to 3000 eV
+  use. The default `emax_ev` is 16 keV. The built-in channels of Fe I to Fe XIV hold only their n=3 and
+  n=4 shells, so add an inner shell of iron with `add_ionisation_channel()` if it matters. Lower `emax_ev` to 3000 eV
   to match [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract). `emin_ev` also sets the highest free electron density that the
   solver accepts, because the Coulomb logarithm of the loss function must stay positive at the bottom
   of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
@@ -274,7 +275,7 @@ coefficient in m^3 s^-1 is 1e-6 of the same coefficient in cm^3 s^-1. The solver
 
 The solution depends on the ion densities, so `solve()` iterates. It solves the equation, updates the
 densities from the balance and the free electron density from charge neutrality, and repeats until the
-ionisation rate coefficients agree to `balance_tol`. Typical cases converge in about 5 to 10 iterations.
+ionisation rate coefficients agree to `balance_tol`. Typical cases converge in about 5 to 15 iterations.
 A `RuntimeError` reports a balance that did not converge within 100. `sf.balance_iterations` says how
 many it took.
 
@@ -362,7 +363,7 @@ The plot shows the energy distribution of the contributions to ionisation, excit
 
 ## Method background
 
-The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)). That code is an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172–1181, doi:10.1103/PhysRev.93.1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). [CMFGEN](https://kookaburra.phyast.pitt.edu/hillier/web/CMFGEN.htm) uses a similar approach.
+The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)). That code is an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172–1181, doi:10.1103/PhysRev.93.1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). [CMFGEN](https://sites.pitt.edu/~hillier/web/CMFGEN.htm) uses a similar approach.
 
 The solver discretises the integral form of the Kozma and Fransson degradation equation (their equation 7) on a uniform energy grid as an upper-triangular matrix equation. It solves that equation by back-substitution from the highest energy downward. The `SpencerFanoSolver` class docstring maps each term of the equation to the method that implements it, and the code comments cite the specific Kozma and Fransson equations at each site. The secondary-electron energy distribution follows [Opal, Peterson and Beaty (1971, J. Chem. Phys., 55, 4100–4106, doi:10.1063/1.1676707)](https://ui.adsabs.harvard.edu/abs/1971JChPh..55.4100O/abstract) as Kozma and Fransson applied it. The energy loss rate to the thermal electrons uses their Coulomb-logarithm prescription, after [Schunk and Hays (1971, Planet. Space Sci., 19, 113–117, doi:10.1016/0032-0633(71)90071-7)](https://ui.adsabs.harvard.edu/abs/1971P%26SS...19..113S/abstract).
 
@@ -370,7 +371,7 @@ The internal level and transition data, which `add_ion_excitation()` uses, come 
 
 ## Cross-section datasets
 
-The ionisation cross sections from H (Z=1) to Ni (Z=28) use the shell-resolved analytical fits of [Arnaud and Rothenflug (1985, A&AS, 60, 425–457)](https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A/abstract), with the updates to Fe of [Arnaud and Raymond (1992, ApJ, 398, 394–406, doi:10.1086/171864)](https://ui.adsabs.harvard.edu/abs/1992ApJ...398..394A/abstract). For the heavier elements (Z>28) and any other ion without a fit, the solver uses the approximation of [Axelrod (1980, PhD thesis, University of California, Santa Cruz, equation 3.38)](https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A/abstract). That is the high-energy limit of the formula of [Lotz (1967, Z. Phys., 206, 205–211, doi:10.1007/BF01325928)](https://doi.org/10.1007/BF01325928) with relativistic corrections, with the subshell binding energies of [Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206)](https://doi.org/10.1364/JOSA.60.000206).
+The ionisation cross sections of H, He, C, N, O, Ne, Na, Mg, Al, Si, S, Ar, Ca, Fe, and Ni use the shell-resolved analytical fits of [Arnaud and Rothenflug (1985, A&AS, 60, 425–457)](https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A/abstract), with the updates to Fe of [Arnaud and Raymond (1992, ApJ, 398, 394–406, doi:10.1086/171864)](https://ui.adsabs.harvard.edu/abs/1992ApJ...398..394A/abstract). The fits of Co have no published source: they lie between the fits of Fe and Ni. For every other element and any other ion without a fit, the solver uses the approximation of [Axelrod (1980, PhD thesis, University of California, Santa Cruz, equation 3.38)](https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A/abstract). That is the high-energy limit of the formula of [Lotz (1967, Z. Phys., 206, 205–211, doi:10.1007/BF01325928)](https://doi.org/10.1007/BF01325928) with relativistic corrections, with the subshell binding energies of [Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206)](https://doi.org/10.1364/JOSA.60.000206).
 
 `use_ar1985=True` selects the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) compilation without the Fe updates, for a comparison with older published results.
 

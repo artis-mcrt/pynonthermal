@@ -10,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 
 import pynonthermal
+from pynonthermal.base import _check_ion
 from pynonthermal.base import get_betasq
 from pynonthermal.constants import CLIGHT
 from pynonthermal.constants import EV
@@ -89,6 +90,8 @@ def get_shell_occupancies(atomic_number: int, ion_stage: int) -> npt.NDArray[np.
     # electrons in each shell of one ion, taken from the neutral configuration with the outermost
     # electrons removed. Cached, like the two tables it reads, because every ionisation cross section
     # evaluation needs it and it depends only on the ion.
+    # an ion outside the tables gave a row of another element or a bare AssertionError
+    atomic_number, ion_stage = _check_ion(atomic_number, ion_stage)
     electron_binding = get_binding_energies()
     all_shells_q = get_shell_configs()
     nbound = atomic_number - ion_stage + 1

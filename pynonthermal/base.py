@@ -40,6 +40,15 @@ _PACKAGE_MODULE_FILES: tuple[str, ...] = tuple(
 )
 
 
+def _check_bool(value: object, name: str) -> bool:
+    # a Python or numpy bool, as a Python bool. A string such as "False" is true in a condition, so it
+    # must not pass.
+    if not isinstance(value, bool | np.bool_):
+        msg = f"{name} must be True or False but is {value!r}"
+        raise TypeError(msg)
+    return bool(value)
+
+
 def _is_integer(value: object) -> bool:
     # a Python or numpy integer, but not a bool, which is an int in Python
     return isinstance(value, (int, np.integer)) and not isinstance(value, bool)

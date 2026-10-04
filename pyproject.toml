@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.2", "setuptools_scm>=8"]
+requires = ["setuptools>=77", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,6 @@ name = "pynonthermal"
 authors = [{ name = "Luke J. Shingles", email = "luke.shingles@gmail.com" }]
 description = "A non-thermal electron deposition (Spencer-Fano equation) solver."
 classifiers = [
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
@@ -15,7 +14,8 @@ classifiers = [
 ]
 dynamic = ["version"]
 requires-python = ">=3.13"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 readme = { file = "README.md", content-type = 'text/markdown' }
 dependencies = [
     "artistools>=2026.4.20",
@@ -38,7 +38,7 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://www.github.com/lukeshingles/pynonthermal/"
+Repository = "https://github.com/artis-mcrt/pynonthermal"
 
 [tool.pyrefly]
 project-includes = ["pynonthermal"]
@@ -125,9 +125,10 @@ order-by-type = false
 
 [tool.setuptools]
 packages = ["pynonthermal"]
-include-package-data = true
-license-files = ["LICENSE"]
-exclude-package-data = { "pynonthermal" = [".*", ".venv", "venv"] }
+include-package-data = false
+
+[tool.setuptools.package-data]
+pynonthermal = ["py.typed", "data/**/*.txt", "data/**/*.zst"]
 
 [tool.setuptools_scm]
 version_file = "_version.py"

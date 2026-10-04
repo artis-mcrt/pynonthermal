@@ -16,6 +16,7 @@ from pynonthermal.axelrod import get_binding_energies
 from pynonthermal.axelrod import get_lotz_xs_ionisation_vec
 from pynonthermal.axelrod import get_shell_configs
 from pynonthermal.axelrod import LOTZ_A_CM2_EV2
+from pynonthermal.base import _check_bool
 from pynonthermal.base import _check_ion
 from pynonthermal.base import _is_integer
 from pynonthermal.base import _warn
@@ -234,6 +235,8 @@ def Psecondary(e_p: float, ionpot_ev: float, J: float, e_s: float = -1, epsilon:
 
 def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
     # returns an energy in eV
+    # a charge in place of the ion stage would give the J of the wrong stage
+    Z, ion_stage = _check_ion(Z, ion_stage)
     # values from Opal et al. 1971 as applied by Kozma & Fransson 1992. They are whole-atom measurements
     # dominated by valence-shell ionisation, but are used for every shell of the ion to match ARTIS.
     if ion_stage == 1:
@@ -485,10 +488,7 @@ class IonisationChannel:
         # a Python integer, so that the sum below cannot wrap around in a fixed-width numpy type
         n_ejected = int(n_ejected)
         # a numpy comparison gives a numpy bool, which is not a subclass of bool
-        if not isinstance(autoionisation, bool | np.bool_):
-            msg = f"autoionisation must be True or False but is {autoionisation!r}"
-            raise TypeError(msg)
-        autoionisation = bool(autoionisation)
+        autoionisation = _check_bool(autoionisation, "autoionisation")
         # the chained comparison also rejects nan
         if not 0.0 <= level_energy_ev < math.inf:
             msg = f"level_energy_ev must be at least zero and finite but is {level_energy_ev}"
