@@ -1078,6 +1078,9 @@ def test_lotz_constant_is_configurable() -> None:
     # every Lotz channel scales with lotz_a_cm2_ev2, the fit channels do not, and the solver warns
     # once per element about the ions that use the Lotz formula
     factor = 2.0
+    # the default is the value of Lotz (1967), and the value of Axelrod (1980) is the alternative
+    assert pynonthermal.axelrod.LOTZ_A_CM2_EV2 == pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967 == 4.5e-14
+    assert pynonthermal.axelrod.LOTZ_A_CM2_EV2_AXELROD1980 == 1.33e-14
     with pytest.raises(ValueError, match="lotz_a_cm2_ev2"):
         pynonthermal.SpencerFanoSolver(lotz_a_cm2_ev2=0.0)
     with (
@@ -1086,6 +1089,7 @@ def test_lotz_constant_is_configurable() -> None:
             emin_ev=1, emax_ev=3000, npts=300, lotz_a_cm2_ev2=factor * pynonthermal.axelrod.LOTZ_A_CM2_EV2
         ) as sf_scaled,
     ):
+        assert sf_default.lotz_a_cm2_ev2 == pynonthermal.axelrod.LOTZ_A_CM2_EV2
         # the constant is fixed for the life of the solver
         with pytest.raises(AttributeError):
             sf_scaled.lotz_a_cm2_ev2 = 1.0  # ty: ignore[invalid-assignment]

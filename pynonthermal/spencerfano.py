@@ -409,12 +409,13 @@ class SpencerFanoSolver:
 
         lotz_a_cm2_ev2 is the constant A [cm^2 eV^2] of the Lotz formula
         sigma = A q ln(E / P) / (E P). The built-in cross section of every shell without a fit
-        uses this formula (every element above Ni, and some ions below it). The default is the
-        Lotz value of 4.5e-14, and pynonthermal.axelrod.LOTZ_A_CM2_EV2_AXELROD1980 is the
-        alternative Axelrod value of 1.33e-14. See the comment in pynonthermal.axelrod for the
-        references. The solver warns with a LotzApproximationWarning when it adds a Lotz channel.
-        The estimate of the work function in the verbose output also uses the constant, for every
-        shell.
+        uses this formula: every element above Ni, every ion of Li, Be, B, F, P, Cl, K and Sc to Mn,
+        and Co IV and above. The default is pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967, the Lotz
+        value of 4.5e-14. pynonthermal.axelrod.LOTZ_A_CM2_EV2_AXELROD1980 is the alternative Axelrod
+        value of 1.33e-14, which earlier versions of pynonthermal used as the default. See the
+        comment in pynonthermal.axelrod for the references. The solver warns with a
+        LotzApproximationWarning when it adds a Lotz channel. The estimate of the work function in
+        the verbose output also uses the constant, for every shell.
 
         Every method takes Z and ion_stage as integers, with ion_stage from 1 to Z + 1.
         """
@@ -513,7 +514,12 @@ class SpencerFanoSolver:
 
     @property
     def lotz_a_cm2_ev2(self) -> float:
-        """The constant A [cm^2 eV^2] of the Lotz formula of the built-in channels without a fit."""
+        """The constant A [cm^2 eV^2] of the Lotz formula of the built-in channels without a fit.
+
+        The default is pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967, the Lotz value of 4.5e-14. The
+        alternative is pynonthermal.axelrod.LOTZ_A_CM2_EV2_AXELROD1980, the Axelrod value of 1.33e-14,
+        which earlier versions of pynonthermal used as the default.
+        """
         return self._lotz_a_cm2_ev2
 
     def __enter__(self) -> t.Self:

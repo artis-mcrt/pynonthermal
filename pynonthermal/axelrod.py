@@ -17,21 +17,24 @@ from pynonthermal.constants import QE
 
 # The default constant A of the Lotz formula sigma = A q ln(E / P) / (E P) in cm^2 eV^2 is the
 # value of Lotz (1967, "An empirical formula for the electron-impact ionization cross-section",
-# Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928). He gives a_i = 4.5e-14 for most
-# shells in his table 1, in the form of the formula with one parameter. Lotz gives this form for
-# highly charged ions. A neutral atom or an ion of low charge needs three parameters for each shell,
-# so the value is less accurate for such an ion. The fits of Arnaud & Rothenflug (1985, "An updated
-# evaluation of recombination and ionization rates", Astronomy and Astrophysics Supplement Series,
-# 60, 425-457, https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A) agree with the Lotz value at
-# high energy. The relativistic form of Axelrod (1980, "Late time optical spectra from the Ni-56
+# Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928). It is the value of the form of
+# the formula with one parameter, which Lotz gives for highly charged ions. A neutral atom or an ion
+# of low charge needs three parameters for each shell, so the value is less accurate for such an ion.
+# The fits of Arnaud & Rothenflug (1985, "An updated evaluation of recombination and ionization
+# rates", Astronomy and Astrophysics Supplement Series, 60, 425-457,
+# https://ui.adsabs.harvard.edu/abs/1985A%26AS...60..425A) agree with the Lotz value at high energy.
+# The solver uses the relativistic form of Axelrod (1980, "Late time optical spectra from the Ni-56
 # model for type I supernovae", PhD thesis, University of California, Santa Cruz,
-# https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A) gives this formula at low energy. Axelrod
-# used the alternative value A = 1.33e-14, which he normalised at 10 keV. It is a factor of about 3
-# below the Lotz value. The energies near the threshold set the heating and ionisation fractions, so
-# the default is the Lotz value. The solver takes the constant as lotz_a_cm2_ev2, and it warns when
-# a Lotz channel is in use.
-LOTZ_A_CM2_EV2: float = 4.5e-14
+# https://ui.adsabs.harvard.edu/abs/1980PhDT.........1A), which is the Lotz formula in the
+# non-relativistic limit. Axelrod used the alternative value A = 1.33e-14, which he normalised at
+# 10 keV to the mean of two tabulations of cross sections, one of them McGuire (1977, Physical
+# Review A, 16, 62-72, doi:10.1103/PhysRevA.16.62). It is a factor of about 3 below the Lotz value.
+# The energies near the threshold set the heating and ionisation fractions, so the default is the
+# Lotz value. The solver takes the constant as lotz_a_cm2_ev2, and it warns when a Lotz channel is
+# in use.
+LOTZ_A_CM2_EV2_LOTZ1967: float = 4.5e-14
 LOTZ_A_CM2_EV2_AXELROD1980: float = 1.33e-14
+LOTZ_A_CM2_EV2: float = LOTZ_A_CM2_EV2_LOTZ1967
 
 
 @lru_cache
