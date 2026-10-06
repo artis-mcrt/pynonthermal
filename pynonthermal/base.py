@@ -32,8 +32,10 @@ def _warn(message: str, category: type[Warning] = UserWarning) -> None:
 # The directory comes from the file name of a code object of this module, because the frames give that
 # form of the path. pathlib removes a doubled separator, so a pathlib path can fail to match. The
 # module names come from the source files, or from the compiled files of an install without them.
+# Each prefix ends before the suffix of the file, because Python 3.13 does not match a prefix that
+# is the whole file name.
 _PACKAGE_MODULE_FILES: tuple[str, ...] = tuple(
-    _warn.__code__.co_filename.removesuffix("base.py") + f"{module_name}.py"
+    _warn.__code__.co_filename.removesuffix("base.py") + module_name
     for module_name in sorted(
         {path.name.split(".")[0] for path in Path(__file__).parent.iterdir() if path.suffix in {".py", ".pyc"}}
     )
