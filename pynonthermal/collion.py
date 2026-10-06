@@ -1,9 +1,11 @@
 import math
+import os
 import typing as t
-import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import numpy.typing as npt
@@ -14,7 +16,10 @@ from pynonthermal.axelrod import get_binding_energies
 from pynonthermal.axelrod import get_lotz_xs_ionisation_vec
 from pynonthermal.axelrod import get_shell_configs
 from pynonthermal.axelrod import LOTZ_A_CM2_EV2
+from pynonthermal.base import _check_bool
+from pynonthermal.base import _check_ion
 from pynonthermal.base import _is_integer
+from pynonthermal.base import _warn
 from pynonthermal.base import CrossSectionFunc
 from pynonthermal.base import get_xs_on_grid
 from pynonthermal.constants import EV
@@ -51,9 +56,18 @@ SUBSHELLNAMES = [
 ]
 
 
-@lru_cache
 def get_nist_ionisation_energies_ev() -> dict[tuple[int, int], float]:
-    """Get a dictionary of ionisation_energy [eV] keyed by (atomic_number, ion_stage)."""
+    """Get a dictionary of ionisation_energy [eV] keyed by (atomic_number, ion_stage).
+
+    Each call gives a new copy of the cached table. A write to the copy therefore does not change
+    the checks of the channels, or the default energy of their Auger electrons.
+    """
+    return dict(_get_nist_ionisation_energies_ev_cached())
+
+
+@lru_cache
+def _get_nist_ionisation_energies_ev_cached() -> Mapping[tuple[int, int], float]:
+    # the table that the package reads. It is read-only, because every caller shares it.
     dfnist = (
         pl.read_csv(
             Path(pynonthermal.DATADIR / "nist_ionization.txt.zst"),
@@ -68,20 +82,31 @@ def get_nist_ionisation_energies_ev() -> dict[tuple[int, int], float]:
         .drop_nulls()
     )
 
-    return {
-        (atomic_number, ion_stage): ionisation_energy_ev
-        for atomic_number, ion_stage, ionisation_energy_ev in dfnist.select(
-            [
-                "Z",
-                "ion_stage",
-                "ionisation_energy_ev",
-            ]
-        ).iter_rows(named=False)
-    }
+    return MappingProxyType(
+        {
+            (atomic_number, ion_stage): ionisation_energy_ev
+            for atomic_number, ion_stage, ionisation_energy_ev in dfnist.select(
+                [
+                    "Z",
+                    "ion_stage",
+                    "ionisation_energy_ev",
+                ]
+            ).iter_rows(named=False)
+        }
+    )
+
+
+def read_colliondata(collionfilename: str | Path = "collion.txt") -> pl.DataFrame:
+    """Get the table of ionisation shells: the fits of collionfilename, and Lotz rows for the other ions.
+
+    The result is a copy of a cached table, so a write to it does not change the table of
+    any other caller or solver.
+    """
+    return _read_colliondata_cached(os.fspath(collionfilename)).clone()
 
 
 @lru_cache
-def read_colliondata(collionfilename: str | Path = "collion.txt") -> pl.DataFrame:
+def _read_colliondata_cached(collionfilename: str) -> pl.DataFrame:
     dfcollion = pl.read_csv(
         Path(pynonthermal.DATADIR, collionfilename),
         separator=" ",
@@ -101,7 +126,7 @@ def read_colliondata(collionfilename: str | Path = "collion.txt") -> pl.DataFram
         },
     )
 
-    nist_ionisation_energies_ev = get_nist_ionisation_energies_ev()
+    nist_ionisation_energies_ev = _get_nist_ionisation_energies_ev_cached()
     elements_electron_binding = get_binding_energies()
     all_shells_q = get_shell_configs()
     covered_z_nelec = set(dfcollion.select(["Z", "nelec"]).iter_rows())
@@ -210,6 +235,8 @@ def Psecondary(e_p: float, ionpot_ev: float, J: float, e_s: float = -1, epsilon:
 
 def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
     # returns an energy in eV
+    # a charge in place of the ion stage would give the J of the wrong stage
+    Z, ion_stage = _check_ion(Z, ion_stage)
     # values from Opal et al. 1971 as applied by Kozma & Fransson 1992. They are whole-atom measurements
     # dominated by valence-shell ionisation, but are used for every shell of the ion to match ARTIS.
     if ion_stage == 1:
@@ -224,7 +251,7 @@ def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
 
 
 def get_arxs_array_shell(
-    arr_enev: npt.NDArray[np.float64], shell: dict[str, int | float], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
+    arr_enev: npt.NDArray[np.float64], shell: Mapping[str, int | float], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
     # the shell's total impact-ionisation cross section in cm^2 at each energy [eV]: the
     # sigma_ic of Kozma & Fransson 1992 (equations 5, 10, and 11 and the ionisation term of
@@ -347,10 +374,9 @@ class IonisationChannel:
     @property
     def extra_electron_energy_ev(self) -> float:
         """The former name of auger_electron_energy_ev. It is deprecated."""
-        warnings.warn(
+        _warn(
             "IonisationChannel.extra_electron_energy_ev is deprecated. Its name is now auger_electron_energy_ev.",
             DeprecationWarning,
-            stacklevel=2,
         )
         return self.auger_electron_energy_ev
 
@@ -388,7 +414,7 @@ class IonisationChannel:
             Z=Z,
             ion_stage=ion_stage,
             ionpot_ev=ionpot_ev,
-            xs=_interpolate_grid_xs(arr_enev, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
+            xs=_GridXs(arr_enev, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
             key=key,
             n_ejected=n_ejected,
             level_energy_ev=level_energy_ev,
@@ -444,11 +470,17 @@ class IonisationChannel:
         """
         auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
         name = f"The cross section of ionisation channel {key}"
+        # the same check as every method of the solver. Without it, a charge in place of the ion
+        # stage gives a channel with the wrong J from get_J().
+        Z, ion_stage = _check_ion(Z, ion_stage, needs_electron=True)
 
         # the chained comparison also rejects nan, for which every comparison is False
         if not 0.0 < ionpot_ev < math.inf:
             msg = f"ionpot_ev must be greater than zero and finite but is {ionpot_ev}"
             raise ValueError(msg)
+        # a Python float, so that every comparison below uses the same value. A numpy float32
+        # makes a comparison in float32.
+        ionpot_ev = float(ionpot_ev)
 
         if not _is_integer(n_ejected) or n_ejected < 1:
             msg = f"n_ejected must be an integer of at least 1 but is {n_ejected!r}"
@@ -456,10 +488,7 @@ class IonisationChannel:
         # a Python integer, so that the sum below cannot wrap around in a fixed-width numpy type
         n_ejected = int(n_ejected)
         # a numpy comparison gives a numpy bool, which is not a subclass of bool
-        if not isinstance(autoionisation, bool | np.bool_):
-            msg = f"autoionisation must be True or False but is {autoionisation!r}"
-            raise TypeError(msg)
-        autoionisation = bool(autoionisation)
+        autoionisation = _check_bool(autoionisation, "autoionisation")
         # the chained comparison also rejects nan
         if not 0.0 <= level_energy_ev < math.inf:
             msg = f"level_energy_ev must be at least zero and finite but is {level_energy_ev}"
@@ -482,9 +511,10 @@ class IonisationChannel:
                 )
                 raise ValueError(msg)
             auger_ev = 0.0
+            auger_warning = None
         else:
-            auger_ev = _get_auger_electron_energy_ev(
-                Z, ion_stage, float(ionpot_ev), n_ejected, auger_electron_energy_ev, level_energy_ev
+            auger_ev, auger_warning = _get_auger_electron_energy_ev(
+                Z, ion_stage, ionpot_ev, n_ejected, auger_electron_energy_ev, level_energy_ev
             )
         # the Auger electrons get their energy from the ionisation potential, so the ion keeps
         # a positive energy. The chained comparison also rejects nan.
@@ -505,7 +535,7 @@ class IonisationChannel:
             xs_grid[arr_enev < ionpot_ev] = 0.0
             xs_grid.flags.writeable = False
         else:
-            _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
+            _check_zero_below_ionpot(arr_enev, xs_grid, ionpot_ev, name)
 
         # calculate_N_e() evaluates the cross section between the points of the energy grid, so a
         # function that ignores its argument fails there. The probe finds that at the call site,
@@ -520,11 +550,15 @@ class IonisationChannel:
             )
             raise ValueError(msg)
 
+        # the warning comes after the last check, so that a rejected call gives only its error
+        if auger_warning is not None:
+            _warn(auger_warning)
+
         return cls(
-            ionpot_ev=float(ionpot_ev),
+            ionpot_ev=ionpot_ev,
             xs=xs,
             xs_grid=xs_grid,
-            J_ev=get_J(Z, ion_stage, float(ionpot_ev)),
+            J_ev=get_J(Z, ion_stage, ionpot_ev),
             key=key,
             lotz=lotz,
             n_ejected=n_ejected,
@@ -540,10 +574,9 @@ def _resolve_auger_electron_energy_ev(
     # is the former name, which v2026.9.23 released.
     if extra_electron_energy_ev is None:
         return auger_electron_energy_ev
-    warnings.warn(
+    _warn(
         "the extra_electron_energy_ev argument is deprecated. Its name is now auger_electron_energy_ev.",
         DeprecationWarning,
-        stacklevel=3,
     )
     if auger_electron_energy_ev is not None:
         msg = "give the energy of the Auger electrons once, as auger_electron_energy_ev"
@@ -554,7 +587,7 @@ def _resolve_auger_electron_energy_ev(
 def _check_level_energy_ev(Z: int, ion_stage: int, level_energy_ev: float) -> None:
     # a bound level of the ion lies below its ionisation potential. The check needs the NIST data,
     # so an ion that the data does not hold gets no check.
-    ionpot_ground_ev = get_nist_ionisation_energies_ev().get((Z, ion_stage))
+    ionpot_ground_ev = _get_nist_ionisation_energies_ev_cached().get((Z, ion_stage))
     if ionpot_ground_ev is not None and level_energy_ev >= ionpot_ground_ev:
         msg = (
             f"level_energy_ev ({level_energy_ev} eV) must be less than the ionisation potential of Z={Z}"
@@ -570,19 +603,20 @@ def _get_auger_electron_energy_ev(
     n_ejected: int,
     auger_electron_energy_ev: float | None,
     level_energy_ev: float,
-) -> float:
-    # the total energy [eV] of the Auger electrons of one ionisation of a channel. The ion must
-    # keep at least the sum of the NIST ground-state potentials that the ionisation crosses, less the
-    # energy of the initial level above the ground state. Else the channel makes energy. Without a
-    # value from the caller, energy conservation gives the energy: the threshold of the channel minus
-    # that sum.
-    ionpots_ev = get_nist_ionisation_energies_ev()
+) -> tuple[float, str | None]:
+    # the total energy [eV] of the Auger electrons of one ionisation of a channel, and the message of a
+    # warning or None. The ion must keep at least the sum of the NIST ground-state potentials that the
+    # ionisation crosses, less the energy of the initial level above the ground state. Else the channel
+    # makes energy. Without a value from the caller, energy conservation gives the energy: the
+    # threshold of the channel minus that sum. The caller gives the warning after its last check, so
+    # that a rejected call gives only its error.
+    ionpots_ev = _get_nist_ionisation_energies_ev_cached()
     stages = range(ion_stage, ion_stage + n_ejected)
     missing = [stage for stage in stages if (Z, stage) not in ionpots_ev]
     if missing:
         if auger_electron_energy_ev is not None:
             # the value of the caller is the only source for an ion that the NIST data does not hold
-            return auger_electron_energy_ev
+            return auger_electron_energy_ev, None
         msg = (
             f"the NIST data has no ionisation potential for Z={Z} ion_stages {missing}, so energy"
             " conservation cannot give the energy of the Auger electrons. Give auger_electron_energy_ev."
@@ -593,9 +627,8 @@ def _get_auger_electron_energy_ev(
     retained_ev = nist_sum_ev - level_energy_ev
     retained_min_ev = retained_ev * (1.0 - MULTIPLE_IONPOT_REL_TOL)
     auger_ev = max(0.0, ionpot_ev - retained_ev) if auger_electron_energy_ev is None else auger_electron_energy_ev
-    # a value that is not a number passes here. It fails the range check of IonisationChannel.from_xs().
     if ionpot_ev - auger_ev >= retained_min_ev:
-        return auger_ev
+        return auger_ev, None
     channel_str = f"a channel that takes Z={Z} ion_stage {ion_stage} to ion_stage {ion_stage + n_ejected}"
     keep_str = (
         f"The ion must keep at least {retained_min_ev:.3f} eV. That is the sum of the ground-state ionisation"
@@ -625,8 +658,7 @@ def _get_auger_electron_energy_ev(
             f" {ionpot_ev - auger_ev:.3f} eV, which is less than the NIST data give. {keep_str} The channel"
             f" uses the value as given. {advice}"
         )
-    warnings.warn(msg, UserWarning, stacklevel=4)
-    return auger_ev
+    return auger_ev, msg
 
 
 def _check_zero_below_ionpot(
@@ -647,30 +679,41 @@ def _check_zero_below_ionpot(
         raise ValueError(msg)
 
 
-def _interpolate_grid_xs(
-    arr_enev: npt.NDArray[np.float64],
-    xs_grid: npt.NDArray[np.float64],
-    ionpot_ev: float,
-    keep_threshold: bool = False,
-) -> CrossSectionFunc:
+@dataclass(frozen=True, slots=True, eq=False)
+class _GridXs:
     # calculate_N_e() evaluates the cross section between the points of the energy grid, just above
     # the ionisation potential, so a channel given as an array on that grid interpolates it there.
     # The np.where keeps the function at zero below its own ionisation potential, where a straight
     # interpolation from the last grid point below it would give a small positive value. An
     # autoionisation channel keeps its value at the threshold (keep_threshold).
-    def xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        above = en_ev >= ionpot_ev if keep_threshold else en_ev > ionpot_ev
-        return np.where(above, np.interp(en_ev, arr_enev, xs_grid, left=0.0, right=0.0), 0.0)
+    # A class at module level and not a closure, so that pickle can serialise a solver that holds the channel.
+    arr_enev: npt.NDArray[np.float64]
+    xs_grid: npt.NDArray[np.float64]
+    ionpot_ev: float
+    keep_threshold: bool = False
 
-    return xs
+    def __call__(self, en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        above = en_ev >= self.ionpot_ev if self.keep_threshold else en_ev > self.ionpot_ev
+        return np.where(above, np.interp(en_ev, self.arr_enev, self.xs_grid, left=0.0, right=0.0), 0.0)
 
 
-def _bind_shell(shell: dict[str, t.Any], lotz_a_cm2_ev2: float) -> CrossSectionFunc:
-    # give each channel its own shell row, and keep the call to the formula positional
-    def xs(arr_enev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return get_arxs_array_shell(arr_enev, shell, lotz_a_cm2_ev2=lotz_a_cm2_ev2)
+@dataclass(frozen=True, slots=True, eq=False)
+class _ShellXs:
+    # the cross section of one shell row of the table. A class at module level and not a closure,
+    # so that pickle can serialise a solver that holds the channel. The class keeps a read-only view of
+    # a copy of the row. Else a write to the row changes xs and not xs_grid of the channel.
+    shell: Mapping[str, t.Any]
+    lotz_a_cm2_ev2: float
 
-    return xs
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "shell", MappingProxyType(dict(self.shell)))
+
+    def __reduce__(self) -> tuple[type[t.Self], tuple[dict[str, t.Any], float]]:
+        # pickle cannot serialise a read-only view, so it gets a copy of the row as a dict
+        return (type(self), (dict(self.shell), self.lotz_a_cm2_ev2))
+
+    def __call__(self, arr_enev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        return get_arxs_array_shell(arr_enev, self.shell, lotz_a_cm2_ev2=self.lotz_a_cm2_ev2)
 
 
 def get_ion_ionisation_channels(
@@ -698,7 +741,7 @@ def get_ion_ionisation_channels(
             Z=Z,
             ion_stage=ion_stage,
             ionpot_ev=float(shell["ionpot_ev"]),
-            xs=_bind_shell(shell, lotz_a_cm2_ev2),
+            xs=_ShellXs(shell, lotz_a_cm2_ev2),
             # the key names the subshell, so the verbose output needs no separate label
             key=(
                 f"Lotz shell {SUBSHELLNAMES[-int(shell['l'])]}"

@@ -1,7 +1,10 @@
 include LICENSE
 include README.md
-include pynonthermal/py.typed
 
+prune .github
+prune .vscode
 prune pynonthermal/tests
+exclude .git-blame-ignore-revs .gitignore .pre-commit-config.yaml .python-version renovate.json uv.lock
+exclude *.ipynb
 global-exclude *.py[cod]
 global-exclude .DS_Store

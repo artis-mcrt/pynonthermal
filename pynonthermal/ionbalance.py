@@ -34,11 +34,14 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 
 import artistools as at
+import numpy as np
+import numpy.typing as npt
 import polars as pl
 
 import pynonthermal
 from pynonthermal.base import _check_ion
 from pynonthermal.base import _is_integer
+from pynonthermal.collion import _get_nist_ionisation_energies_ev_cached
 from pynonthermal.constants import EV
 from pynonthermal.constants import H
 from pynonthermal.constants import K_B
@@ -80,6 +83,9 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
     if not 0.0 < partfunc_lower < math.inf or not 0.0 < partfunc_upper < math.inf:
         msg = f"partition functions must be greater than zero and finite but are {partfunc_lower}, {partfunc_upper}"
         raise ValueError(msg)
+    # Python floats, because a numpy float16 argument overflows in the product below
+    temperature, ionpot_ev = float(temperature), float(ionpot_ev)
+    partfunc_lower, partfunc_upper = float(partfunc_lower), float(partfunc_upper)
 
     return (
         2.0 * partfunc_upper / partfunc_lower * SAHA_CONST * temperature**1.5 * math.exp(-ionpot_ev / K_B / temperature)
@@ -100,13 +106,22 @@ def get_ion_fractions(ratio_coeffs: Sequence[float], n_e: float) -> list[float]:
     if not 0.0 < n_e < math.inf:
         msg = f"n_e must be greater than zero and finite but is {n_e}"
         raise ValueError(msg)
+    # a list, because the check and the sum below both read the coefficients. A second pass over an
+    # iterator finds nothing, and then the result had one stage.
+    ratio_coeffs = list(ratio_coeffs)
+    _check_ratio_coeffs(ratio_coeffs)
+
+    # a ratio coefficient is the only term of its cut (see get_ion_fractions_cuts())
+    return _get_ion_fractions_ln_terms([[(j, math.log(c))] if c > 0.0 else [] for j, c in enumerate(ratio_coeffs)], n_e)
+
+
+def _check_ratio_coeffs(ratio_coeffs: Sequence[float]) -> None:
+    # every ratio coefficient n_{i+1} n_e / n_i must be at least zero and finite. The chained
+    # comparison also rejects nan.
     for c in ratio_coeffs:
         if not 0.0 <= c < math.inf:
             msg = f"ratio coefficients must be non-negative and finite but one is {c}"
             raise ValueError(msg)
-
-    # a ratio coefficient is the only term of its cut (see get_ion_fractions_cuts())
-    return _get_ion_fractions_ln_terms([[(j, math.log(c))] if c > 0.0 else [] for j, c in enumerate(ratio_coeffs)], n_e)
 
 
 def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) -> list[float]:
@@ -136,7 +151,9 @@ def _get_ln_cut_terms(cut_coeffs: Sequence[Sequence[float]]) -> list[list[tuple[
     # not zero, as (i, ln C_{j,i}). A root find calls _get_ion_fractions_ln_terms() many times with
     # the same terms, so it checks the coefficients and takes their logarithms only once.
     ln_cut_terms = []
-    for j, cut in enumerate(cut_coeffs):
+    for j, cut_values in enumerate(cut_coeffs):
+        # a list, because the checks and the logarithms below read the values two times
+        cut = list(cut_values)
         if len(cut) != j + 1:
             msg = (
                 f"cut_coeffs[{j}] must have {j + 1} values (one for each stage at or below the cut) but has {len(cut)}"
@@ -208,6 +225,12 @@ def solve_charge_neutral_n_e(
             f" finite but are {charge_density_min} and {charge_density_max}"
         )
         raise ValueError(msg)
+    # Python floats, because a numpy float16 argument overflows in the bracket below
+    n_e_fixed, charge_density_min, charge_density_max = (
+        float(n_e_fixed),
+        float(charge_density_min),
+        float(charge_density_max),
+    )
 
     n_e_lower = n_e_fixed + charge_density_min
     n_e_upper = n_e_fixed + charge_density_max
@@ -218,8 +241,20 @@ def solve_charge_neutral_n_e(
         )
         raise ValueError(msg)
 
+    def checked_charge_density(n_e: float) -> float:
+        # the bisection needs the bounds of the charge density. A value outside them, or nan, gave a
+        # wrong root with no error. The tolerance allows the rounding of a sum of fractions.
+        value = charge_density(n_e)
+        if not charge_density_min * (1.0 - 1e-12) <= value <= charge_density_max * (1.0 + 1e-12):
+            msg = (
+                f"charge_density({n_e}) is {value}, which is not between charge_density_min"
+                f" ({charge_density_min}) and charge_density_max ({charge_density_max})"
+            )
+            raise ValueError(msg)
+        return value
+
     def residual(n_e: float) -> float:
-        return n_e_fixed + charge_density(n_e) - n_e
+        return n_e_fixed + checked_charge_density(n_e) - n_e
 
     # the residual divided by n_e falls with n_e, so the residual changes sign once. It is at most
     # zero at the upper bracket.
@@ -234,14 +269,19 @@ def solve_charge_neutral_n_e(
         # (every population that can be ionised is), so the residual turns positive at a small enough
         # n_e unless the charge density is zero everywhere.
         n_e_lower = n_e_upper * _N_E_LOWER_BRACKET_FRACTION
-        while (charge_density_lower := charge_density(n_e_lower)) <= n_e_lower:
+        while True:
+            # the check runs before the charge density, which needs a positive n_e. The first
+            # bracket can already underflow for a very small n_e_upper.
+            if n_e_lower == 0.0:
+                msg = "the charge-neutral free electron density is below the range of a double precision number"
+                raise ValueError(msg)
+            charge_density_lower = checked_charge_density(n_e_lower)
+            if charge_density_lower > n_e_lower:
+                break
             if charge_density_lower <= 0.0:
                 msg = "the charge density is zero and no fixed ion is ionised, so the free electron density is zero"
                 raise ValueError(msg)
             n_e_lower *= _N_E_LOWER_BRACKET_FRACTION
-            if n_e_lower == 0.0:
-                msg = "the charge-neutral free electron density is below the range of a double precision number"
-                raise ValueError(msg)
 
     ln_lower = math.log(n_e_lower)
     ln_upper = math.log(n_e_upper)
@@ -274,11 +314,16 @@ def solve_charge_neutral_n_e_ratios(n_e_fixed: float, elements: Sequence[tuple[f
         n_{i+1} n_e / n_i [cm^-3] of each pair of adjacent stages. The chain has one stage more
         than ratio coefficients.
     """
+    # the ratio coefficients are checked here, so that a bad value gives a message about ratio
+    # coefficients and not about the cut coefficients of the call below
+    chains = [(n_elem, lowest_stage, list(ratio_coeffs)) for n_elem, lowest_stage, ratio_coeffs in elements]
+    for _, _, ratio_coeffs in chains:
+        _check_ratio_coeffs(ratio_coeffs)
     return solve_charge_neutral_n_e_cuts(
         n_e_fixed,
         [
             (n_elem, lowest_stage, [[0.0] * j + [c] for j, c in enumerate(ratio_coeffs)])
-            for n_elem, lowest_stage, ratio_coeffs in elements
+            for n_elem, lowest_stage, ratio_coeffs in chains
         ],
     )
 
@@ -311,8 +356,8 @@ def solve_charge_neutral_n_e_cuts(
         if not 0.0 < n_elem < math.inf:
             msg = f"n_elem must be greater than zero and finite but is {n_elem}"
             raise ValueError(msg)
-        if lowest_stage < 1:
-            msg = f"the lowest ion stage must be at least 1 but is {lowest_stage}"
+        if not _is_integer(lowest_stage) or lowest_stage < 1:
+            msg = f"the lowest ion stage must be an integer of at least 1 but is {lowest_stage!r}"
             raise ValueError(msg)
         # every stage is at least as charged as the lowest one and at most as the highest one
         charge_density_min += (lowest_stage - 1) * n_elem
@@ -328,6 +373,30 @@ def solve_charge_neutral_n_e_cuts(
         return total
 
     return solve_charge_neutral_n_e(n_e_fixed, charge_density, charge_density_min, charge_density_max)
+
+
+def _get_lte_boltzmann_weights(
+    levels: pl.DataFrame, temperature: float, Z: int, ion_stage: int
+) -> npt.NDArray[np.float64]:
+    # the Boltzmann weights g exp(-E / (k_B T)) of the levels of one ion, in the order of the rows of
+    # levels. Their sum is the LTE partition function. Each weight must be finite and at least zero,
+    # and the sum must be greater than zero. Else the population fraction of a level is nan or
+    # negative. Level energies on an absolute scale, a nan energy, or a negative g give such weights.
+    weights = (
+        levels.select(pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp())
+        .to_series()
+        .to_numpy()
+        .astype(np.float64)
+    )
+    partfunc = float(weights.sum())
+    if not (np.isfinite(weights).all() and (weights >= 0.0).all() and 0.0 < partfunc < math.inf):
+        msg = (
+            f"the levels of Z={Z} ion_stage {ion_stage} give no valid LTE populations at {temperature} K."
+            f" The partition function is {partfunc}, and each level weight g exp(-E / (k_B T)) must be finite"
+            " and at least zero. Check the energies and the statistical weights g of the levels."
+        )
+        raise ValueError(msg)
+    return weights
 
 
 def get_saha_ion_fractions(
@@ -422,15 +491,13 @@ def get_saha_ion_fractions(
                     " Give it in partfuncs or supply a level table in adata_polars."
                 )
                 raise ValueError(msg)
-            partfunc = float(
-                ion["levels"].item().select(pl.col("g") * (-pl.col("energy_ev") / K_B / temperature).exp()).sum().item()
-            )
+            partfunc = float(_get_lte_boltzmann_weights(ion["levels"].item(), temperature, Z, ion_stage).sum())
         if not 0.0 < partfunc < math.inf:
             msg = f"the partition function of Z={Z} ion_stage {ion_stage} must be greater than zero but is {partfunc}"
             raise ValueError(msg)
         partfunc_of_stage[ion_stage] = partfunc
 
-    ionpots_ev = pynonthermal.collion.get_nist_ionisation_energies_ev()
+    ionpots_ev = _get_nist_ionisation_energies_ev_cached()
     saha_factors = []
     for ion_stage in stages[:-1]:
         ionpot_ev = ionpots_ev.get((Z, ion_stage))
