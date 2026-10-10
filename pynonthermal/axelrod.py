@@ -1,6 +1,7 @@
 # functions related to Axelrod 1980 non-thermal treatment
 
 import math
+from collections.abc import Mapping
 from functools import cache
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 
 import pynonthermal
+from pynonthermal.base import _check_ion
 from pynonthermal.base import get_betasq
 from pynonthermal.constants import CLIGHT
 from pynonthermal.constants import EV
@@ -95,6 +97,8 @@ def get_shell_occupancies(atomic_number: int, ion_stage: int) -> npt.NDArray[np.
     # electrons in each shell of one ion, taken from the neutral configuration with the outermost
     # electrons removed. Cached, like the two tables it reads, because every ionisation cross section
     # evaluation needs it and it depends only on the ion.
+    # an ion outside the tables gave a row of another element or a bare AssertionError
+    atomic_number, ion_stage = _check_ion(atomic_number, ion_stage)
     electron_binding = get_binding_energies()
     all_shells_q = get_shell_configs()
     nbound = atomic_number - ion_stage + 1
@@ -164,7 +168,7 @@ def get_workfn_ev(
 
 
 def get_lotz_xs_ionisation_vec(
-    shell: dict[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
+    shell: Mapping[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
     # Axelrod 1980 Eq 3.38 evaluated at an array of energies [eV], with the constant A of the Lotz
     # formula lotz_a_cm2_ev2 [cm^2 eV^2]
