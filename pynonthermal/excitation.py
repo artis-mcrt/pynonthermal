@@ -17,6 +17,7 @@ import numpy as np
 import numpy.typing as npt
 
 import pynonthermal
+from pynonthermal.base import _is_bool
 from pynonthermal.constants import CLIGHT
 from pynonthermal.constants import EV
 from pynonthermal.constants import H
@@ -61,8 +62,13 @@ def get_xs_excitation_vector(
 
     coll_str = row["collstr"]
     # a Python float, so that an integer or a numpy energy of a custom table works. A bare assert
-    # rejected an integer with no message, and python -O removed it.
-    epsilon_trans_ev = float(row["epsilon_trans_ev"])
+    # rejected an integer with no message, and python -O removed it. A bool is not an energy, and
+    # float(True) gave a transition of 1 eV.
+    epsilon_trans_ev = row["epsilon_trans_ev"]
+    if _is_bool(epsilon_trans_ev) or not 0.0 < epsilon_trans_ev < math.inf:
+        msg = f"epsilon_trans_ev of a transition must be greater than zero and finite but is {epsilon_trans_ev!r}"
+        raise ValueError(msg)
+    epsilon_trans_ev = float(epsilon_trans_ev)
     epsilon_trans = epsilon_trans_ev * EV
 
     if epsilon_trans_ev > engrid[-1]:

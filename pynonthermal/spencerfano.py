@@ -54,6 +54,18 @@ if t.TYPE_CHECKING:
     import matplotlib.axes as mplax
 
     from pynonthermal.base import CrossSectionFunc
+else:
+
+    class _LazyMatplotlibAxes:
+        # the name mplax of the annotations of the plot methods, for the tools that evaluate the
+        # annotations at runtime, for example typing.get_type_hints(). An attribute imports
+        # matplotlib.axes, so the import of the package does not import matplotlib.
+        def __getattr__(self, name: str) -> t.Any:
+            import matplotlib.axes  # noqa: PLC0415
+
+            return getattr(matplotlib.axes, name)
+
+    mplax = _LazyMatplotlibAxes()
 
 # The weight of the new value when the ionisation balance mixes the ionisation rate coefficients in log
 # space. For one pair of stages, the fixed-point map ln(c_new) = F(ln(c)) of the ratio coefficient

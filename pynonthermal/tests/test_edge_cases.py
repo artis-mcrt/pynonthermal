@@ -198,10 +198,15 @@ def test_stage_matrices_give_the_per_channel_result(monkeypatch: pytest.MonkeyPa
 
 
 def test_import_loads_neither_artistools_nor_matplotlib() -> None:
-    code = "import sys, pynonthermal; print('artistools' in sys.modules, 'matplotlib' in sys.modules)"
+    # the annotations of the plot methods still resolve at runtime, through a name that imports
+    # matplotlib.axes only when the annotation is evaluated
+    code = (
+        "import sys, typing, pynonthermal; print('artistools' in sys.modules, 'matplotlib' in sys.modules);"
+        " print(typing.get_type_hints(pynonthermal.SpencerFanoSolver.plot_channels)['axis'])"
+    )
     repo = Path(pynonthermal.__file__).parent.parent
     result = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, cwd=repo)  # noqa: S603
-    assert result.stdout.split() == ["False", "False"]
+    assert result.stdout.split() == ["False", "False", "matplotlib.axes._axes.Axes", "|", "None"]
 
 
 def test_inputs_with_a_bad_type_fail_with_a_named_message() -> None:
@@ -218,6 +223,9 @@ def test_inputs_with_a_bad_type_fail_with_a_named_message() -> None:
     # an integer transition energy works, and python -O no longer changes the check
     row = {"collstr": -1.0, "epsilon_trans_ev": 5, "lower_g": 1.0, "upper_g": 3.0, "A": 1e8, "forbidden": False}
     assert pynonthermal.excitation.get_xs_excitation_vector(sf.engrid, row).max() > 0.0
+    # a bool is not an energy, and float(True) gave a transition of 1 eV
+    with pytest.raises(ValueError, match="epsilon_trans_ev of a transition must be greater than zero"):
+        pynonthermal.excitation.get_xs_excitation_vector(sf.engrid, row | {"epsilon_trans_ev": True})
 
 
 def test_balanced_stage_without_transitions_has_no_entry() -> None:
