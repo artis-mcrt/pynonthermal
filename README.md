@@ -141,8 +141,9 @@ sf.add_element(Z=26, n_elem=1.0e9, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11, 4:
 - the population rule: exactly one of `ion_densities`, `ion_fractions`, or `recomb_ratecoeffs` —
   see [the next section](#where-the-ion-populations-come-from).
 - `excitation`: also add the bound-bound excitations of every ion stage that has level data, with LTE
-  level populations at the temperature of the solver. Every stage gets the built-in ionisation cross
-  sections either way.
+  level populations at the temperature of the solver. This option does not change the ionisation
+  channels. A stage gets the built-in ionisation cross sections unless `builtin_channels` is `False`
+  or its density is exactly zero.
 - `builtin_channels`: set it to `False` to leave the built-in ionisation cross sections out and give
   every channel yourself (see [custom cross sections](#advanced-usage-custom-cross-sections)).
 
@@ -172,8 +173,8 @@ sf.override_n_e(n_e=2.5e6)  # cm^-3; None takes it from the ion charges again
 
 It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality. `solve()`
 then finds the populations at your density, and they do not have to be neutral with it. The value holds
-until another call changes it. A call after `solve()` discards the solution, so `solve()` must run
-again. The `override_n_e` argument of `solve()` is deprecated. The
+until another call changes it. A call after `solve()` that changes the density discards the solution,
+so `solve()` must run again. A call with the density that the solver has already keeps the solution. The `override_n_e` argument of `solve()` is deprecated. The
 [iron notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
 what a given density does to a balance.
 
@@ -440,7 +441,7 @@ with pynonthermal.SpencerFanoSolver() as sf:
 - `xs_vec`, and `transitionkey`: the key to pass to `get_excitation_ratecoeff()`.
 
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
-one grid cell. A cross section given as a function is called there; an array can only be interpolated, so
+one bin of the grid. A cross section given as a function is called there; an array can only be interpolated, so
 resolve that region with `npts` if it matters for your ion. The term it feeds is the energy that
 thermalises below `emin_ev`, which is a small part of the heating fraction. An
 [autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as

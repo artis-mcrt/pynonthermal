@@ -1,3 +1,13 @@
+"""Collisional ionisation: the shell table, the secondary-electron distribution, and the channels.
+
+The comments and the docstrings of this module cite these publications by their labels:
+
+- KF92: Kozma & Fransson 1992, ApJ, 390, 602-621, doi:10.1086/171311
+- OPB71: Opal, Peterson & Beaty 1971, J. Chem. Phys., 55, 4100-4106, doi:10.1063/1.1676707
+- AR85: Arnaud & Rothenflug 1985, A&AS, 60, 425-457, ADS 1985A&AS...60..425A (the journal gave no DOI)
+- Y81: Younger 1981, J. Quant. Spectrosc. Radiat. Transfer, 26, 329-337, doi:10.1016/0022-4073(81)90127-8
+"""
+
 import math
 import os
 import typing as t
@@ -18,6 +28,7 @@ from pynonthermal.axelrod import get_shell_configs
 from pynonthermal.axelrod import LOTZ_A_CM2_EV2
 from pynonthermal.base import _check_bool
 from pynonthermal.base import _check_ion
+from pynonthermal.base import _is_bool
 from pynonthermal.base import _is_integer
 from pynonthermal.base import _warn
 from pynonthermal.base import CrossSectionFunc
@@ -196,8 +207,8 @@ def Psecondary_vec(
 ) -> npt.NDArray[np.float64]:
     """Evaluate the secondary-electron energy distribution over arrays of e_p and/or e_s.
 
-    This is the Lorentzian distribution of Kozma & Fransson 1992 equation 4, their analytically
-    integrable adaptation of the shape Opal, Peterson & Beaty 1971 fitted to their measurements
+    This is the Lorentzian distribution of KF92 equation 4, their analytically
+    integrable adaptation of the shape OPB71 fitted to their measurements
     (whose published exponent is 2.1 rather than 2), with the width parameter J from get_J().
 
     e_p is the primary electron energy [eV] and e_s the secondary electron energy [eV]. The two
@@ -237,7 +248,7 @@ def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
     # returns an energy in eV
     # a charge in place of the ion stage would give the J of the wrong stage
     Z, ion_stage = _check_ion(Z, ion_stage)
-    # values from Opal et al. 1971 as applied by Kozma & Fransson 1992. They are whole-atom measurements
+    # values from OPB71 as applied by KF92. They are whole-atom measurements
     # dominated by valence-shell ionisation, but are used for every shell of the ion to match ARTIS.
     if ion_stage == 1:
         if Z == 2:  # He I
@@ -254,9 +265,9 @@ def get_arxs_array_shell(
     arr_enev: npt.NDArray[np.float64], shell: Mapping[str, int | float], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
     # the shell's total impact-ionisation cross section in cm^2 at each energy [eV]: the
-    # sigma_ic of Kozma & Fransson 1992 (equations 5, 10, and 11 and the ionisation term of
-    # equation 7). Shells with fit data use the formula of Younger 1981 with the A-D
-    # coefficients of the Arnaud & Rothenflug 1985 compilation; shells marked n < 0 have no
+    # sigma_ic of KF92 (equations 5, 10, and 11 and the ionisation term of
+    # equation 7). Shells with fit data use the formula of Y81 with the A-D
+    # coefficients of the AR85 compilation; shells marked n < 0 have no
     # fit data and use the Lotz approximation with the constant lotz_a_cm2_ev2 instead.
     if shell["n"] < 0:
         return get_lotz_xs_ionisation_vec(shell, arr_en_ev=arr_enev, lotz_a_cm2_ev2=lotz_a_cm2_ev2)
@@ -318,7 +329,7 @@ class IonisationChannel:
     """The cross section sigma(E) [cm^2] at any array of energies [eV].
 
     calculate_N_e() evaluates this between the grid points, just above the ionisation potential.
-    The domain of that integral is narrower than one grid cell. A function is therefore necessary
+    The domain of that integral is narrower than one bin of the grid. A function is therefore necessary
     here, and an array on the grid is not enough. An autoionisation channel uses only xs_grid.
     """
 
@@ -408,13 +419,17 @@ class IonisationChannel:
         # autoionisation channel keeps its value at the threshold, as an excitation does.
         if not autoionisation:
             _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
+        # a read-only copy of the grid, as of the cross section. With the array of the caller, a later
+        # write to it changed xs() between the grid points, and xs_grid stayed as checked.
+        enev_grid = np.array(arr_enev, dtype=np.float64)
+        enev_grid.flags.writeable = False
 
         return cls.from_xs(
-            arr_enev=arr_enev,
+            arr_enev=enev_grid,
             Z=Z,
             ion_stage=ion_stage,
             ionpot_ev=ionpot_ev,
-            xs=_GridXs(arr_enev, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
+            xs=_GridXs(enev_grid, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
             key=key,
             n_ejected=n_ejected,
             level_energy_ev=level_energy_ev,
@@ -475,7 +490,7 @@ class IonisationChannel:
         Z, ion_stage = _check_ion(Z, ion_stage, needs_electron=True)
 
         # the chained comparison also rejects nan, for which every comparison is False
-        if not 0.0 < ionpot_ev < math.inf:
+        if _is_bool(ionpot_ev) or not 0.0 < ionpot_ev < math.inf:
             msg = f"ionpot_ev must be greater than zero and finite but is {ionpot_ev}"
             raise ValueError(msg)
         # a Python float, so that every comparison below uses the same value. A numpy float32
@@ -490,7 +505,7 @@ class IonisationChannel:
         # a numpy comparison gives a numpy bool, which is not a subclass of bool
         autoionisation = _check_bool(autoionisation, "autoionisation")
         # the chained comparison also rejects nan
-        if not 0.0 <= level_energy_ev < math.inf:
+        if _is_bool(level_energy_ev) or not 0.0 <= level_energy_ev < math.inf:
             msg = f"level_energy_ev must be at least zero and finite but is {level_energy_ev}"
             raise ValueError(msg)
         level_energy_ev = float(level_energy_ev)
@@ -639,10 +654,12 @@ def _get_auger_electron_energy_ev(
         advice = f"Set ionpot_ev to at least {retained_ev:.3f} eV."
     else:
         # round the limit down to three decimals. The product can round up, so the printed value is
-        # checked again until it passes.
+        # checked again until it passes. Each step is at least two units in the last place. A step of
+        # 0.001 eV alone does not change a value above 2^44 eV, and then the loop did not stop.
         auger_max_ev = math.floor((ionpot_ev - retained_min_ev) * 1000.0) / 1000.0
+        step_ev = max(0.001, 2.0 * math.ulp(auger_max_ev))
         while ionpot_ev - float(f"{auger_max_ev:.3f}") < retained_min_ev:
-            auger_max_ev -= 0.001
+            auger_max_ev -= step_ev
         advice = f"Set auger_electron_energy_ev to at most {auger_max_ev:.3f} eV."
     # The NIST data is a plausibility check, because thresholds from other atomic data can differ from
     # it, and a single direct ionisation has no such check. The channel conserves energy with any

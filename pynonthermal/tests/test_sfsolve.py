@@ -74,9 +74,10 @@ def test_api_guards() -> None:
         with pytest.raises(ValueError, match="No excitation data"):
             sf.add_ion_excitation(3, 1, n_ion=1.0)
 
-        # a zero-population ion is a no-op and a negative population is rejected
+        # a zero-population ion is registered with no channel, and a negative population is rejected
         sf.add_ionisation(8, 3, n_ion=0.0)
-        assert (8, 3) not in sf.ionpopdict
+        assert sf.ionpopdict[(8, 3)] == 0.0
+        assert (8, 3) not in sf._ionisation_channels
         with pytest.raises(ValueError, match="non-negative"):
             sf.add_ionisation(8, 3, n_ion=-1.0)
 
