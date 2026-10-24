@@ -14,8 +14,6 @@ import polars as pl
 import pytest
 
 import pynonthermal
-from pynonthermal import collion
-from pynonthermal import spencerfano
 
 
 def _oxygen_solver(**kwargs: object) -> pynonthermal.SpencerFanoSolver:
@@ -30,7 +28,7 @@ def _oxygen_level_table() -> pl.DataFrame:
     table = at.atomic.get_levels(
         pynonthermal.DATADIR / "artis_files",
         get_transitions=True,
-        derived_transitions_columns=list(spencerfano.DERIVED_TRANSITIONS_COLUMNS),
+        derived_transitions_columns=list(pynonthermal.spencerfano.DERIVED_TRANSITIONS_COLUMNS),
     )
     return table.filter(pl.col("Z") == 8)
 
@@ -43,7 +41,7 @@ def _with_transitions(table: pl.DataFrame, ion_stage: int, transitions: pl.DataF
 
 def test_auger_advice_ends_for_a_huge_threshold() -> None:
     # the rounding loop of the advice did not end above 2^44 eV, where a step of 0.001 eV is lost
-    auger_ev, message = collion._get_auger_electron_energy_ev(26, 1, 1e14, 2, 1e14 - 1.0, 0.0)
+    auger_ev, message = pynonthermal.collion._get_auger_electron_energy_ev(26, 1, 1e14, 2, 1e14 - 1.0, 0.0)
     assert auger_ev == 1e14 - 1.0
     assert message is not None
     assert "at most" in message
@@ -146,7 +144,9 @@ def test_bools_are_not_numbers() -> None:
 
 def test_grid_channel_copies_the_grid() -> None:
     grid = np.linspace(1.0, 100.0, 100)
-    channel = collion.IonisationChannel.from_xs_grid(grid, 8, 1, 20.0, np.where(grid > 20.0, 1e-18, 0.0), "k")
+    channel = pynonthermal.collion.IonisationChannel.from_xs_grid(
+        grid, 8, 1, 20.0, np.where(grid > 20.0, 1e-18, 0.0), "k"
+    )
     before = channel.xs(np.array([30.0]))
     grid *= 2.0
     np.testing.assert_array_equal(channel.xs(np.array([30.0])), before)
@@ -181,7 +181,7 @@ def test_zero_population_is_registered_by_every_method() -> None:
 
 def test_stage_matrices_give_the_per_channel_result(monkeypatch: pytest.MonkeyPatch) -> None:
     def solved(budget: int) -> pynonthermal.SpencerFanoSolver:
-        monkeypatch.setattr(spencerfano, "BALANCE_STAGE_MATRIX_MAX_BYTES", budget)
+        monkeypatch.setattr(pynonthermal.spencerfano, "BALANCE_STAGE_MATRIX_MAX_BYTES", budget)
         sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
         sf.add_element(8, n_elem=1e9, recomb_ratecoeffs={2: 3e-13, 3: 3e-12, 4: 1e-11})
         sf.solve(1e8)
