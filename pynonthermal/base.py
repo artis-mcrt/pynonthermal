@@ -213,6 +213,31 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     return lossfunc / EV  # return as [eV / cm]
 
 
+def _get_lossvec(energies_ev: npt.NDArray[np.float64], n_e_cgs: float) -> npt.NDArray[np.float64]:
+    # electronlossfunction() at every energy of an array, in one pass of numpy. The solver needs the loss
+    # function at every grid energy, and 4096 calls of the scalar function took most of the time of the
+    # heating fraction. The formulas and the order of the products are those of electronlossfunction().
+    arr_en_ev = np.asarray(energies_ev, dtype=np.float64)
+    if not (np.isfinite(arr_en_ev) & (arr_en_ev > 0.0)).all() or not 0.0 < n_e_cgs < math.inf or _is_bool(n_e_cgs):
+        # the scalar function gives the message of the first bad value
+        for energy_ev in arr_en_ev.tolist():
+            electronlossfunction(energy_ev, n_e_cgs)
+    n_e = float(n_e_cgs)
+    energy = arr_en_ev * EV
+    omegap = math.sqrt(4 * math.pi * n_e * QE**2 / ME)
+    zetae = H * omegap / 2 / math.pi
+    with np.errstate(divide="ignore", invalid="ignore"):
+        v = np.sqrt(2 * energy / ME)
+        coulomblog_arg = np.where(
+            arr_en_ev > 14, 2 * energy / zetae, ME * v**3 / (math.exp(np.euler_gamma) * QE**2 * omegap)
+        )
+    invalid = coulomblog_arg <= 1.0
+    if invalid.any():
+        # the scalar function gives the message of the first energy where the logarithm is not positive
+        electronlossfunction(float(arr_en_ev[np.argmax(invalid)]), n_e)
+    return n_e * 2 * math.pi * QE**4 / energy * np.log(coulomblog_arg) / EV
+
+
 def get_n_tot(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
     # total number density of all nuclei [cm^-3]
     n_tot = 0.0

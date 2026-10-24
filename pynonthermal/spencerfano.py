@@ -30,6 +30,7 @@ from pynonthermal.axelrod import get_workfn_ev
 from pynonthermal.axelrod import LOTZ_A_CM2_EV2
 from pynonthermal.base import _check_bool
 from pynonthermal.base import _check_ion
+from pynonthermal.base import _get_lossvec
 from pynonthermal.base import _is_bool
 from pynonthermal.base import _is_integer
 from pynonthermal.base import _warn
@@ -1012,7 +1013,6 @@ class SpencerFanoSolver:
         xs_vec: npt.NDArray[np.float64] | CrossSectionFunc,
         epsilon_trans_ev: float,
         transitionkey: t.Any | None,
-        xs_is_checked: bool = False,
     ) -> tuple[npt.NDArray[np.float64], int, float]:
         # validate and record one transition, and describe its matrix band: the values vec[j]
         # (zeroed below the threshold index, where no grid electron can drive the transition),
@@ -1022,14 +1022,8 @@ class SpencerFanoSolver:
         _check_ion(Z, ion_stage, needs_electron=True)
         self._check_epsilon_trans(epsilon_trans_ev)
         # the stored array is a read-only copy with no cross section below the threshold, so a
-        # later write by the caller cannot change what the solver holds. A template array is
-        # already such a copy, so xs_is_checked skips a second check and copy for every
-        # transition of an ion.
-        if xs_is_checked:
-            assert isinstance(xs_vec, np.ndarray)
-            xs_grid = xs_vec
-        else:
-            xs_grid = self._get_excitation_xs_on_grid(xs_vec, epsilon_trans_ev)
+        # later write by the caller cannot change what the solver holds
+        xs_grid = self._get_excitation_xs_on_grid(xs_vec, epsilon_trans_ev)
 
         # the chained comparison also rejects nan, for which every comparison is False, and inf
         if _is_bool(levelnumberdensity) or not 0.0 <= levelnumberdensity < math.inf:
@@ -1209,15 +1203,13 @@ class SpencerFanoSolver:
         n_ion = self.ionpopdict[(Z, ion_stage)]
 
         bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
+        # the checks of _store_excitation() ran once for the ion above, so each transition is stored
+        # here directly. The checks for each of some thousand transitions took a few per cent of a solve.
+        transitions = self.excitationlists.setdefault((Z, ion_stage), {}) if templates else {}
         for transitionkey, template in templates:
-            vec, k, frac = self._store_excitation(
-                Z,
-                ion_stage,
-                n_ion * template.popfrac,
-                template.xs_vec,
-                template.epsilon_trans_ev,
-                transitionkey=transitionkey,
-                xs_is_checked=True,
+            transitions[transitionkey] = template.at_population(n_ion)
+            vec, k, frac = self._excitation_band_vectors(
+                n_ion * template.popfrac, template.xs_vec, template.epsilon_trans_ev
             )
             if n_ion > 0.0 and not self.heating_only_approximation:
                 # the matrix takes no excitation band from an ion with no population, and none
@@ -1405,11 +1397,15 @@ class SpencerFanoSolver:
             )
         ).select(["level", "ion_popfrac"])
 
-        # lazy() accepts an eager DataFrame and a LazyFrame, because a table of the caller can hold either
-        lzdftransitions = ion["transitions"].item().lazy()
+        # a table of the caller can hold an eager DataFrame or a LazyFrame. The internal table holds a
+        # DataFrame, and a collect of it costs more than the filter of the frame in memory.
+        transitions_table = ion["transitions"].item()
+        dftransitions_allenergies = (
+            transitions_table.collect() if isinstance(transitions_table, pl.LazyFrame) else transitions_table
+        )
         missing_columns = sorted(
             {"A", "collstr", "forbidden", "lower", "upper", *DERIVED_TRANSITIONS_COLUMNS}.difference(
-                lzdftransitions.collect_schema().names()
+                dftransitions_allenergies.columns
             )
         )
         if missing_columns:
@@ -1419,11 +1415,12 @@ class SpencerFanoSolver:
                 f" derived_transitions_columns={list(DERIVED_TRANSITIONS_COLUMNS)})."
             )
             raise ValueError(msg)
-        # a null passes the filter below as true or as false, and then a transition either reaches the
+        # a null passes the filter below as true or as false, and then a transition either reached the
         # cross section as None, which raised a bare TypeError, or was dropped with no message
         required_columns = sorted({"A", "collstr", "forbidden", "lower", "upper", *DERIVED_TRANSITIONS_COLUMNS})
-        null_counts = lzdftransitions.select(pl.col(required_columns).null_count()).collect().row(0, named=True)
-        null_columns = [column for column, count in null_counts.items() if count > 0]
+        null_columns = [
+            column for column in required_columns if dftransitions_allenergies.get_column(column).null_count() > 0
+        ]
         if null_columns:
             msg = (
                 f"the transitions of Z={Z} ion_stage {ion_stage} in the level/transition table have null values"
@@ -1431,17 +1428,16 @@ class SpencerFanoSolver:
                 " strength has collstr -1, and a permitted transition has forbidden 0."
             )
             raise ValueError(msg)
-        lzdftransitions = lzdftransitions.filter((pl.col("collstr") >= 0).or_(pl.col("forbidden") == 0))
-
+        transition_filter = (pl.col("collstr") >= 0).or_(pl.col("forbidden") == 0)
         # default maxnlevelslower/maxnlevelsupper of 5/250 match the ARTIS defaults
         if maxnlevelslower is not None:
-            lzdftransitions = lzdftransitions.filter(pl.col("lower") < maxnlevelslower)
+            transition_filter &= pl.col("lower") < maxnlevelslower
         if maxnlevelsupper is not None:
-            lzdftransitions = lzdftransitions.filter(pl.col("upper") < maxnlevelsupper)
+            transition_filter &= pl.col("upper") < maxnlevelsupper
+        dftransitions_allenergies = dftransitions_allenergies.filter(transition_filter)
 
         # transitions outside the grid are dropped (see the docstring), but say how many, so that a grid
         # that happens to exclude most of an ion's excitation channels doesn't go unnoticed
-        dftransitions_allenergies = lzdftransitions.collect()
         dftransitions = dftransitions_allenergies.filter(
             pl.col("epsilon_trans_ev").is_between(self.engrid[0], self.engrid[-1])
         )
@@ -2552,7 +2548,7 @@ class SpencerFanoSolver:
 
         # the free-electron loss term is diagonal-only, so it is passed to the solver as a 1D
         # vector rather than copying the whole npts x npts matrix just to modify its diagonal
-        lossvec = np.array([electronlossfunction(en_ev, n_e) for en_ev in self.engrid])
+        lossvec = _get_lossvec(self.engrid, n_e)
 
         # each matrix row is the integral form of the degradation equation (KF92 equation 7, and
         # LHD12 equation 2) at one grid energy. rhsvec holds the integrated source term. Every
@@ -3057,9 +3053,7 @@ class SpencerFanoSolver:
 
         deltaen = self.deltaen
         frac_heating += (
-            deltaen
-            / self.deposition_ev_per_s_per_cm3
-            * sum(electronlossfunction(float(en_ev), n_e) * self.yvec[i] for i, en_ev in enumerate(self.engrid))
+            deltaen / self.deposition_ev_per_s_per_cm3 * float(np.dot(_get_lossvec(self.engrid, n_e), self.yvec))
         )
 
         frac_heating_E_0_part = E_0 * self.yvec[0] * electronlossfunction(E_0, n_e) / self.deposition_ev_per_s_per_cm3
@@ -3466,7 +3460,7 @@ class SpencerFanoSolver:
         self._require_solved()
         # an array, as the two other get_d_eta*_by_d_en_vec() methods give. A list repeats under * 2.
         n_e = self.get_n_e()
-        lossvec = np.array([electronlossfunction(float(en_ev), n_e) for en_ev in self.engrid])
+        lossvec = _get_lossvec(self.engrid, n_e)
         return lossvec * self.yvec / self.deposition_ev_per_s_per_cm3
 
     def get_d_etaexcitation_by_d_en_vec(self) -> npt.NDArray[np.float64]:
