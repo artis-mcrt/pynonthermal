@@ -33,13 +33,13 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
 
-import artistools as at
 import numpy as np
 import numpy.typing as npt
 import polars as pl
 
 import pynonthermal
 from pynonthermal.base import _check_ion
+from pynonthermal.base import _is_bool
 from pynonthermal.base import _is_integer
 from pynonthermal.collion import _get_nist_ionisation_energies_ev_cached
 from pynonthermal.constants import EV
@@ -74,13 +74,18 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
     partfunc_lower, partfunc_upper:
         the partition functions U_i and U_{i+1} of the lower and the upper stage
     """
-    if not 0.0 < temperature < math.inf:
+    if _is_bool(temperature) or not 0.0 < temperature < math.inf:
         msg = f"temperature must be greater than zero and finite but is {temperature}"
         raise ValueError(msg)
-    if not 0.0 < ionpot_ev < math.inf:
+    if _is_bool(ionpot_ev) or not 0.0 < ionpot_ev < math.inf:
         msg = f"ionpot_ev must be greater than zero and finite but is {ionpot_ev}"
         raise ValueError(msg)
-    if not 0.0 < partfunc_lower < math.inf or not 0.0 < partfunc_upper < math.inf:
+    if (
+        _is_bool(partfunc_lower)
+        or _is_bool(partfunc_upper)
+        or not 0.0 < partfunc_lower < math.inf
+        or not 0.0 < partfunc_upper < math.inf
+    ):
         msg = f"partition functions must be greater than zero and finite but are {partfunc_lower}, {partfunc_upper}"
         raise ValueError(msg)
     # Python floats, because a numpy float16 argument overflows in the product below
@@ -103,7 +108,7 @@ def get_ion_fractions(ratio_coeffs: Sequence[float], n_e: float) -> list[float]:
     n_e:
         the free electron density in cm^-3
     """
-    if not 0.0 < n_e < math.inf:
+    if _is_bool(n_e) or not 0.0 < n_e < math.inf:
         msg = f"n_e must be greater than zero and finite but is {n_e}"
         raise ValueError(msg)
     # a list, because the check and the sum below both read the coefficients. A second pass over an
@@ -119,7 +124,7 @@ def _check_ratio_coeffs(ratio_coeffs: Sequence[float]) -> None:
     # every ratio coefficient n_{i+1} n_e / n_i must be at least zero and finite. The chained
     # comparison also rejects nan.
     for c in ratio_coeffs:
-        if not 0.0 <= c < math.inf:
+        if _is_bool(c) or not 0.0 <= c < math.inf:
             msg = f"ratio coefficients must be non-negative and finite but one is {c}"
             raise ValueError(msg)
 
@@ -139,7 +144,7 @@ def get_ion_fractions_cuts(cut_coeffs: Sequence[Sequence[float]], n_e: float) ->
     n_e:
         the free electron density in cm^-3
     """
-    if not 0.0 < n_e < math.inf:
+    if _is_bool(n_e) or not 0.0 < n_e < math.inf:
         msg = f"n_e must be greater than zero and finite but is {n_e}"
         raise ValueError(msg)
 
@@ -160,7 +165,7 @@ def _get_ln_cut_terms(cut_coeffs: Sequence[Sequence[float]]) -> list[list[tuple[
             )
             raise ValueError(msg)
         for c in cut:
-            if not 0.0 <= c < math.inf:
+            if _is_bool(c) or not 0.0 <= c < math.inf:
                 msg = f"cut coefficients must be non-negative and finite but one is {c}"
                 raise ValueError(msg)
         ln_cut_terms.append([(i, math.log(c)) for i, c in enumerate(cut) if c > 0.0])
@@ -216,10 +221,14 @@ def solve_charge_neutral_n_e(
         an upper bound of charge_density(n_e) at every n_e, for example the charge of the highest
         ion stage of every element
     """
-    if not 0.0 <= n_e_fixed < math.inf:
+    if _is_bool(n_e_fixed) or not 0.0 <= n_e_fixed < math.inf:
         msg = f"n_e_fixed must be non-negative and finite but is {n_e_fixed}"
         raise ValueError(msg)
-    if not 0.0 <= charge_density_min <= charge_density_max < math.inf:
+    if (
+        _is_bool(charge_density_min)
+        or _is_bool(charge_density_max)
+        or not 0.0 <= charge_density_min <= charge_density_max < math.inf
+    ):
         msg = (
             "the bounds of the charge density must satisfy 0 <= charge_density_min <= charge_density_max and be"
             f" finite but are {charge_density_min} and {charge_density_max}"
@@ -353,7 +362,7 @@ def solve_charge_neutral_n_e_cuts(
     # (n_elem, lowest_stage, the cut terms of _get_ln_cut_terms()) of each element
     chains = []
     for n_elem, lowest_stage, cut_coeffs in elements:
-        if not 0.0 < n_elem < math.inf:
+        if _is_bool(n_elem) or not 0.0 < n_elem < math.inf:
             msg = f"n_elem must be greater than zero and finite but is {n_elem}"
             raise ValueError(msg)
         if not _is_integer(lowest_stage) or lowest_stage < 1:
@@ -455,7 +464,7 @@ def get_saha_ion_fractions(
     Z = int(Z)
     # the chained comparison also rejects nan. get_saha_factor() checks it too, but the LTE
     # partition function of a bad temperature is nan, whose message names the wrong fault.
-    if not 0.0 < temperature < math.inf:
+    if _is_bool(temperature) or not 0.0 < temperature < math.inf:
         msg = f"temperature must be greater than zero and finite but is {temperature}"
         raise ValueError(msg)
     # every stage is checked as an ion identity, so a non-integer stage raises and is not truncated
@@ -482,7 +491,10 @@ def get_saha_ion_fractions(
             partfunc = 1.0
         else:
             if adata_polars is None:
-                # the internal database, read once and only for a stage that needs it
+                # the internal database, read once and only for a stage that needs it. The import is
+                # here, because artistools takes most of the import time of the package.
+                import artistools as at  # noqa: PLC0415
+
                 adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
             ion = adata_polars.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
             if ion.is_empty():

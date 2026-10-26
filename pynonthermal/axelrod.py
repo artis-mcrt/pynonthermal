@@ -1,4 +1,9 @@
-# functions related to Axelrod 1980 non-thermal treatment
+"""The Lotz ionisation cross section and the shell tables of the A80 non-thermal treatment.
+
+The comments and the docstrings of this module cite these publications by their labels:
+
+- A80: Axelrod 1980, PhD thesis, University of California, Santa Cruz, ADS 1980PhDT.........1A
+"""
 
 import math
 from collections.abc import Mapping
@@ -85,13 +90,24 @@ def get_shell_configs() -> npt.NDArray[np.int64]:
     return shells_q
 
 
-@cache
 def get_shell_occupancies(atomic_number: int, ion_stage: int) -> npt.NDArray[np.int64]:
     # electrons in each shell of one ion, taken from the neutral configuration with the outermost
-    # electrons removed. Cached, like the two tables it reads, because every ionisation cross section
-    # evaluation needs it and it depends only on the ion.
-    # an ion outside the tables gave a row of another element or a bare AssertionError
+    # electrons removed. An ion outside the tables gave a row of another element, a bare
+    # AssertionError, or a bare IndexError.
+    # The check runs before the cache. A float or a bool that is equal to a cached integer key
+    # otherwise got the cached array with no check.
     atomic_number, ion_stage = _check_ion(atomic_number, ion_stage)
+    z_max = min(len(get_shell_configs()), len(get_binding_energies()))
+    if atomic_number > z_max:
+        msg = f"the shell tables hold the elements up to Z={z_max}, so they have no shells for Z={atomic_number}"
+        raise ValueError(msg)
+    return _get_shell_occupancies_cached(atomic_number, ion_stage)
+
+
+@cache
+def _get_shell_occupancies_cached(atomic_number: int, ion_stage: int) -> npt.NDArray[np.int64]:
+    # the occupancies of get_shell_occupancies() for a checked ion. Cached, like the two tables it
+    # reads, because every ionisation cross section evaluation needs it and it depends only on the ion.
     electron_binding = get_binding_energies()
     all_shells_q = get_shell_configs()
     nbound = atomic_number - ion_stage + 1
@@ -150,7 +166,7 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
 def get_workfn_ev(
     atomic_number: int, ion_stage: int, ionpot_ev: float, Zbar: float, lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> float:
-    # the Axelrod 1980 high-energy-limit approximation to the work per ion pair W, an estimate
+    # the A80 high-energy-limit approximation to the work per ion pair W, an estimate
     # of the effective ionisation potential without solving the Spencer-Fano equation:
     # 1/W = sigma / L with both taken in their high-energy limits and losses to the free
     # electrons neglected, which reduces to the shell-occupancy-over-binding-energy sum
@@ -163,7 +179,7 @@ def get_workfn_ev(
 def get_lotz_xs_ionisation_vec(
     shell: Mapping[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
-    # Axelrod 1980 Eq 3.38 evaluated at an array of energies [eV], with the constant A of the Lotz
+    # A80 Eq 3.38 evaluated at an array of energies [eV], with the constant A of the Lotz
     # formula lotz_a_cm2_ev2 [cm^2 eV^2]
 
     arr_en_erg = arr_en_ev * EV

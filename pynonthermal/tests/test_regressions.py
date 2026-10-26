@@ -901,11 +901,12 @@ def test_custom_ionisation_channel_validation() -> None:
         assert not sf.ionpopdict
         assert not sf._ionisation_channels
 
-        # a zero population adds no channel, but the cross section is still checked
+        # a zero population registers the ion and keeps the checked channel with no matrix entries
         with pytest.raises(ValueError, match="non-negative"):
-            sf.add_ionisation_channel(8, 2, n_ion=0.0, ionpot_ev=35.0, xs_vec=-good)
-        sf.add_ionisation_channel(8, 2, n_ion=0.0, ionpot_ev=35.0, xs_vec=good)
-        assert (8, 2) not in sf.ionpopdict
+            sf.add_ionisation_channel(8, 3, n_ion=0.0, ionpot_ev=55.0, xs_vec=-_bethe_xs_grid(sf.engrid, 55.0))
+        sf.add_ionisation_channel(8, 3, n_ion=0.0, ionpot_ev=55.0, xs_vec=_bethe_xs_grid(sf.engrid, 55.0))
+        assert sf.ionpopdict[(8, 3)] == 0.0
+        assert len(sf._ionisation_channels[(8, 3)]) == 1
         assert not sf.sfmatrix.any()
 
         # an omitted channelkey gets an automatic index, and a duplicate key is rejected

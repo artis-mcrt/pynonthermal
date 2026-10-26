@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
+"""Shared checks, the energy grid helpers, and the loss function of the free electrons.
+
+The comments and the docstrings of this module cite these publications by their labels:
+
+- KF92: Kozma & Fransson 1992, ApJ, 390, 602-621, doi:10.1086/171311
+- SH71: Schunk & Hays 1971, Planet. Space Sci., 19, 113-117, doi:10.1016/0032-0633(71)90071-7
+"""
+
 import math
 import warnings
 from collections.abc import Callable
+from collections.abc import Iterable
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -49,6 +58,12 @@ def _check_bool(value: object, name: str) -> bool:
         msg = f"{name} must be True or False but is {value!r}"
         raise TypeError(msg)
     return bool(value)
+
+
+def _is_bool(value: object) -> bool:
+    # a Python or numpy bool. A bool passes a numeric comparison as 0 or 1, so every check of a
+    # number rejects it first. Else True became a density of 1 cm^-3 or a temperature of 1 K.
+    return isinstance(value, bool | np.bool_)
 
 
 def _is_integer(value: object) -> bool:
@@ -142,16 +157,16 @@ def get_betasq(en_ev: npt.NDArray[np.float64] | float) -> npt.NDArray[np.float64
 
 def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # the loss function L(E) in the Spencer-Fano equation: the energy loss rate - dE / dX
-    # [eV / cm] of a non-thermal electron to the free thermal electrons, following Kozma &
-    # Fransson 1992: their equation 1 above 14 eV and equation 2 below it, with the plasma
-    # energy zeta_e of their equation 3 in the high-energy Coulomb logarithm
+    # [eV / cm] of a non-thermal electron to the free thermal electrons. It follows KF92: their
+    # equation 1 above 14 eV and equation 2 below it, with the plasma energy zeta_e of their
+    # equation 3 in the high-energy Coulomb logarithm.
     # returns a positive number
     # the chained comparisons also reject nan, for which every comparison is False
-    if not 0.0 < n_e_cgs < math.inf:
+    if _is_bool(n_e_cgs) or not 0.0 < n_e_cgs < math.inf:
         # the plasma frequency would be zero, making the Coulomb logarithm infinite
         msg = f"the free-electron loss function requires a positive finite free electron density but n_e is {n_e_cgs}"
         raise ValueError(msg)
-    if not 0.0 < energy_ev < math.inf:
+    if _is_bool(energy_ev) or not 0.0 < energy_ev < math.inf:
         msg = f"the free-electron loss function requires a positive finite energy but energy_ev is {energy_ev}"
         raise ValueError(msg)
 
@@ -164,7 +179,7 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     omegap = math.sqrt(4 * math.pi * n_e_cgs * QE**2 / ME)
     zetae = H * omegap / 2 / math.pi
 
-    # Kozma & Fransson (1992) give separate Coulomb logarithms above and below 14 eV and the two do not
+    # KF92 give separate Coulomb logarithms above and below 14 eV and the two do not
     # meet there: the branch below is lower by ln(hbar * v / (exp(eulergamma) * QE^2)), which is a step of
     # about 2-3 per cent in the loss rate for the free electron densities of interest. The step is part of
     # the published prescription (and of the ARTIS implementation this follows), so it is left in place
@@ -173,8 +188,8 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
         coulomblog_arg = 2 * energy / zetae
     else:
         v = math.sqrt(2 * energy / ME)  # velocity in cm/s (energy is in erg and ME in g, so cgs)
-        # Kozma & Fransson (1992) eq. 2 describes the gamma in this Coulomb logarithm as "Euler's
-        # constant (Schunk & Hays 1971)", but Schunk & Hays (1971, p. 114) define it by "ln gamma is
+        # KF92 eq. 2 describes the gamma in this Coulomb logarithm as "Euler's
+        # constant (Schunk & Hays 1971)", but SH71 (page 114) define it by "ln gamma is
         # Euler's constant", i.e. gamma = exp(0.5772) = 1.781 rather than 0.5772 itself.
         exp_eulergamma = math.exp(np.euler_gamma)
         coulomblog_arg = ME * pow(v, 3) / (exp_eulergamma * pow(QE, 2) * omegap)
@@ -186,9 +201,9 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     # default grid of SpencerFanoSolver.
     if coulomblog_arg <= 1.0:
         msg = (
-            f"the free-electron loss function is not valid at {energy_ev} eV for n_e = {n_e_cgs} cm^-3:"
-            f" the plasma energy hbar*omega_p is {zetae / EV:.3g} eV, which is too close to the electron"
-            " energy for the Coulomb logarithm to be positive."
+            f"the free-electron loss function is not valid at {energy_ev} eV for n_e = {n_e_cgs} cm^-3."
+            f" The plasma energy hbar*omega_p is {zetae / EV:.3g} eV, which is too near to the electron energy."
+            " Then the Coulomb logarithm is not positive."
         )
         raise ValueError(msg)
 
@@ -196,6 +211,31 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
 
     # lossfunc is now [erg / cm]
     return lossfunc / EV  # return as [eV / cm]
+
+
+def _get_lossvec(energies_ev: npt.NDArray[np.float64], n_e_cgs: float) -> npt.NDArray[np.float64]:
+    # electronlossfunction() at every energy of an array, in one pass of numpy. The solver needs the loss
+    # function at every grid energy, and 4096 calls of the scalar function took most of the time of the
+    # heating fraction. The formulas and the order of the products are those of electronlossfunction().
+    arr_en_ev = np.asarray(energies_ev, dtype=np.float64)
+    if not (np.isfinite(arr_en_ev) & (arr_en_ev > 0.0)).all() or not 0.0 < n_e_cgs < math.inf or _is_bool(n_e_cgs):
+        # the scalar function gives the message of the first bad value
+        for energy_ev in arr_en_ev.tolist():
+            electronlossfunction(energy_ev, n_e_cgs)
+    n_e = float(n_e_cgs)
+    energy = arr_en_ev * EV
+    omegap = math.sqrt(4 * math.pi * n_e * QE**2 / ME)
+    zetae = H * omegap / 2 / math.pi
+    with np.errstate(divide="ignore", invalid="ignore"):
+        v = np.sqrt(2 * energy / ME)
+        coulomblog_arg = np.where(
+            arr_en_ev > 14, 2 * energy / zetae, ME * v**3 / (math.exp(np.euler_gamma) * QE**2 * omegap)
+        )
+    invalid = coulomblog_arg <= 1.0
+    if invalid.any():
+        # the scalar function gives the message of the first energy where the logarithm is not positive
+        electronlossfunction(float(arr_en_ev[np.argmax(invalid)]), n_e)
+    return n_e * 2 * math.pi * QE**4 / energy * np.log(coulomblog_arg) / EV
 
 
 def get_n_tot(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
@@ -206,9 +246,12 @@ def get_n_tot(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int],
     return n_tot
 
 
-def get_Zbar(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
+def get_Zbar(ions: Iterable[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
     # number density-weighted average atomic number
     # i.e. protons per nucleus
+    # a list, because the sum of the densities and the loop below both read the ions. A second pass
+    # over a generator finds nothing, and then Zbar was zero.
+    ions = list(ions)
     Zbar = 0.0
     n_tot = get_n_tot(ions, ionpopdict)
     for Z, ion_stage in ions:
