@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Shared checks, the energy grid helpers, and the loss function of the free electrons.
 
 The comments and the docstrings of this module cite these publications by their labels:

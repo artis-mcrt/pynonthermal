@@ -149,8 +149,6 @@ def _read_colliondata_cached(collionfilename: str) -> pl.DataFrame:
             if not any_data_matched:
                 ioncharge = ionstage - 1
                 nbound = Z - ioncharge  # number of bound electrons
-                if nbound <= 0:
-                    continue
 
                 try:
                     ion_shells_q = all_shells_q[Z - 1]

@@ -308,7 +308,8 @@ def test_saha_ion_fractions_validation() -> None:
     with pytest.raises(ValueError, match="temperature must be greater than zero"):
         get_fractions(8, [1, 2], 0.0, n_e=1e8)
     # the cold gas returns before the root find, which is the other place that checks n_elem
-    for bad in (0.0, -1.0, math.nan, math.inf):
+    # a bool is an int in Python, so True was a density of 1 cm^-3
+    for bad in (0.0, -1.0, math.nan, math.inf, True):
         with pytest.raises(ValueError, match="n_elem must be greater than zero"):
             get_fractions(8, [1, 2], 100.0, n_elem=bad)
 

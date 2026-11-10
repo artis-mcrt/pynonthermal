@@ -455,7 +455,7 @@ def get_saha_ion_fractions(
         raise ValueError(msg)
     # the chained comparison also rejects nan. The root find checks n_elem as well, but the cold gas
     # below returns before it, and a bad density must not give plausible fractions.
-    if n_elem is not None and not 0.0 < n_elem < math.inf:
+    if n_elem is not None and (_is_bool(n_elem) or not 0.0 < n_elem < math.inf):
         msg = f"n_elem must be greater than zero and finite but is {n_elem}"
         raise ValueError(msg)
     if not _is_integer(Z) or Z < 1:
@@ -471,9 +471,6 @@ def get_saha_ion_fractions(
     stages = tuple(_check_ion(Z, ion_stage)[1] for ion_stage in ion_stages)
     if len(stages) < 2 or list(stages) != list(range(stages[0], stages[-1] + 1)):
         msg = f"the ion stages of Z={Z} must be at least two contiguous stages but are {list(stages)}"
-        raise ValueError(msg)
-    if stages[0] < 1 or stages[-1] > Z + 1:
-        msg = f"the ion stages of Z={Z} must lie between 1 and {Z + 1} but are {list(stages)}"
         raise ValueError(msg)
     if partfuncs is not None:
         # a partition function for a stage outside the chain is most likely a mistake in the keys
