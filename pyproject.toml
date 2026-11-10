@@ -86,7 +86,7 @@ ignore = [
     "N802",    # Function name should be lowercase
     "N803",    # Argument name should be lowercase
     "N806",    # non-lowercase-variable-in-function
-    "N816",    # variable-name-too-short
+    "N816",    # mixed-case-variable-in-global-scope
     "PLR0912", # too-many-branches
     "PLR0913", # too-many-arguments
     "PLR0915", # too-many-statements

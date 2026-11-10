@@ -1,9 +1,9 @@
 # pynonthermal
 [![DOI](https://zenodo.org/badge/359805556.svg)](https://zenodo.org/badge/latestdoi/359805556)
 [![PyPI - Version](https://img.shields.io/pypi/v/pynonthermal)](https://pypi.org/project/pynonthermal)
-[![License](https://img.shields.io/github/license/lukeshingles/pynonthermal)](https://github.com/lukeshingles/pynonthermal/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/artis-mcrt/pynonthermal)](https://github.com/artis-mcrt/pynonthermal/blob/main/LICENSE)
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/pynonthermal)](https://pypi.org/project/pynonthermal/)
-[![Build and test](https://github.com/lukeshingles/pynonthermal/actions/workflows/pytest.yml/badge.svg)](https://github.com/lukeshingles/pynonthermal/actions/workflows/pytest.yml)
+[![Build and test](https://github.com/artis-mcrt/pynonthermal/actions/workflows/pytest.yml/badge.svg)](https://github.com/artis-mcrt/pynonthermal/actions/workflows/pytest.yml)
 
 pynonthermal is a Python solver for the Spencer-Fano equation. The equation describes the energy distribution of the non-thermal (fast) electrons that slow down in a plasma. Radioactive decay in supernova ejecta makes high-energy leptons: Compton, photoelectric, and pair-production electrons and positrons. A partially ionised gas takes their energy through three channels:
 
@@ -43,7 +43,7 @@ pip install pynonthermal
 Development install with [uv](https://docs.astral.sh/uv/):
 
 ```sh
-git clone https://github.com/lukeshingles/pynonthermal.git
+git clone https://github.com/artis-mcrt/pynonthermal.git
 cd pynonthermal
 uv sync --frozen
 source ./.venv/bin/activate
@@ -80,8 +80,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
 The solver is a builder. Each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
 solves it. The `with` block is optional and only scopes the solver.
 
-The [quickstart notebook](https://github.com/lukeshingles/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example. Binder can run it:
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/lukeshingles/pynonthermal/HEAD?filepath=quickstart.ipynb)
+The [quickstart notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example. Binder can run it:
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/artis-mcrt/pynonthermal/HEAD?filepath=quickstart.ipynb)
 
 ## Usage guide
 
@@ -175,7 +175,7 @@ It works with every population rule. With `recomb_ratecoeffs` it replaces charge
 then finds the populations at your density, and they do not have to be neutral with it. The value holds
 until another call changes it. A call after `solve()` that changes the density discards the solution,
 so `solve()` must run again. A call with the density that the solver has already keeps the solution. The `override_n_e` argument of `solve()` is deprecated. The
-[iron notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
+[iron notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
 what a given density does to a balance.
 
 ### 5. Read the results
@@ -320,7 +320,7 @@ built-in data covers He, O, and Fe. For other elements give them as `partfuncs={
 or supply a level table in `adata_polars`. The bare nucleus (`ion_stage = Z + 1`) has a partition
 function of 1. `get_saha_factor()` gives one pair's ratio coefficient by itself.
 
-The [iron ionisation balance notebook](https://github.com/lukeshingles/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example. It gives the ion fractions of iron in the core of a Type Ia supernova at 250 days, with the deposition rate from the 56Co decay, a comparison with the Saha equation, and the evolution from 150 to 400 days.
+The [iron ionisation balance notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example. It gives the ion fractions of iron in the core of a Type Ia supernova at 250 days, with the deposition rate from the 56Co decay, a comparison with the Saha equation, and the evolution from 150 to 400 days.
 
 ## Complete example: pure-oxygen plasma
 
@@ -350,7 +350,7 @@ with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4096, verbose=
 
 The plot shows the energy distribution of the contributions to ionisation, excitation, and heating. The area under each curve gives the fraction of the deposited energy in that channel:
 
-![Energy deposition channels for a pure oxygen plasma](https://raw.githubusercontent.com/lukeshingles/pynonthermal/main/docs/oxygen_channels.svg)
+![Energy deposition channels for a pure oxygen plasma](https://raw.githubusercontent.com/artis-mcrt/pynonthermal/main/docs/oxygen_channels.svg)
 
 ## Units and conventions
 

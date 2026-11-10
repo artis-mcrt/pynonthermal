@@ -592,9 +592,6 @@ class SpencerFanoSolver:
         # spread the source over the top 1/30th of the energy range
         # (0.1 keV for a 3 keV Emax) to match KF92
         source_spread_pts = math.ceil(npts / 30.0)
-        if source_spread_pts < 1:
-            msg = "source_spread_pts must be at least 1"
-            raise ValueError(msg)
 
         sourcevec[npts - source_spread_pts :] = 1.0 / (self.deltaen * source_spread_pts)
 
@@ -1926,7 +1923,7 @@ class SpencerFanoSolver:
 
         if ionpot_ev > self.engrid[-1]:
             # the matrix fill would write nothing and the channel would be inert. The equivalent
-            # excitation check is in _store_excitation().
+            # excitation check is in _check_epsilon_trans().
             msg = (
                 f"ionpot_ev ({ionpot_ev} eV) is above the top of the energy grid"
                 f" ({self.engrid[-1]} eV), so no electron the solver represents can ionise this channel"
@@ -2833,7 +2830,7 @@ class SpencerFanoSolver:
         for trans in self.excitationlists[(Z, ion_stage)].values():
             xs_excitation_vec_sum_alltrans += trans.levelnumberdensity * trans.epsilon_trans_ev * trans.xs_vec
 
-        return np.dot(xs_excitation_vec_sum_alltrans, self.yvec) * deltaen / self.deposition_ev_per_s_per_cm3
+        return float(np.dot(xs_excitation_vec_sum_alltrans, self.yvec) * deltaen / self.deposition_ev_per_s_per_cm3)
 
     @staticmethod
     def _npts_subgrid(width_ev: float, J: float) -> int:
@@ -2958,7 +2955,6 @@ class SpencerFanoSolver:
                     # it rises steeply from zero just above the ionisation threshold that starts this integral
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p,
-                        # asarray because np.interp is typed as returning a scalar for a scalar x
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p),
                         arr_xs=channel.xs(arr_e_p),
                         e_s=arr_epsilon - ionpot_ev,
@@ -3008,7 +3004,7 @@ class SpencerFanoSolver:
 
         # source term not here because it should be zero at the low end anyway
 
-        return N_e
+        return float(N_e)
 
     def _get_y_weighted_by_xs(
         self, xs_grid: npt.NDArray[np.float64], arr_en_ev: npt.NDArray[np.float64]
@@ -3060,15 +3056,18 @@ class SpencerFanoSolver:
         # it reads yvec, which exists only after solve(), and it caches its result in _frac_heating
         self._require_solved()
         frac_heating = 0.0
-        E_0 = self.engrid[0]
+        # Python floats, so that the result is a Python float as for the other fractions
+        E_0 = float(self.engrid[0])
         n_e = self.get_n_e()
 
-        deltaen = self.deltaen
+        deltaen = float(self.deltaen)
         frac_heating += (
             deltaen / self.deposition_ev_per_s_per_cm3 * float(np.dot(_get_lossvec(self.engrid, n_e), self.yvec))
         )
 
-        frac_heating_E_0_part = E_0 * self.yvec[0] * electronlossfunction(E_0, n_e) / self.deposition_ev_per_s_per_cm3
+        frac_heating_E_0_part = (
+            E_0 * float(self.yvec[0]) * electronlossfunction(E_0, n_e) / self.deposition_ev_per_s_per_cm3
+        )
 
         frac_heating += frac_heating_E_0_part
 
@@ -3126,8 +3125,9 @@ class SpencerFanoSolver:
 
             frac_heating += frac_heating_N_e
 
-        self._frac_heating = frac_heating
-        return frac_heating
+        # the weight of an Auger electron row can be a numpy float64
+        self._frac_heating = float(frac_heating)
+        return self._frac_heating
 
     def _reset_channel_fractions(self) -> None:
         # clear the per-ion accumulators, which analyse_ntspectrum() sums into
@@ -3148,7 +3148,8 @@ class SpencerFanoSolver:
         # keep any frac_heating already computed for this solution, since it only depends on yvec
         self._reset_channel_fractions()
 
-        deltaen = self.deltaen
+        # a Python float, so that every fraction and rate coefficient of the analysis is a Python float
+        deltaen = float(self.deltaen)
 
         if self.verbose:
             print(f"    n_e_nt: {self.get_n_e_nt():.2e} [/cm3]")

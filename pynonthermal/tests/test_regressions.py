@@ -1323,6 +1323,23 @@ def test_numpy_scalar_inputs_give_python_floats() -> None:
         assert type(sf.deposition_ev_per_s_per_cm3) is float
         assert math.isfinite(sf.get_frac_sum())
         assert 10.0 < sf.get_eff_ionpot(8, 1) < 1e3
+        # every scalar result is a Python float. The grid spacing is a numpy float64, and it made some of them one.
+        for value in (
+            sf.get_frac_heating(),
+            sf.get_frac_ionisation_tot(),
+            sf.get_frac_excitation_tot(),
+            sf.get_frac_sum(),
+            sf.get_frac_ionisation_ion(8, 1),
+            sf.get_frac_excitation_ion(8, 1),
+            sf.get_eff_ionpot(8, 1),
+            sf.get_ionisation_ratecoeff(8, 1),
+            sf.get_ionisation_ratecoeff(8, 1, n_ejected=1),
+            sf.get_excitation_ratecoeff(8, 1, 0),
+            sf.get_n_e(),
+            sf.get_n_e_nt(),
+            sf.calculate_N_e(0.5),
+        ):
+            assert type(value) is float
     assert math.isclose(
         pynonthermal.ionbalance.get_saha_factor(np.float16(1e4), 13.6, 2.0, 1.0),  # ty: ignore[invalid-argument-type]
         pynonthermal.ionbalance.get_saha_factor(1e4, 13.6, 2.0, 1.0),

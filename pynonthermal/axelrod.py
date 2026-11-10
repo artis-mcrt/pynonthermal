@@ -198,8 +198,8 @@ def get_lotz_xs_ionisation_vec(
     p = ionpot_ev * EV
 
     # WARNING: The Axelrod equation uses both ln() and log10(), but the log10() term is likely a typo and has been
-    # corrected to ln(). Fortunately, at our typical 16 keV value of EMAX, 511 keV electrons are only mildly
-    # relativistic and the log(1 - beta^2) term is small anyway.
+    # corrected to ln(). Fortunately, the electrons at our typical EMAX of 16 keV are only mildly relativistic
+    # (the electron rest energy is 511 keV), and the log(1 - beta^2) term is small anyway.
     valid = arr_en_erg > p
     with np.errstate(divide="ignore", invalid="ignore"):
         part_sigma_shell = (
