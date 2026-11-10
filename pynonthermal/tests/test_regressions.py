@@ -1323,23 +1323,25 @@ def test_numpy_scalar_inputs_give_python_floats() -> None:
         assert type(sf.deposition_ev_per_s_per_cm3) is float
         assert math.isfinite(sf.get_frac_sum())
         assert 10.0 < sf.get_eff_ionpot(8, 1) < 1e3
-        # every scalar result is a Python float. The grid spacing is a numpy float64, and it made some of them one.
-        for value in (
-            sf.get_frac_heating(),
-            sf.get_frac_ionisation_tot(),
-            sf.get_frac_excitation_tot(),
-            sf.get_frac_sum(),
-            sf.get_frac_ionisation_ion(8, 1),
-            sf.get_frac_excitation_ion(8, 1),
-            sf.get_eff_ionpot(8, 1),
-            sf.get_ionisation_ratecoeff(8, 1),
-            sf.get_ionisation_ratecoeff(8, 1, n_ejected=1),
-            sf.get_excitation_ratecoeff(8, 1, 0),
-            sf.get_n_e(),
-            sf.get_n_e_nt(),
-            sf.calculate_N_e(0.5),
-        ):
-            assert type(value) is float
+        # every scalar result is a Python float. The grid spacing was a numpy float64, and it made some of them one.
+        assert type(sf.deltaen) is float
+        assert type(sf.E_init_ev) is float
+        for name, value in {
+            "get_frac_heating": sf.get_frac_heating(),
+            "get_frac_ionisation_tot": sf.get_frac_ionisation_tot(),
+            "get_frac_excitation_tot": sf.get_frac_excitation_tot(),
+            "get_frac_sum": sf.get_frac_sum(),
+            "get_frac_ionisation_ion": sf.get_frac_ionisation_ion(8, 1),
+            "get_frac_excitation_ion": sf.get_frac_excitation_ion(8, 1),
+            "get_eff_ionpot": sf.get_eff_ionpot(8, 1),
+            "get_ionisation_ratecoeff": sf.get_ionisation_ratecoeff(8, 1),
+            "get_ionisation_ratecoeff with n_ejected": sf.get_ionisation_ratecoeff(8, 1, n_ejected=1),
+            "get_excitation_ratecoeff": sf.get_excitation_ratecoeff(8, 1, 0),
+            "get_n_e": sf.get_n_e(),
+            "get_n_e_nt": sf.get_n_e_nt(),
+            "calculate_N_e": sf.calculate_N_e(0.5),
+        }.items():
+            assert type(value) is float, name
     assert math.isclose(
         pynonthermal.ionbalance.get_saha_factor(np.float16(1e4), 13.6, 2.0, 1.0),  # ty: ignore[invalid-argument-type]
         pynonthermal.ionbalance.get_saha_factor(1e4, 13.6, 2.0, 1.0),

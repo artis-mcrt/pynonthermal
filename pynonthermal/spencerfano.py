@@ -582,7 +582,8 @@ class SpencerFanoSolver:
         # handed to the cross section functions of the caller, so a write must raise at the
         # mutation site. An in-place write would otherwise leave the grid and deltaen inconsistent.
         self.engrid.flags.writeable = False
-        self.deltaen = self.engrid[1] - self.engrid[0]
+        # Python floats, so that the results that use the grid spacing are Python floats
+        self.deltaen = float(self.engrid[1] - self.engrid[0])
 
         self.dfcollion = pynonthermal.collion.read_colliondata(
             collionfilename=("collion-AR1985.txt" if _check_bool(use_ar1985, "use_ar1985") else "collion.txt")
@@ -608,7 +609,7 @@ class SpencerFanoSolver:
         # electron of bin j through the rows 0 to j. In the heating sum of calculate_frac_heating(),
         # these rows give the energy engrid[j] + deltaen. With engrid[j] alone, every energy fraction
         # was too large by deltaen / E_init_ev: 2.5e-4 on the default grid, and 5e-3 at npts=200.
-        self.E_init_ev = np.dot(self.engrid + self.deltaen, sourcevec) * self.deltaen
+        self.E_init_ev = float(np.dot(self.engrid + self.deltaen, sourcevec) * self.deltaen)
 
         self.adata_polars = None
         # True when adata_polars holds the internal database, which the solver can read again
@@ -3056,11 +3057,11 @@ class SpencerFanoSolver:
         # it reads yvec, which exists only after solve(), and it caches its result in _frac_heating
         self._require_solved()
         frac_heating = 0.0
-        # Python floats, so that the result is a Python float as for the other fractions
+        # a Python float, so that the result is a Python float as for the other fractions
         E_0 = float(self.engrid[0])
         n_e = self.get_n_e()
 
-        deltaen = float(self.deltaen)
+        deltaen = self.deltaen
         frac_heating += (
             deltaen / self.deposition_ev_per_s_per_cm3 * float(np.dot(_get_lossvec(self.engrid, n_e), self.yvec))
         )
@@ -3125,9 +3126,8 @@ class SpencerFanoSolver:
 
             frac_heating += frac_heating_N_e
 
-        # the weight of an Auger electron row can be a numpy float64
-        self._frac_heating = float(frac_heating)
-        return self._frac_heating
+        self._frac_heating = frac_heating
+        return frac_heating
 
     def _reset_channel_fractions(self) -> None:
         # clear the per-ion accumulators, which analyse_ntspectrum() sums into
@@ -3148,8 +3148,7 @@ class SpencerFanoSolver:
         # keep any frac_heating already computed for this solution, since it only depends on yvec
         self._reset_channel_fractions()
 
-        # a Python float, so that every fraction and rate coefficient of the analysis is a Python float
-        deltaen = float(self.deltaen)
+        deltaen = self.deltaen
 
         if self.verbose:
             print(f"    n_e_nt: {self.get_n_e_nt():.2e} [/cm3]")
