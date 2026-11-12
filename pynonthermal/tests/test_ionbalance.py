@@ -108,6 +108,16 @@ def test_charge_neutral_n_e_two_stages() -> None:
         pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(0.0, 1, [1.0])])
 
 
+def test_charge_neutral_n_e_small_roots() -> None:
+    solve = pynonthermal.ionbalance.solve_charge_neutral_n_e
+    # The exact root can equal either endpoint or lie inside the representable bracket.
+    for root, upper in ((1e-300, 1e-300), (1e-310, 1e-300), (math.ulp(0.0), 1e-300)):
+        result = solve(0.0, lambda _n_e, value=root: value, 0.0, upper)
+        assert math.isclose(result, root, rel_tol=1e-12)
+    with pytest.raises(ValueError, match="free electron density is zero"):
+        solve(0.0, lambda _n_e: 0.0, 0.0, 1e-300)
+
+
 def test_charge_neutral_n_e_two_elements() -> None:
     # the result is charge neutral for two elements together with fixed ions
     elements = [(1e10, 1, [1e9, 1e6]), (2e9, 2, [3e8])]
