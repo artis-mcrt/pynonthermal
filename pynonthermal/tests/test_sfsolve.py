@@ -124,7 +124,7 @@ def test_invalid_excitation_fraction_reported() -> None:
         sf.override_n_e(1e-4)
         sf.solve(deposition_ev_per_s_per_cm3=100)
         transition = sf.excitationlists[(2, 1)][0]
-        sf.excitationlists[(2, 1)][0] = dataclasses.replace(transition, levelnumberdensity=1e30)
+        sf._excitationlists[(2, 1)][0] = dataclasses.replace(transition, levelnumberdensity=1e30)
 
         with (
             pytest.warns(UserWarning, match="invalid frac_excitation_ion"),

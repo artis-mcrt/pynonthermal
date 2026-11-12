@@ -216,8 +216,14 @@ Each value of `excitationlists[(Z, ion_stage)]` is a `pynonthermal.ExcitationTra
 the lower level population `levelnumberdensity` in cm^-3, the cross sections `xs_vec` in cm^2 on
 `sf.engrid`, and the transition energy `epsilon_trans_ev` in eV.
 
-The solution itself is `sf.yvec` over `sf.engrid`, both read-only arrays. With `verbose=True` the
-solver prints the per-ion and per-shell breakdown as it analyses the solution.
+The solution itself is `sf.yvec` over `sf.engrid`, both read-only arrays. The population and excitation
+mappings are read-only too. Use `dict(sf.ionpopdict)` to make a separate copy of the populations.
+The matrix `sf.sfmatrix` and the integrated source `sf.rhsvec` provide read-only views.
+
+Set `heating_only_approximation` in the constructor. Create another solver to use a different value.
+Use the solver methods to add populations or channels. Direct changes can invalidate the matrix and the cached results.
+
+With `verbose=True`, the solver prints the per-ion and per-shell breakdown as it analyses the solution.
 
 ### 6. Plot the solution
 

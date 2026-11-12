@@ -19,6 +19,7 @@ import warnings
 from collections.abc import Collection
 from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import numpy.typing as npt
@@ -472,10 +473,10 @@ class SpencerFanoSolver:
     _stage_matrices: dict[tuple[int, int], npt.NDArray[np.float64]]
     _lotz_a_cm2_ev2: float
     deposition_ev_per_s_per_cm3: float
-    ionpopdict: dict[tuple[int, int], float]
-    excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]
+    _ionpopdict: dict[tuple[int, int], float]
+    _excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]
     verbose: bool
-    heating_only_approximation: bool
+    _heating_only_approximation: bool
     _n_e: float | None
     _n_e_override: float | None
     # the override that solve() restores after the deprecated argument of one call, or _OMITTED
@@ -484,9 +485,9 @@ class SpencerFanoSolver:
     engrid: npt.NDArray[np.float64]
     deltaen: float
     dfcollion: pl.DataFrame
-    rhsvec: npt.NDArray[np.float64]
+    _rhsvec: npt.NDArray[np.float64]
     E_init_ev: float
-    sfmatrix: npt.NDArray[np.float64]
+    _sfmatrix: npt.NDArray[np.float64]
     adata_polars: pl.DataFrame | None
     yvec: npt.NDArray[np.float64]
     _balanced_elements: dict[int, _BalancedElement]
@@ -563,10 +564,10 @@ class SpencerFanoSolver:
         # the unit matrix of each balanced stage, keyed by (Z, ion_stage) (see _get_stage_matrix())
         self._stage_matrices = {}
 
-        self.ionpopdict = {}  # key is (Z, ion_stage) value is number density
+        self._ionpopdict = {}  # key is (Z, ion_stage) value is number density
 
         # key is (Z, ion_stage) value is {transitionkey: ExcitationTransition}
-        self.excitationlists = {}
+        self._excitationlists = {}
 
         # key is Z, value is the element whose ion populations solve() finds
         self._balanced_elements = {}
@@ -577,7 +578,7 @@ class SpencerFanoSolver:
         self.temperature = None
 
         self.verbose = _check_bool(verbose, "verbose")
-        self.heating_only_approximation = _check_bool(heating_only_approximation, "heating_only_approximation")
+        self._heating_only_approximation = _check_bool(heating_only_approximation, "heating_only_approximation")
         self.engrid = np.linspace(emin_ev, emax_ev, num=npts, endpoint=True, dtype=float)
         # handed to the cross section functions of the caller, so a write must raise at the
         # mutation site. An in-place write would otherwise leave the grid and deltaen inconsistent.
@@ -601,7 +602,7 @@ class SpencerFanoSolver:
 
         # integral of the source from each energy to the top of the grid: the right-hand side
         # of the integral form of the degradation equation (KF92 equation 7)
-        self.rhsvec = np.cumsum((sourcevec * self.deltaen)[::-1])[::-1]
+        self._rhsvec = np.cumsum((sourcevec * self.deltaen)[::-1])[::-1]
 
         # E_init_ev is the deposition rate density that we assume when solving the SF equation.
         # The solution will be scaled to the true deposition rate later.
@@ -632,7 +633,7 @@ class SpencerFanoSolver:
                 f" {source_emax:.2f} eV with E_init {self.E_init_ev:7.2f} [eV/s/cm3]"
             )
 
-        self.sfmatrix = np.zeros((npts, npts))
+        self._sfmatrix = np.zeros((npts, npts))
 
     def __getstate__(self) -> dict[str, t.Any]:
         """Get the state that pickle serialises.
@@ -660,6 +661,11 @@ class SpencerFanoSolver:
         use protocol 4. So this method makes the shared arrays read-only again. A write must raise at
         the mutation site, as in a solver that pickle did not copy.
         """
+        state = state.copy()
+        # Old states use public names for these attributes.
+        for name in ("ionpopdict", "excitationlists", "sfmatrix", "rhsvec", "heating_only_approximation"):
+            if name in state:
+                state[f"_{name}"] = state.pop(name)
         self.__dict__.update(state)
         # a state from a release before this attribute
         self.__dict__.setdefault("_custom_adata_polars_dropped", False)
@@ -672,7 +678,7 @@ class SpencerFanoSolver:
                 arrays.append(channel.xs_grid)
                 if isinstance(channel.xs, _GridXs):
                     arrays.extend((channel.xs.arr_enev, channel.xs.xs_grid))
-        for transitions in self.excitationlists.values():
+        for transitions in self._excitationlists.values():
             arrays.extend(transition.xs_vec for transition in transitions.values())
         for element in self._balanced_elements.values():
             for templates in element.excitation_templates.values():
@@ -681,6 +687,37 @@ class SpencerFanoSolver:
             arrays.extend((fill.unit_prefactors, fill.int_eps_uppers, fill.int_eps_lowers1, fill.int_eps_lowers2))
         for array in arrays:
             array.flags.writeable = False
+
+    @property
+    def ionpopdict(self) -> Mapping[tuple[int, int], float]:
+        """Get a read-only view of the ion populations."""
+        return MappingProxyType(self._ionpopdict)
+
+    @property
+    def excitationlists(self) -> Mapping[tuple[int, int], Mapping[t.Any, ExcitationTransition]]:
+        """Get read-only mappings of the current excitation transitions."""
+        return MappingProxyType(
+            {ion: MappingProxyType(transitions) for ion, transitions in self._excitationlists.items()}
+        )
+
+    @property
+    def sfmatrix(self) -> npt.NDArray[np.float64]:
+        """Get a read-only view of the current matrix."""
+        matrix = self._sfmatrix.view()
+        matrix.flags.writeable = False
+        return matrix
+
+    @property
+    def rhsvec(self) -> npt.NDArray[np.float64]:
+        """Get a read-only view of the integrated source."""
+        source = self._rhsvec.view()
+        source.flags.writeable = False
+        return source
+
+    @property
+    def heating_only_approximation(self) -> bool:
+        """Get the heating-only option set by the constructor."""
+        return self._heating_only_approximation
 
     @property
     def lotz_a_cm2_ev2(self) -> float:
@@ -722,7 +759,7 @@ class SpencerFanoSolver:
         # every ion with an ionisation or an excitation channel: ions with a registered population
         # first (in population registration order), then ions that only have manually-added
         # excitation channels (in the order their first excitation was added)
-        return list(dict.fromkeys([*self.ionpopdict, *self.excitationlists]))
+        return list(dict.fromkeys([*self._ionpopdict, *self._excitationlists]))
 
     def set_temperature(self, temperature: float) -> None:
         """Set the temperature in K for the LTE populations of the excitation levels.
@@ -811,7 +848,7 @@ class SpencerFanoSolver:
 
     def _check_element_absent(self, Z: int, reason: str) -> None:
         # an element is added as a whole, so none of its ions can be present already
-        ions_present = {*self.ionpopdict, *self._ionisation_channels, *self.excitationlists}
+        ions_present = {*self._ionpopdict, *self._ionisation_channels, *self._excitationlists}
         if any(Z_present == Z for Z_present, _ in ions_present):
             msg = f"Z={Z} already has ions{reason}"
             raise ValueError(msg)
@@ -831,7 +868,7 @@ class SpencerFanoSolver:
         # population parameter as None. For an ion of a balanced element it is the provisional
         # value that solve() moves.
         _check_ion(Z, ion_stage, needs_electron=True)
-        n_ion = self.ionpopdict.get((Z, ion_stage))
+        n_ion = self._ionpopdict.get((Z, ion_stage))
         if n_ion is None:
             msg = (
                 f"{parameter} is required for Z={Z} ion_stage {ion_stage}, because the solver holds no population"
@@ -843,13 +880,13 @@ class SpencerFanoSolver:
     def _register_ion_population(self, Z: int, ion_stage: int, n_ion: float) -> None:
         # record an ion's number density after _check_ion_population() has accepted it
         self._check_ion_population(Z, ion_stage, n_ion)
-        if (Z, ion_stage) in self.ionpopdict:
+        if (Z, ion_stage) in self._ionpopdict:
             # the check above accepts a second value that agrees to its tolerance. The matrix holds
             # the contributions of the first one, so the first one stays.
             return
         # a Python float, because a numpy float32 would make the loss function and the free
         # electron density float32 too
-        self.ionpopdict[(Z, ion_stage)] = float(n_ion)
+        self._ionpopdict[(Z, ion_stage)] = float(n_ion)
         # the free electron density derived from the ion populations is no longer current
         self._n_e = None
 
@@ -866,7 +903,7 @@ class SpencerFanoSolver:
             msg = f"n_ion must be non-negative and finite but is {n_ion!r}"
             raise ValueError(msg)
 
-        n_ion_existing = self.ionpopdict.get((Z, ion_stage))
+        n_ion_existing = self._ionpopdict.get((Z, ion_stage))
         if n_ion_existing is not None and not math.isclose(n_ion_existing, n_ion, rel_tol=1e-6):
             msg = f"Can't add Z={Z} ion_stage {ion_stage} twice with different populations"
             raise ValueError(msg)
@@ -1006,7 +1043,7 @@ class SpencerFanoSolver:
             self._add_excitation_band(vec, vec * frac, k)
             return
         if transitionkey is None:
-            transitionkey = _get_default_key(self.excitationlists.get((Z, ion_stage), {}))
+            transitionkey = _get_default_key(self._excitationlists.get((Z, ion_stage), {}))
         self._check_epsilon_trans(epsilon_trans_ev)
         template = _ExcitationTemplate(
             popfrac=float(levelpopfrac),
@@ -1042,12 +1079,12 @@ class SpencerFanoSolver:
         # a Python float, as for an ion population. The analysis multiplies by this value.
         levelnumberdensity = float(levelnumberdensity)
         if transitionkey is None:
-            transitionkey = _get_default_key(self.excitationlists.get((Z, ion_stage), {}))
+            transitionkey = _get_default_key(self._excitationlists.get((Z, ion_stage), {}))
 
         # the key check runs before the first write, so a duplicate or an unhashable key leaves the
         # solver unchanged
         self._check_excitation_keys(Z, ion_stage, [transitionkey])
-        self.excitationlists.setdefault((Z, ion_stage), {})[transitionkey] = ExcitationTransition(
+        self._excitationlists.setdefault((Z, ion_stage), {})[transitionkey] = ExcitationTransition(
             levelnumberdensity=levelnumberdensity,
             xs_vec=xs_grid,
             # a Python float, because a numpy float16 overflows in the products of the analysis
@@ -1131,7 +1168,7 @@ class SpencerFanoSolver:
         # contribution is one windowed addition plus one matrix diagonal, with a row loop only
         # for the clipped rows. The band values add linearly, so vec and fracvec may also hold
         # the pre-summed contributions of many transitions that share the same k.
-        if self.heating_only_approximation:
+        if self._heating_only_approximation:
             # keep the stored transitions but leave the excitation loss out of the matrix
             return
         npts = len(self.engrid)
@@ -1140,7 +1177,7 @@ class SpencerFanoSolver:
         # i * (npts + 1) + d; copy=False makes reshape raise rather than silently write to a copy
         # matrix is sfmatrix, or the unit matrix of one balanced stage (see _get_stage_matrix())
         if matrix is None:
-            matrix = self.sfmatrix
+            matrix = self._sfmatrix
         flat = matrix.reshape(-1, copy=False)
         if 0 < k < npts:
             # rows of this view are the band segments sfmatrix[i, i:i+k] for i in [0, bandstop)
@@ -1210,18 +1247,18 @@ class SpencerFanoSolver:
         self._register_ion_population(Z, ion_stage, n_ion)
         # the registered population, which can differ from n_ion within the tolerance of the check.
         # The matrix and the analysis then use the same value.
-        n_ion = self.ionpopdict[(Z, ion_stage)]
+        n_ion = self._ionpopdict[(Z, ion_stage)]
 
         bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
         # the checks of _store_excitation() ran once for the ion above, so each transition is stored
         # here directly. The checks for each of some thousand transitions took a few per cent of a solve.
-        transitions = self.excitationlists.setdefault((Z, ion_stage), {}) if templates else {}
+        transitions = self._excitationlists.setdefault((Z, ion_stage), {}) if templates else {}
         for transitionkey, template in templates:
             transitions[transitionkey] = template.at_population(n_ion)
             vec, k, frac = self._excitation_band_vectors(
                 n_ion * template.popfrac, template.xs_vec, template.epsilon_trans_ev
             )
-            if n_ion > 0.0 and not self.heating_only_approximation:
+            if n_ion > 0.0 and not self._heating_only_approximation:
                 # the matrix takes no excitation band from an ion with no population, and none
                 # at all in the heating-only approximation
                 self._sum_excitation_bands(bands, vec, k, frac)
@@ -1300,7 +1337,7 @@ class SpencerFanoSolver:
         # call leaves the solver unchanged. An unhashable key raises a TypeError that names the
         # argument. The stored keys stay in their dict, because a copy of them for each call
         # made the storage of n transitions take a time proportional to n^2.
-        stored = self.excitationlists.get((Z, ion_stage), {})
+        stored = self._excitationlists.get((Z, ion_stage), {})
         seen = set()
         for key in keys:
             _check_hashable(key, "transitionkey")
@@ -1345,7 +1382,7 @@ class SpencerFanoSolver:
             if element is not None:
                 self._add_balanced_excitation_templates(element, ion_stage, templates)
             else:
-                self._apply_ion_excitation_templates(Z, ion_stage, self.ionpopdict[(Z, ion_stage)], templates)
+                self._apply_ion_excitation_templates(Z, ion_stage, self._ionpopdict[(Z, ion_stage)], templates)
 
     def _get_adata_polars(self) -> pl.DataFrame:
         # the levels/transitions table: the one from set_atomic_data(), else the internal database
@@ -1534,10 +1571,10 @@ class SpencerFanoSolver:
             return
         stored = element.excitation_templates.setdefault(ion_stage, {})
 
-        n_ion = self.ionpopdict[(Z, ion_stage)]
+        n_ion = self._ionpopdict[(Z, ion_stage)]
         unit_bands = element.excitation_unit_bands.setdefault(ion_stage, {})
         new_bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
-        transitions = self.excitationlists.setdefault((Z, ion_stage), {})
+        transitions = self._excitationlists.setdefault((Z, ion_stage), {})
         for transitionkey, template in templates:
             stored[transitionkey] = template
             transitions[transitionkey] = template.at_population(n_ion)
@@ -1568,7 +1605,7 @@ class SpencerFanoSolver:
         # sets only its width J and not the shape. An autoionisation channel has no such
         # distribution: its primary loses exactly ionpot_ev, so it uses the band of an excitation.
         self._require_not_solved("add ionisation")
-        if self.heating_only_approximation or n_ion == 0.0:
+        if self._heating_only_approximation or n_ion == 0.0:
             # leave the ionisation loss out of the matrix. add_ionisation keeps the ion
             # registration and the channel data that the analysis reads. A zero population adds
             # nothing, and a balanced element builds the fill when its population changes.
@@ -1599,7 +1636,7 @@ class SpencerFanoSolver:
         int_eps_lowers1 = fill.int_eps_lowers1
         int_eps_lowers2 = fill.int_eps_lowers2
         xsstartindex = fill.xsstartindex
-        sfmatrix = self.sfmatrix if matrix is None else matrix
+        sfmatrix = self._sfmatrix if matrix is None else matrix
         npts = len(self.engrid)
         # one buffer for the products of every row, in place of two temporaries per row
         buffer = np.empty(npts)
@@ -1650,7 +1687,7 @@ class SpencerFanoSolver:
         if auger_rowstop <= 0:
             return
         if matrix is None:
-            matrix = self.sfmatrix
+            matrix = self._sfmatrix
         extra = (n_ion * self.deltaen * channel.n_auger_electrons) * channel.xs_grid[xsstartindex:]
         matrix[: auger_rowstop - 1, xsstartindex:] -= extra
         matrix[auger_rowstop - 1, xsstartindex:] -= auger_lastrow_weight * extra
@@ -1806,7 +1843,7 @@ class SpencerFanoSolver:
         if not registered:
             self._register_ion_population(Z, ion_stage, n_ion)
             # the registered population, which can differ from n_ion within the tolerance of the check
-            n_ion = self.ionpopdict[(Z, ion_stage)]
+            n_ion = self._ionpopdict[(Z, ion_stage)]
 
         self._apply_ion_channels(Z, ion_stage, n_ion, channels)
 
@@ -2001,7 +2038,7 @@ class SpencerFanoSolver:
         if not registered:
             self._register_ion_population(Z, ion_stage, n_ion)
             # the registered population, which can differ from n_ion within the tolerance of the check
-            n_ion = self.ionpopdict[(Z, ion_stage)]
+            n_ion = self._ionpopdict[(Z, ion_stage)]
 
         self._store_ionisation_channel(Z, ion_stage, channel)
         self._add_ionisation_channel_to_matrix(n_ion, channel, cache=Z in self._balanced_elements)
@@ -2221,7 +2258,7 @@ class SpencerFanoSolver:
         weight_total = sum(weights)
         for (ion_stage, channels), weight in zip(channels_of_stage.items(), weights, strict=True):
             n_ion_guess = element.n_elem * weight / weight_total
-            self.ionpopdict[(Z, ion_stage)] = n_ion_guess
+            self._ionpopdict[(Z, ion_stage)] = n_ion_guess
             self._apply_ion_channels(Z, ion_stage, n_ion_guess, channels)
         self._n_e = None
 
@@ -2245,7 +2282,7 @@ class SpencerFanoSolver:
         npts = len(self.engrid)
         bytes_used = sum(matrix.nbytes for matrix in self._stage_matrices.values())
         if (
-            self.heating_only_approximation
+            self._heating_only_approximation
             or not channels
             or bytes_used + npts * npts * 8 > BALANCE_STAGE_MATRIX_MAX_BYTES
         ):
@@ -2269,12 +2306,12 @@ class SpencerFanoSolver:
         bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
         for ion_stage in element.ion_stages:
             n_new = populations[ion_stage]
-            delta = n_new - self.ionpopdict[(Z, ion_stage)]
-            self.ionpopdict[(Z, ion_stage)] = n_new
+            delta = n_new - self._ionpopdict[(Z, ion_stage)]
+            self._ionpopdict[(Z, ion_stage)] = n_new
             if delta != 0.0:
                 stage_matrix = self._get_stage_matrix(Z, ion_stage)
                 if stage_matrix is not None:
-                    _add_scaled_upper_triangle(self.sfmatrix, delta, stage_matrix)
+                    _add_scaled_upper_triangle(self._sfmatrix, delta, stage_matrix)
                 else:
                     for channel in self._ionisation_channels.get((Z, ion_stage), []):
                         self._add_ionisation_channel_to_matrix(delta, channel, cache=True)
@@ -2286,7 +2323,7 @@ class SpencerFanoSolver:
                         bands[k] = (delta * unitvec, delta * unitfracvec)
             templates = element.excitation_templates.get(ion_stage)
             if templates:
-                self.excitationlists[(Z, ion_stage)] = {
+                self._excitationlists[(Z, ion_stage)] = {
                     transitionkey: template.at_population(n_new) for transitionkey, template in templates.items()
                 }
 
@@ -2297,10 +2334,10 @@ class SpencerFanoSolver:
     def calculate_free_electron_density(self) -> float:
         """Get the free electron density in cm^-3 from the ion charges, ignoring override_n_e()."""
         n_e = 0.0
-        for Z, ion_stage in self.ionpopdict:
+        for Z, ion_stage in self._ionpopdict:
             charge = ion_stage - 1
             assert charge >= 0
-            n_e += charge * self.ionpopdict[(Z, ion_stage)]
+            n_e += charge * self._ionpopdict[(Z, ion_stage)]
         return n_e
 
     def override_n_e(self, n_e: float | None) -> None:
@@ -2373,7 +2410,7 @@ class SpencerFanoSolver:
         """
         # the ion check of a neutral stage checks Z, so a string or a float gives its own message
         Z = _check_ion(Z, 1)[0]
-        populations = {ion_stage: n_ion for (Z_ion, ion_stage), n_ion in self.ionpopdict.items() if Z_ion == Z}
+        populations = {ion_stage: n_ion for (Z_ion, ion_stage), n_ion in self._ionpopdict.items() if Z_ion == Z}
         if not populations:
             msg = f"the solver holds no population for any ion of Z={Z}"
             raise ValueError(msg)
@@ -2383,8 +2420,8 @@ class SpencerFanoSolver:
     def get_n_ion_tot(self) -> float:
         """Get the total number density of the nuclei of every ion that the solver holds, in cm^-3."""
         n_ion_tot = 0.0
-        for Z, ion_stage in self.ionpopdict:
-            n_ion_tot += self.ionpopdict[(Z, ion_stage)]
+        for Z, ion_stage in self._ionpopdict:
+            n_ion_tot += self._ionpopdict[(Z, ion_stage)]
         return n_ion_tot
 
     def solve(
@@ -2511,7 +2548,7 @@ class SpencerFanoSolver:
         return {
             "attributes": {name: self.__dict__[name] for name in _SOLVE_STATE_ATTRIBUTES if name in self.__dict__},
             "populations": {
-                element.Z: {ion_stage: self.ionpopdict[(element.Z, ion_stage)] for ion_stage in element.ion_stages}
+                element.Z: {ion_stage: self._ionpopdict[(element.Z, ion_stage)] for ion_stage in element.ion_stages}
                 for element in self._balanced_elements.values()
             },
             "ratecoeffs": {
@@ -2543,9 +2580,9 @@ class SpencerFanoSolver:
             # without free electrons there is no thermal loss channel, so electrons below the lowest
             # ionisation/excitation threshold have nowhere to deposit their energy and those rows of
             # the Spencer-Fano matrix are all zero
-            if not self.ionpopdict:
+            if not self._ionpopdict:
                 reason = "the solver holds no ion"
-            elif any(ion_stage > 1 for _, ion_stage in self.ionpopdict):
+            elif any(ion_stage > 1 for _, ion_stage in self._ionpopdict):
                 reason = "every ionised stage that the solver holds has a population of zero"
             else:
                 reason = "every ion that the solver holds is neutral"
@@ -2567,7 +2604,7 @@ class SpencerFanoSolver:
         # triangular. KF92 solve it with a "standard matrix technique" that they do not name.
         # Back-substitution from the highest energy down uses the triangular form, and it is much
         # faster than a general LU solve.
-        yvec_reference = solve_upper_triangular(self.sfmatrix, self.rhsvec, diag_add=lossvec)
+        yvec_reference = solve_upper_triangular(self._sfmatrix, self._rhsvec, diag_add=lossvec)
         self.yvec = yvec_reference * self.deposition_ev_per_s_per_cm3 / self.E_init_ev
         # the caller reads the solution, and every fraction and rate coefficient integrates it, so an
         # in-place write would silently change them. A write must raise at the mutation site, as for engrid.
@@ -2613,7 +2650,7 @@ class SpencerFanoSolver:
         # the same at every iteration
         n_e_fixed = sum(
             (ion_stage - 1) * n_ion
-            for (Z, ion_stage), n_ion in self.ionpopdict.items()
+            for (Z, ion_stage), n_ion in self._ionpopdict.items()
             if Z not in self._balanced_elements
         )
 
@@ -2706,7 +2743,7 @@ class SpencerFanoSolver:
                 print(f"  ionisation balance iteration {iteration}: n_e {n_e:.4e} [/cm3], residual {max_residual:.2e}")
                 for element in elements:
                     fractions = " ".join(
-                        f"{ion_stage}: {self.ionpopdict[(element.Z, ion_stage)] / element.n_elem:.4e}"
+                        f"{ion_stage}: {self._ionpopdict[(element.Z, ion_stage)] / element.n_elem:.4e}"
                         for ion_stage in element.ion_stages
                     )
                     print(f"    Z={element.Z} ion fractions {fractions}")
@@ -2794,7 +2831,7 @@ class SpencerFanoSolver:
         assert element.ratecoeffs_per_deposition is not None
         deposition = self.deposition_ev_per_s_per_cm3
         rates = {
-            ion_stage: self.ionpopdict[(Z, ion_stage)]
+            ion_stage: self._ionpopdict[(Z, ion_stage)]
             * (
                 self._calculate_ionisation_ratecoeff(Z, ion_stage)
                 if ion_stage == top
@@ -2817,7 +2854,7 @@ class SpencerFanoSolver:
 
     def calculate_nt_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
         self._require_solved()
-        if (Z, ion_stage) not in self.excitationlists:
+        if (Z, ion_stage) not in self._excitationlists:
             # zero for an ion that the solver holds without excitations. An ion that the solver does
             # not hold raises, as in get_frac_excitation_ion(), and does not give 0.0.
             return self._get_ion_result(dict.fromkeys(self._get_all_ions(), 0.0), Z, ion_stage, "excitation fraction")
@@ -2828,7 +2865,7 @@ class SpencerFanoSolver:
 
         xs_excitation_vec_sum_alltrans = np.zeros(npts)
 
-        for trans in self.excitationlists[(Z, ion_stage)].values():
+        for trans in self._excitationlists[(Z, ion_stage)].values():
             xs_excitation_vec_sum_alltrans += trans.levelnumberdensity * trans.epsilon_trans_ev * trans.xs_vec
 
         return float(np.dot(xs_excitation_vec_sum_alltrans, self.yvec) * deltaen / self.deposition_ev_per_s_per_cm3)
@@ -2913,9 +2950,9 @@ class SpencerFanoSolver:
 
         for Z, ion_stage in self._get_all_ions():
             N_e_ion = 0.0
-            n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
+            n_ion = self._ionpopdict.get((Z, ion_stage), 0.0)
 
-            transitions = self.excitationlists.get((Z, ion_stage), {}) if include_excitation_terms else {}
+            transitions = self._excitationlists.get((Z, ion_stage), {}) if include_excitation_terms else {}
             for trans in transitions.values():
                 # Interpolate y and the cross section at energy_ev + epsilon_trans_ev, as the two
                 # ionisation integrals below also do, rather than snapping down to the grid point under
@@ -3075,7 +3112,7 @@ class SpencerFanoSolver:
         # the heating-only matrix routes all deposited energy through the loss function, so the
         # N_e term below E_0 would count the same energy twice. calculate_N_e() itself still
         # gives the secondary-electron rate of the approximate solution.
-        if not self.heating_only_approximation:
+        if not self._heating_only_approximation:
             # the ionisation terms of E * N_e(E) are smooth over [0, E_0]. Simpson's rule therefore
             # gives 5e-5 of the converged value at 9 nodes. The trapezoid rule needs several hundred.
             arr_en = np.linspace(0.0, E_0, num=NPTS_SUB_E0_INTEGRAL, endpoint=True, dtype=np.float64)
@@ -3089,11 +3126,11 @@ class SpencerFanoSolver:
             # zero where E + eps is outside the grid, so it can have a step inside [0, E_0]. The rule
             # of Simpson cannot resolve a step, so the energy comes from the band of the term in the matrix.
             for Z, ion_stage in self._get_all_ions():
-                for trans in self.excitationlists.get((Z, ion_stage), {}).values():
+                for trans in self._excitationlists.get((Z, ion_stage), {}).values():
                     integral_e_n_e += trans.levelnumberdensity * self._band_energy_below_e0(
                         trans.xs_vec, trans.epsilon_trans_ev
                     )
-                n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
+                n_ion = self._ionpopdict.get((Z, ion_stage), 0.0)
                 for channel in self._ionisation_channels.get((Z, ion_stage), ()):
                     if channel.autoionisation:
                         integral_e_n_e += n_ion * self._band_energy_below_e0(channel.xs_grid, channel.ionpot_ev)
@@ -3107,7 +3144,7 @@ class SpencerFanoSolver:
             # not hold.
             deposition = self.deposition_ev_per_s_per_cm3
             for (Z, ion_stage), channels in self._ionisation_channels.items():
-                n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
+                n_ion = self._ionpopdict.get((Z, ion_stage), 0.0)
                 for channel in channels:
                     auger_rowstop, auger_lastrow_weight = self._get_auger_electron_rows(channel)
                     if channel.auger_electron_energy_ev <= 0.0 or auger_rowstop > 1:
@@ -3155,7 +3192,7 @@ class SpencerFanoSolver:
 
         n_ion_tot = self.get_n_ion_tot()
         for Z, ion_stage in self._get_all_ions():
-            n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
+            n_ion = self._ionpopdict.get((Z, ion_stage), 0.0)
             X_ion = n_ion / n_ion_tot if n_ion_tot > 0.0 else 0.0
             # an ion added only for excitation has no ionisation channels in the matrix
             channels = self._ionisation_channels.get((Z, ion_stage), [])
@@ -3213,7 +3250,7 @@ class SpencerFanoSolver:
                 # the heating-only approximation lets the fractions exceed one, so in that mode
                 # only a negative or NaN value is invalid (NaN fails every comparison)
                 if not frac_ionisation_shell >= 0.0 or (
-                    not self.heating_only_approximation and frac_ionisation_shell > 1.0
+                    not self._heating_only_approximation and frac_ionisation_shell > 1.0
                 ):
                     _warn(f"invalid frac_ionisation_shell of {frac_ionisation_shell} included in the total")
 
@@ -3243,7 +3280,7 @@ class SpencerFanoSolver:
             frac_excitation_thision = self.calculate_nt_frac_excitation_ion(Z, ion_stage)
 
             if not frac_excitation_thision >= 0.0 or (
-                not self.heating_only_approximation and frac_excitation_thision > 1.0
+                not self._heating_only_approximation and frac_excitation_thision > 1.0
             ):
                 # keep it in the total, as for frac_ionisation_shell, so that the energy conservation
                 # check below still sees the problem instead of a total that silently lost a channel
@@ -3270,7 +3307,7 @@ class SpencerFanoSolver:
                         Z,
                         ion_stage,
                         ionpot_ev=ionpot_valence,
-                        Zbar=get_Zbar(ions=tuple(self.ionpopdict.keys()), ionpopdict=self.ionpopdict),
+                        Zbar=get_Zbar(ions=tuple(self._ionpopdict.keys()), ionpopdict=self._ionpopdict),
                         lotz_a_cm2_ev2=self._lotz_a_cm2_ev2,
                     )
                     print(f"       approx workfn: {workfn_ev:8.2f} [eV] (without Spencer-Fano solution)")
@@ -3300,7 +3337,7 @@ class SpencerFanoSolver:
         # a channel is being double counted or omitted rather than merely under-resolved. The
         # heating-only approximation makes the sum exceed one, so there the conserved quantity
         # is the heating fraction alone, which must be close to one.
-        if self.heating_only_approximation:
+        if self._heating_only_approximation:
             if not math.isclose(frac_heating, 1.0, rel_tol=0.05):
                 _warn(
                     f"the heating fraction is {frac_heating:.4f} instead of 1 with the heating-only"
@@ -3436,9 +3473,9 @@ class SpencerFanoSolver:
         """
         self._require_solved()
         Z, ion_stage = _check_ion(Z, ion_stage, needs_electron=True)
-        transitions = self.excitationlists.get((Z, ion_stage))
+        transitions = self._excitationlists.get((Z, ion_stage))
         if transitions is None:
-            ions_with_excitations = sorted(self.excitationlists)
+            ions_with_excitations = sorted(self._excitationlists)
             msg = (
                 f"the solver has no excitation of Z={Z} ion_stage {ion_stage}. Its ions with excitations are"
                 f" {ions_with_excitations} as (Z, ion_stage) pairs. Add them with add_element(excitation=True),"
@@ -3479,8 +3516,8 @@ class SpencerFanoSolver:
         self._require_solved()
         part_integrand = np.zeros(len(self.engrid))
 
-        for Z, ion_stage in self.excitationlists:
-            for trans in self.excitationlists[(Z, ion_stage)].values():
+        for Z, ion_stage in self._excitationlists:
+            for trans in self._excitationlists[(Z, ion_stage)].values():
                 part_integrand += (
                     trans.levelnumberdensity * trans.epsilon_trans_ev * trans.xs_vec / self.deposition_ev_per_s_per_cm3
                 )
@@ -3492,7 +3529,7 @@ class SpencerFanoSolver:
         part_integrand = np.zeros(len(self.engrid))
 
         for (Z, ion_stage), channels in self._ionisation_channels.items():
-            n_ion = self.ionpopdict[(Z, ion_stage)]
+            n_ion = self._ionpopdict[(Z, ion_stage)]
 
             for channel in channels:
                 # as in analyse_ntspectrum(), only the energy that the ion keeps counts as ionisation
