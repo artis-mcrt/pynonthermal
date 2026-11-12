@@ -146,6 +146,40 @@ def build_direct_solver(
     return sf
 
 
+def test_dense_neutral_balance_seed() -> None:
+    alphas = {2: 1e-12}
+    sf = pynonthermal.SpencerFanoSolver(npts=256, emax_ev=1000)
+    sf.add_element(1, n_elem=1e20, recomb_ratecoeffs=alphas)
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        sf.electronlossfunction(0.1)
+    sf.solve(1e8)
+    assert math.isclose(sf.get_n_e(), 2.19876e9, rel_tol=1e-4)
+    assert math.isclose(sf.get_n_ion_tot(), 1e20, rel_tol=1e-12)
+    check_balance_identity(sf, 1, alphas, tol=2e-4)
+
+    # An explicit invalid density must still fail instead of changing the caller's plasma.
+    sf.override_n_e(1e18)
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        sf.solve(1e8)
+    assert sf.get_n_e() == 1e18
+
+
+def test_balance_seed_keeps_fixed_charge() -> None:
+    sf = pynonthermal.SpencerFanoSolver(npts=256, emax_ev=1000)
+    sf.add_element(1, n_elem=1e20, recomb_ratecoeffs={2: 1e-12})
+    sf.add_element(2, ion_densities={3: 1e8})
+    sf.solve(1e8)
+    assert sf.ionpopdict[(2, 3)] == 1e8
+    check_balance_identity(sf, 1, {2: 1e-12}, tol=2e-4)
+
+    # A fixed charge above the loss function limit cannot have a valid initial population.
+    invalid = pynonthermal.SpencerFanoSolver(npts=32, emax_ev=1000)
+    invalid.add_element(1, n_elem=1e20, recomb_ratecoeffs={2: 1e-12})
+    invalid.add_element(2, ion_densities={3: 1e18})
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        invalid.solve(1e8)
+
+
 def test_recombination_balance_oxygen() -> None:
     n_oxygen = 1e10
     deposition = 2950.49 * n_oxygen * 1e-5
