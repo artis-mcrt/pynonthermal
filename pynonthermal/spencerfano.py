@@ -774,8 +774,10 @@ class SpencerFanoSolver:
         use_collstrengths:
             compute cross sections from tabulated collision strengths where available (LHD12
             equation 11). Permitted transitions without one (or all permitted transitions,
-            when False) instead use the oscillator strength via the VR62 approximation;
-            forbidden transitions outside the collision-strength path get a zero cross section
+            when False) instead use the oscillator strength via the VR62 approximation.
+            The solver excludes forbidden transitions when it cannot use their collision strengths.
+            It also excludes transitions whose cross section is zero at every energy grid point.
+            Excluded transitions have no key in excitationlists.
         maxnlevelslower, maxnlevelsupper:
             include only transitions whose lower level index is below maxnlevelslower and whose
             upper level index is below maxnlevelsupper; None disables that cutoff. The values
@@ -1438,7 +1440,9 @@ class SpencerFanoSolver:
                 " strength has collstr -1, and a permitted transition has forbidden 0."
             )
             raise ValueError(msg)
-        transition_filter = (pl.col("collstr") >= 0).or_(pl.col("forbidden") == 0)
+        transition_filter = pl.col("forbidden") == 0
+        if use_collstrengths:
+            transition_filter |= pl.col("collstr") >= 0
         # default maxnlevelslower/maxnlevelsupper of 5/250 match the ARTIS defaults
         if maxnlevelslower is not None:
             transition_filter &= pl.col("lower") < maxnlevelslower
@@ -1504,6 +1508,8 @@ class SpencerFanoSolver:
                 self.engrid,
                 f"The cross section of transition {transitionkey} of Z={Z} ion_stage {ion_stage}",
             )
+            if not xs_vec.any():
+                continue
             templates.append(
                 (
                     transitionkey,

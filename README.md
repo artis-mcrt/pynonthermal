@@ -127,6 +127,10 @@ the other options default to the ARTIS values (collision strengths where availab
 the lowest 5 levels up to the lowest 250). Without this call the solver uses the internal database with
 those defaults.
 
+With `use_collstrengths=False`, the solver excludes forbidden transitions from the level data.
+The solver also excludes transitions whose cross section is zero at every energy grid point.
+Excluded transitions have no key in `excitationlists`.
+
 ### 3. Add the elements
 
 ```python
