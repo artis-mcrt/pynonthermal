@@ -658,7 +658,8 @@ def test_charge_neutral_n_e_general_model() -> None:
         pynonthermal.ionbalance.solve_charge_neutral_n_e(-1.0, lambda _n_e: 1.0, 0.0, 1.0)
 
 
-def test_deprecated_excitation_name() -> None:
+@pytest.mark.parametrize("Z", [2, 8])
+def test_deprecated_excitation_name(Z: int) -> None:
     # the old name still works and warns
     with (
         pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_old,
@@ -667,11 +668,14 @@ def test_deprecated_excitation_name() -> None:
         for sf in (sf_old, sf_new):
             sf.set_temperature(3000)
             sf.set_atomic_data(use_collstrengths=False)
-            sf.add_ionisation(2, 2, n_ion=1e8)
+            sf.add_ionisation(Z, 2, n_ion=1e8)
         with pytest.warns(DeprecationWarning, match="add_ion_excitation"):
-            sf_old.add_ion_ltepopexcitation(2, 2, n_ion=1e8, use_collstrengths=False)
-        sf_new.add_ion_excitation(2, 2, n_ion=1e8)
-        assert sf_old.excitationlists[(2, 2)].keys() == sf_new.excitationlists[(2, 2)].keys()
+            sf_old.add_ion_ltepopexcitation(Z, 2, n_ion=1e8, use_collstrengths=False)
+        sf_new.add_ion_excitation(Z, 2, n_ion=1e8)
+        # He II has no active transition with these settings. O II has active transitions.
+        assert bool(sf_new.excitationlists) == (Z == 8)
+        assert sf_old.excitationlists.keys() == sf_new.excitationlists.keys()
+        assert sf_old.excitationlists.get((Z, 2), {}).keys() == sf_new.excitationlists.get((Z, 2), {}).keys()
         assert np.array_equal(sf_old.sfmatrix, sf_new.sfmatrix)
 
 
