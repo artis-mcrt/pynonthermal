@@ -91,10 +91,8 @@ BALANCE_ANDERSON_DEPTH: int = 4
 BALANCE_ANDERSON_MAX_LN_STEP: float = 5.0
 
 # The provisional populations of a balanced element before the first solve: each stage holds this
-# fraction of the stage below it. The first solve runs at the free electron density of the seed.
-# For a chain that starts at the neutral stage, the seed keeps that density at about one per cent
-# of the element density. Equal fractions put the density at the order of the element density.
-# That is above the limit of the loss function for a dense gas whose balanced density is far lower.
+# fraction of the stage below it. A neutral element starts with about one free electron per hundred nuclei.
+# _prepare_balance_seed() reduces the ionisation if the density exceeds the loss function limit.
 BALANCE_SEED_STAGE_RATIO: float = 1e-2
 
 # The memory [bytes] that the unit matrices of the balanced stages can use (see
@@ -2573,6 +2571,52 @@ class SpencerFanoSolver:
         # in-place write would silently change them. A write must raise at the mutation site, as for engrid.
         self.yvec.flags.writeable = False
 
+    def _prepare_balance_seed(self) -> None:
+        # Reduce only the provisional ionisation if its electron density exceeds the loss function limit.
+        # The fixed populations and an explicit electron density stay unchanged.
+        if self._n_e_override is not None:
+            return
+        try:
+            _get_lossvec(self.engrid, self.get_n_e())
+        except ValueError:
+            pass
+        else:
+            return
+
+        elements = list(self._balanced_elements.values())
+        n_e_fixed = sum(
+            (ion_stage - 1) * n_ion
+            for (Z, ion_stage), n_ion in self.ionpopdict.items()
+            if Z not in self._balanced_elements
+        )
+        n_e_min = n_e_fixed + sum((element.ion_stages[0] - 1) * element.n_elem for element in elements)
+        if n_e_min > 0.0:
+            # A charge above this limit cannot disappear through a change to the initial populations.
+            _get_lossvec(self.engrid, n_e_min)
+
+        scale = 1.0
+        while True:
+            scale *= BALANCE_SEED_STAGE_RATIO
+            populations = {}
+            for element in elements:
+                stages = {stage: self.ionpopdict[(element.Z, stage)] * scale for stage in element.ion_stages[1:]}
+                stages[element.ion_stages[0]] = element.n_elem - sum(stages.values())
+                populations[element.Z] = stages
+            n_e = n_e_fixed + sum(
+                (stage - 1) * n_ion for stages in populations.values() for stage, n_ion in stages.items()
+            )
+            try:
+                _get_lossvec(self.engrid, n_e)
+            except ValueError:
+                if n_e <= 0.0:
+                    raise
+            else:
+                break
+
+        # Update the matrix once, after the search finds a valid set of populations.
+        for element in elements:
+            self._set_balanced_populations(element, populations[element.Z])
+
     def _solve_ion_balance(self, balance_tol: float) -> None:
         # find the populations of the balanced elements and the free electron density, and solve the
         # matrix equation at them. On return, yvec, ionpopdict, and the matrix agree with each other.
@@ -2595,6 +2639,7 @@ class SpencerFanoSolver:
         # gives them. A later solve starts from the rates of the last solution: at fixed populations
         # the rates are proportional to the deposition rate density.
         if any(element.ratecoeffs_per_deposition is None for element in elements):
+            self._prepare_balance_seed()
             self._solve_matrix()
             for element in elements:
                 if element.ratecoeffs_per_deposition is None:
