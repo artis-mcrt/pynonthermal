@@ -267,6 +267,8 @@ def solve_charge_neutral_n_e(
 
     # the residual divided by n_e falls with n_e, so the residual changes sign once. It is at most
     # zero at the upper bracket.
+    if residual(n_e_upper) == 0.0:
+        return n_e_upper
     if n_e_lower > 0.0:
         # the lower bracket is exact: the charge density is at least charge_density_min, so the residual
         # there is at least zero. Zero means that the populations sit at the bound, and then the lower
@@ -277,20 +279,21 @@ def solve_charge_neutral_n_e(
         # no exact positive lower bound. As n_e falls, the charge density tends to a positive constant
         # (every population that can be ionised is), so the residual turns positive at a small enough
         # n_e unless the charge density is zero everywhere.
-        n_e_lower = n_e_upper * _N_E_LOWER_BRACKET_FRACTION
+        minimum_density = math.ulp(0.0)
+        n_e_lower = max(n_e_upper * _N_E_LOWER_BRACKET_FRACTION, minimum_density)
         while True:
-            # the check runs before the charge density, which needs a positive n_e. The first
-            # bracket can already underflow for a very small n_e_upper.
-            if n_e_lower == 0.0:
-                msg = "the charge-neutral free electron density is below the range of a double precision number"
-                raise ValueError(msg)
             charge_density_lower = checked_charge_density(n_e_lower)
+            if charge_density_lower == n_e_lower:
+                return n_e_lower
             if charge_density_lower > n_e_lower:
                 break
             if charge_density_lower <= 0.0:
                 msg = "the charge density is zero and no fixed ion is ionised, so the free electron density is zero"
                 raise ValueError(msg)
-            n_e_lower *= _N_E_LOWER_BRACKET_FRACTION
+            if n_e_lower == minimum_density:
+                msg = "the charge-neutral free electron density is below the range of a double precision number"
+                raise ValueError(msg)
+            n_e_lower = max(n_e_lower * _N_E_LOWER_BRACKET_FRACTION, minimum_density)
 
     ln_lower = math.log(n_e_lower)
     ln_upper = math.log(n_e_upper)

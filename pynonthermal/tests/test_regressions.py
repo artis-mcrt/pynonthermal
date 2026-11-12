@@ -1394,9 +1394,8 @@ def test_ionbalance_checks_and_edge_cases() -> None:
     ionbalance = pynonthermal.ionbalance
     # an iterator gave one stage, because the check used it up
     assert ionbalance.get_ion_fractions(iter([1e3, 1e2]), 1e2) == ionbalance.get_ion_fractions([1e3, 1e2], 1e2)  # ty: ignore[invalid-argument-type]
-    # a first lower bracket that underflows gives the message of the module
-    with pytest.raises(ValueError, match="below the range of a double precision number"):
-        ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e-270, 1, [1e-3])])
+    # The upper endpoint remains a valid root when the first lower bracket underflows.
+    assert ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e-270, 1, [1e-3])]) == 1e-270
     with pytest.raises(ValueError, match="the lowest ion stage must be an integer"):
         ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e6, 1.5, [1e5])])  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match="ratio coefficients must be non-negative"):
