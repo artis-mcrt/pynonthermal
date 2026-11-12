@@ -104,11 +104,10 @@ BALANCE_SEED_STAGE_RATIO: float = 1e-2
 # gives no unit matrices.
 BALANCE_STAGE_MATRIX_MAX_BYTES: int = 512 * 2**20
 
-# The top stage of a balanced element is a sink: its ionisation is an energy loss in the matrix, but
-# the ions it makes have no stage to go to. In a longer chain those ions would sit in the next stage,
-# and their fraction of the element is about the ionisation rate out of the top stage divided by the
-# total ionisation rate of the element (which recombination balances). Warn when that ratio exceeds
-# this value, because the chain then needs a higher stage.
+# The top stage has no stage to ionise into. Its ionisation still removes energy from the electrons.
+# Warn when events from this stage exceed this fraction of all ionisation events of the element.
+# The ratio indicates a possible error from the chain limit. It does not estimate the omitted population.
+# That population also depends on the recombination coefficients of the omitted stages.
 BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 
 # The plausible range of a recombination rate coefficient [cm^3 s^-1] of an atomic ion. The published
@@ -2810,9 +2809,9 @@ class SpencerFanoSolver:
             )
             _warn(
                 f"the ionisation rate out of the top stage {top} of Z={Z} is {rates[top]:.2e} /s/cm3."
-                f" The total ionisation rate of the element is {rate_total:.2e} /s/cm3. Thus about"
-                f" {rates[top] / rate_total:.1%} of the element belongs in a higher stage. Extend the chain with"
-                f" recombination rate coefficients up to ion stage {stage_needed}."
+                f" The total ionisation rate of the element is {rate_total:.2e} /s/cm3."
+                f" Thus {rates[top] / rate_total:.1%} of its ionisation events leave the chain."
+                f" Extend the chain with recombination rate coefficients up to ion stage {stage_needed}."
             )
 
     def calculate_nt_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
