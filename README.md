@@ -348,7 +348,7 @@ with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4096, verbose=
     sf.plot_channels(xscalelog=True)
 ```
 
-The plot shows the energy distribution of the contributions to ionisation, excitation, and heating. The area under each curve gives the fraction of the deposited energy in that channel:
+The plot shows each channel's contribution per logarithmic electron energy interval, as `E dη/dE`. All curves use the same scale, which sets the largest peak to one. Their areas therefore do not give the absolute energy fractions. The heating curve also excludes the energy that thermalises below `emin_ev`. Use the fraction methods to get the total energy fractions:
 
 ![Energy deposition channels for a pure oxygen plasma](https://raw.githubusercontent.com/artis-mcrt/pynonthermal/main/docs/oxygen_channels.svg)
 
