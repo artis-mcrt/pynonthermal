@@ -2957,7 +2957,7 @@ class SpencerFanoSolver:
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p),
-                        arr_xs=channel.xs(arr_e_p),
+                        arr_xs=channel.evaluate_xs(arr_e_p),
                         e_s=arr_epsilon - ionpot_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
@@ -2984,7 +2984,7 @@ class SpencerFanoSolver:
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
-                        arr_xs=channel.xs(arr_e_p_low),
+                        arr_xs=channel.evaluate_xs(arr_e_p_low),
                         e_s=energy_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
