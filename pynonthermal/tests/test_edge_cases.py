@@ -201,7 +201,10 @@ def test_import_loads_neither_artistools_nor_matplotlib() -> None:
     # the annotations of the plot methods still resolve at runtime, through a name that imports
     # matplotlib.axes only when the annotation is evaluated
     code = (
-        "import sys, typing, pynonthermal; print('artistools' in sys.modules, 'matplotlib' in sys.modules);"
+        "import sys, typing, pynonthermal;"
+        " typing.get_type_hints(pynonthermal.SpencerFanoSolver.add_excitation);"
+        " typing.get_type_hints(pynonthermal.SpencerFanoSolver.add_ionisation_channel);"
+        " print('artistools' in sys.modules, 'matplotlib' in sys.modules);"
         " print(typing.get_type_hints(pynonthermal.SpencerFanoSolver.plot_channels)['axis'])"
     )
     repo = Path(pynonthermal.__file__).parent.parent
