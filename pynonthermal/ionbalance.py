@@ -368,10 +368,13 @@ def solve_charge_neutral_n_e_cuts(
         if not _is_integer(lowest_stage) or lowest_stage < 1:
             msg = f"the lowest ion stage must be an integer of at least 1 but is {lowest_stage!r}"
             raise ValueError(msg)
+        # Use Python scalars before arithmetic. A NumPy float16 can overflow in the charge bounds.
+        density = float(n_elem)
+        lowest_charge = int(lowest_stage) - 1
         # every stage is at least as charged as the lowest one and at most as the highest one
-        charge_density_min += (lowest_stage - 1) * n_elem
-        charge_density_max += (lowest_stage - 1 + len(cut_coeffs)) * n_elem
-        chains.append((n_elem, lowest_stage, _get_ln_cut_terms(cut_coeffs)))
+        charge_density_min += lowest_charge * density
+        charge_density_max += (lowest_charge + len(cut_coeffs)) * density
+        chains.append((density, lowest_charge + 1, _get_ln_cut_terms(cut_coeffs)))
 
     def charge_density(n_e: float) -> float:
         # the free electron density that the ion charges of the elements give at n_e

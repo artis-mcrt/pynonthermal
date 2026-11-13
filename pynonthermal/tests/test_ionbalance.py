@@ -108,6 +108,19 @@ def test_charge_neutral_n_e_two_stages() -> None:
         pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(0.0, 1, [1.0])])
 
 
+def test_charge_neutral_n_e_numpy_density() -> None:
+    # The upper charge bound exceeds the float16 range, but the physical density is valid.
+    ratios = [1e4] * 8
+    expected = pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e4, 1, ratios)])
+    actual = pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(
+        0.0,
+        [(np.float16(1e4), np.int16(1), ratios)],  # ty: ignore[invalid-argument-type]
+    )
+    assert math.isclose(actual, expected, rel_tol=1e-12)
+    fractions = pynonthermal.ionbalance.get_ion_fractions(ratios, actual)
+    assert math.isclose(actual, 1e4 * sum(i * frac for i, frac in enumerate(fractions)), rel_tol=1e-12)
+
+
 def test_charge_neutral_n_e_two_elements() -> None:
     # the result is charge neutral for two elements together with fixed ions
     elements = [(1e10, 1, [1e9, 1e6]), (2e9, 2, [3e8])]
