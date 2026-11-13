@@ -2849,6 +2849,7 @@ class SpencerFanoSolver:
         e_s: npt.NDArray[np.float64] | float,
         ionpot_ev: float,
         J: float,
+        quadrature_weights: npt.NDArray[np.float64] | None = None,
     ) -> float:
         # The integrand shared by both ionisation integrals of KF92 equation 11 (the same
         # integrals appear in their differential equation 6): y(E') sigma(E') P(e_s, E')
@@ -2858,7 +2859,10 @@ class SpencerFanoSolver:
         # solution and the cached cross sections can be sliced directly.
         arr_psecondary = pynonthermal.collion.Psecondary_vec(e_p=arr_e_p, e_s=e_s, ionpot_ev=ionpot_ev, J=J)
 
-        return float(np.trapezoid(arr_y * arr_xs * arr_psecondary, arr_e_p))
+        integrand = arr_y * arr_xs * arr_psecondary
+        if quadrature_weights is not None:
+            return float(np.dot(integrand, quadrature_weights))
+        return float(np.trapezoid(integrand, arr_e_p))
 
     def calculate_N_e(self, energy_ev: float) -> float:
         """Get N(E), the rate per volume at which electrons appear at energy_ev (KF92 equation 11).
@@ -2887,9 +2891,6 @@ class SpencerFanoSolver:
         # ionisations by primaries above 2E + I. calculate_frac_heating() integrates
         # E * N(E) over [0, E_0] for the energy that thermalises below the grid.
         # not valid for energy > E_0
-        if energy_ev == 0.0:
-            return 0.0
-
         N_e = 0.0
         e_min = float(self.engrid[0])
         e_max = float(self.engrid[-1])
@@ -2981,6 +2982,12 @@ class SpencerFanoSolver:
                     arr_e_p_low = np.linspace(
                         en_lower2, en_upper_low, num=self._npts_subgrid(en_upper_low - en_lower2, J), dtype=np.float64
                     )
+                    quadrature_weights = None
+                    if energy_ev == 0.0:
+                        # At the threshold, the cross section is zero and the distribution is singular.
+                        # Midpoints exclude that endpoint and integrate its finite product with the cross section.
+                        quadrature_weights = np.diff(arr_e_p_low)
+                        arr_e_p_low = arr_e_p_low[:-1] + quadrature_weights / 2.0
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
@@ -2988,6 +2995,7 @@ class SpencerFanoSolver:
                         e_s=energy_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
+                        quadrature_weights=quadrature_weights,
                     )
                     # the rest is smooth on the scale of J, so y comes from the solution and the
                     # cross section from the on-grid array of the channel, with no new evaluation
@@ -3080,7 +3088,7 @@ class SpencerFanoSolver:
             # gives 5e-5 of the converged value at 9 nodes. The trapezoid rule needs several hundred.
             arr_en = np.linspace(0.0, E_0, num=NPTS_SUB_E0_INTEGRAL, endpoint=True, dtype=np.float64)
             arr_en_N_e = np.array(
-                [en_ev * self._calculate_N_e(en_ev, include_excitation_terms=False) for en_ev in arr_en],
+                [0.0, *(en_ev * self._calculate_N_e(en_ev, include_excitation_terms=False) for en_ev in arr_en[1:])],
                 dtype=np.float64,
             )
             integral_e_n_e = integrate_simpson_uniform(arr_en_N_e, arr_en)
