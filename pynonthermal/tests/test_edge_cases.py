@@ -247,3 +247,45 @@ def test_messages_name_the_cause() -> None:
     sf.set_atomic_data(adata_polars=_oxygen_level_table())
     with pytest.raises(ValueError, match="in the level/transition table of set_atomic_data"):
         sf.add_ion_excitation(26, 2, 1e4)
+
+
+@pytest.mark.parametrize("protocol", [4, 5])
+def test_public_state_rejects_changes_after_pickle(protocol: int) -> None:
+    sf = _oxygen_solver()
+    sf.add_excitation(8, 1, 1e8, np.full(300, 1e-18), 10.0, "custom")
+    sf.solve(1e8)
+    copy = pickle.loads(pickle.dumps(sf, protocol=protocol))  # noqa: S301
+    for solver in (sf, copy):
+        n_e = solver.get_n_e()
+        fraction = solver.get_frac_ionisation_tot()
+        with pytest.raises(TypeError):
+            solver.ionpopdict[(8, 2)] = 2e6  # ty: ignore[invalid-assignment]
+        with pytest.raises(TypeError):
+            solver.excitationlists[(8, 1)] = {}  # ty: ignore[invalid-assignment]
+        with pytest.raises(TypeError):
+            solver.excitationlists[(8, 1)]["custom"] = solver.excitationlists[(8, 1)]["custom"]  # ty: ignore[invalid-assignment]
+        for array in (solver.sfmatrix, solver.rhsvec):
+            with pytest.raises(ValueError, match="read-only"):
+                array.flat[0] = 0.0
+        for attribute in ("ionpopdict", "excitationlists", "sfmatrix", "rhsvec", "heating_only_approximation"):
+            with pytest.raises(AttributeError):
+                setattr(solver, attribute, getattr(solver, attribute))
+        assert solver.get_n_e() == solver.calculate_free_electron_density() == n_e
+        assert solver.get_frac_ionisation_tot() == fraction
+        solver.solve(2e8)
+        assert solver.get_frac_ionisation_tot() == pytest.approx(fraction)
+
+
+def test_public_state_reads_old_pickle_names() -> None:
+    sf = _oxygen_solver()
+    sf.solve(1e8)
+    state = sf.__getstate__()
+    for name in ("ionpopdict", "excitationlists", "sfmatrix", "rhsvec", "heating_only_approximation"):
+        state[name] = state.pop(f"_{name}")
+    copy = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
+    copy.__setstate__(state)
+    assert copy.ionpopdict == sf.ionpopdict
+    assert np.array_equal(copy.sfmatrix, sf.sfmatrix)
+    assert np.array_equal(copy.rhsvec, sf.rhsvec)
+    copy.solve(2e8)
+    assert copy.get_frac_ionisation_tot() == pytest.approx(sf.get_frac_ionisation_tot())
