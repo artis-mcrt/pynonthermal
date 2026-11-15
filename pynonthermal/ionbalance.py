@@ -280,7 +280,7 @@ def solve_charge_neutral_n_e(
             return n_e_upper
         # As n_e falls, the charge density tends to a positive constant (every population that can be
         # ionised is), so the residual turns positive at a small enough n_e unless the charge density
-        # is zero everywhere. The search stops at the smallest double, where one of the tests is true.
+        # is zero everywhere. The search stops at the smallest double.
         n_e_lower = n_e_upper
         while True:
             n_e_lower = max(n_e_lower * _N_E_LOWER_BRACKET_FRACTION, math.ulp(0.0))
@@ -291,6 +291,10 @@ def solve_charge_neutral_n_e(
                 break
             if charge_density_lower <= 0.0:
                 msg = "the charge density is zero and no fixed ion is ionised, so the free electron density is zero"
+                raise ValueError(msg)
+            if n_e_lower == math.ulp(0.0):
+                # only a charge density with more precision than a double comes here
+                msg = "the charge-neutral free electron density is below the range of a double precision number"
                 raise ValueError(msg)
 
     ln_lower = math.log(n_e_lower)

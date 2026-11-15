@@ -7,6 +7,7 @@ with a solver that gets the same populations directly, and the error paths.
 import math
 import typing as t
 import warnings
+from fractions import Fraction
 
 import artistools as at
 import numpy as np
@@ -120,6 +121,9 @@ def test_charge_neutral_n_e_small_roots() -> None:
         assert solve(0.0, lambda _n_e, value=root: value, 0.0, 1e-300) == root
     with pytest.raises(ValueError, match="free electron density is zero"):
         solve(0.0, lambda _n_e: 0.0, 0.0, 1e-300)
+    # A charge density with more precision than a double can be below the smallest double.
+    with pytest.raises(ValueError, match="below the range of a double precision number"):
+        solve(0.0, lambda _n_e: Fraction(1, 10**400), 0.0, 1e-300)  # ty: ignore[invalid-argument-type]
 
 
 def test_charge_neutral_n_e_overflowed_upper_bracket() -> None:
