@@ -2810,7 +2810,7 @@ class SpencerFanoSolver:
             _warn(
                 f"the ionisation rate out of the top stage {top} of Z={Z} is {rates[top]:.2e} /s/cm3."
                 f" The total ionisation rate of the element is {rate_total:.2e} /s/cm3."
-                f" Thus {rates[top] / rate_total:.1%} of its ionisation events leave the chain."
+                f" Thus {rates[top] / rate_total:.1%} of the ionisation events of the element leave the chain."
                 f" Extend the chain with recombination rate coefficients up to ion stage {stage_needed}."
             )
 
