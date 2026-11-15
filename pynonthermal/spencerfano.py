@@ -333,18 +333,6 @@ NPTS_SUBGRID_PER_J: int = 32
 # few J above it.
 NCELLS_SECOND_INTEGRAL_SUBGRID: int = 2
 
-# The test of calculate_N_e(0) for a cross section with a step at the ionisation potential. The secondary
-# distribution of KF92 equation 4 is 2 / (E' - I) near the potential, so a step makes N(0) infinite. The
-# test uses two energies very near to the potential. The first one is above the potential by the fraction
-# ZERO_ENERGY_THRESHOLD_STEP_REL_EN of the distance to the first midpoint of the sub-grid. The second one
-# is at two times that distance. A cross section that goes to zero as a power law with the exponent p gives
-# the ratio 2**-p of the two values. A ratio above ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO (p below 0.044)
-# fails the test. This local test also finds a small step below a cross section that increases quickly.
-# N(0) is finite for each p above zero, but the midpoint sum does not converge for a small p. With
-# p = 0.03, the sum increases by about 1 % for each factor 4 in the nodes of the sub-grid, as it does for a step.
-ZERO_ENERGY_THRESHOLD_STEP_REL_EN: float = 1e-6
-ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO: float = 0.97
-
 # Number of nodes for the integral over E in [0, E_0] of KF92 equation 8. This one is not
 # free: every node costs the ionisation terms of calculate_N_e() over all ions and shells, so it dominates
 # the cost of the analysis. The excitation terms come from the matrix instead (see
@@ -1860,8 +1848,8 @@ class SpencerFanoSolver:
             the ionisation potential of the channel in eV, or the excitation energy of the
             autoionising level of an autoionisation channel. It must be between emin_ev and emax_ev.
             The cross section must be zero at and below it. An autoionisation channel keeps its
-            value at that energy. calculate_N_e(0) has a stricter rule for a function (see
-            calculate_N_e()).
+            value at that energy. For calculate_N_e(0), a function must also go to zero
+            continuously at ionpot_ev (see calculate_N_e()).
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
             array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
@@ -2886,11 +2874,9 @@ class SpencerFanoSolver:
         multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
         the energy of those electrons at or below emin_ev in a different term.
 
-        At energy_ev = 0, the cross section of each ionisation channel must go to zero continuously at
-        its ionisation potential. A cross section with a step there makes N(0) infinite, and the method
-        raises a ValueError. The method also raises a ValueError for a cross section that goes to zero
-        more slowly than a power law with the exponent 0.044, because the sum does not converge for it.
-        An array cross section always obeys this rule.
+        At energy_ev = 0, a cross section given as a function must go to zero continuously at its
+        ionisation potential. With a step there, the true rate at zero energy is infinite, and the
+        returned value depends on the sub-grid. An array cross section always obeys this rule.
         """
         # both this method and calculate_frac_heating() read yvec, which exists only after solve()
         self._require_solved()
@@ -3007,26 +2993,6 @@ class SpencerFanoSolver:
                         # Midpoints exclude that endpoint and integrate its finite product with the cross section.
                         quadrature_weights = np.diff(arr_e_p_low)
                         arr_e_p_low = arr_e_p_low[:-1] + quadrature_weights / 2.0
-                        # the midpoint sum has no limit for a step at the threshold (see the constants)
-                        # For a threshold very near to the top of the grid, the lower limit keeps the two
-                        # energies above the threshold in floating point. The upper limit keeps them in the grid.
-                        delta_near = min(
-                            max(
-                                ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev),
-                                4.0 * float(np.spacing(ionpot_ev)),
-                            ),
-                            0.5 * (en_upper_low - ionpot_ev),
-                        )
-                        xs_near, xs_ref = channel.xs(ionpot_ev + delta_near * np.array([1.0, 2.0]))
-                        if n_ion > 0.0 and xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * xs_ref:
-                            msg = (
-                                f"The cross section of ionisation channel {channel.key} of Z={Z} ion_stage"
-                                f" {ion_stage} does not go to zero continuously at ionpot_ev ({ionpot_ev} eV),"
-                                " or it goes to zero too slowly. The solver cannot calculate N(E) at"
-                                " energy_ev = 0 for it. Give a cross section that goes to zero at ionpot_ev"
-                                " as a power law with an exponent of 0.044 or more."
-                            )
-                            raise ValueError(msg)
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),

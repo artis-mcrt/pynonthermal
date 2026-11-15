@@ -445,8 +445,7 @@ one bin of the grid. A cross section given as a function is called there; an arr
 resolve that region with `npts` if it matters for your ion. Between the ionisation potential and the first
 grid point above it, the solver interpolates the array from zero at the ionisation potential.
 A function must go to zero continuously at the ionisation potential for `sf.calculate_N_e(0)`. With a step
-there, the rate at zero energy is infinite, and `sf.calculate_N_e(0)` raises a `ValueError`. It also raises a
-`ValueError` for a function that goes to zero more slowly than a power law with the exponent 0.044.
+there, the true rate at zero energy is infinite, and the returned value depends on the sub-grid.
 The term it feeds is the energy that
 thermalises below `emin_ev`, which is a small part of the heating fraction. An
 [autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as
