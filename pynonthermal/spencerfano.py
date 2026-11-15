@@ -339,7 +339,9 @@ NCELLS_SECOND_INTEGRAL_SUBGRID: int = 2
 # ZERO_ENERGY_THRESHOLD_STEP_REL_EN of the distance to the first midpoint of the sub-grid. The second one
 # is at two times that distance. A cross section that goes to zero as a power law with the exponent p gives
 # the ratio 2**-p of the two values. A ratio above ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO (p below 0.044)
-# is a step. This local test also finds a small step below a cross section that increases quickly.
+# fails the test. This local test also finds a small step below a cross section that increases quickly.
+# N(0) is finite for each p above zero, but the midpoint sum does not converge for a small p. With
+# p = 0.03, the sum increases by about 1 % for each factor 4 in the nodes of the sub-grid, as it does for a step.
 ZERO_ENERGY_THRESHOLD_STEP_REL_EN: float = 1e-6
 ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO: float = 0.97
 
@@ -1859,7 +1861,8 @@ class SpencerFanoSolver:
             autoionising level of an autoionisation channel. It must be between emin_ev and emax_ev.
             The cross section must be zero at and below it. An autoionisation channel keeps its
             value at that energy. calculate_N_e(0) also needs a function that goes to zero
-            continuously at ionpot_ev, and raises a ValueError for a function with a step there.
+            continuously at ionpot_ev. It raises a ValueError for a function with a step there, or
+            for a function that goes to zero more slowly than a power law with the exponent 0.044.
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
             array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
@@ -2886,7 +2889,9 @@ class SpencerFanoSolver:
 
         At energy_ev = 0, the cross section of each ionisation channel must go to zero continuously at
         its ionisation potential. A cross section with a step there makes N(0) infinite, and the method
-        raises a ValueError. An array cross section always obeys this rule.
+        raises a ValueError. The method also raises a ValueError for a cross section that goes to zero
+        more slowly than a power law with the exponent 0.044, because the sum does not converge for it.
+        An array cross section always obeys this rule.
         """
         # both this method and calculate_frac_heating() read yvec, which exists only after solve()
         self._require_solved()
@@ -3007,6 +3012,7 @@ class SpencerFanoSolver:
                     if energy_ev == 0.0 and n_ion > 0.0:
                         # The distribution is 2 / (E' - I) near the threshold. If the cross section has a
                         # step there, the integral is infinite and the midpoint sum depends on the sub-grid.
+                        # The sum also depends on the sub-grid if the cross section goes to zero very slowly.
                         # The check compares the cross section at two energies very near to the threshold.
                         delta_near = ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev)
                         xs_near, xs_ref = channel.xs(ionpot_ev + delta_near * np.array([1.0, 2.0]))
@@ -3014,8 +3020,9 @@ class SpencerFanoSolver:
                             msg = (
                                 f"The cross section of ionisation channel {channel.key} of Z={Z} ion_stage"
                                 f" {ion_stage} does not go to zero continuously at ionpot_ev ({ionpot_ev} eV),"
-                                " so N(E) is infinite at energy_ev = 0. Give a cross section that goes to zero"
-                                " continuously at ionpot_ev."
+                                " or it goes to zero too slowly. The solver cannot calculate N(E) at"
+                                " energy_ev = 0 for it. Give a cross section that goes to zero at ionpot_ev"
+                                " as a power law with an exponent of 0.044 or more."
                             )
                             raise ValueError(msg)
                     N_e_ion += self._integrate_shell_secondaries(
