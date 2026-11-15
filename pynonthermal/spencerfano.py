@@ -406,8 +406,7 @@ def integrate_simpson_uniform(y: npt.NDArray[np.float64], x: npt.NDArray[np.floa
 
 class _ExcitationListsView(Mapping[tuple[int, int], Mapping[t.Any, ExcitationTransition]]):
     # A read-only view of the excitation transitions of a solver. The view reads the dictionary of the
-    # solver at each access. A reference that the caller keeps therefore shows later changes. A proxy of
-    # a copy of the dictionary showed the old transitions after the solver replaced the dictionary of a stage.
+    # solver at each access, so a view that the caller keeps shows the later changes.
     __slots__ = ("_excitationlists",)
 
     def __init__(self, excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]) -> None:
@@ -720,22 +719,14 @@ class SpencerFanoSolver:
 
     @property
     def sfmatrix(self) -> npt.NDArray[np.float64]:
-        """Get a read-only view of the current matrix.
-
-        The view shares the memory of the solver, so an access does not copy the matrix. NumPy refuses
-        to set the writeable flag of the view and of each array that the caller makes from the view.
-        """
-        # A view of a read-only buffer. NumPy lets a caller set the writeable flag of an ndarray view
-        # again, because the array of the solver stays writeable.
+        """Get a read-only view of the current matrix. The view shares the memory of the solver."""
+        # A view of a read-only buffer, so NumPy refuses to set the writeable flag again. NumPy permits
+        # that on an ndarray view, because the array of the solver stays writeable.
         return np.asarray(memoryview(self._sfmatrix).toreadonly())
 
     @property
     def rhsvec(self) -> npt.NDArray[np.float64]:
-        """Get a read-only view of the integrated source.
-
-        The view shares the memory of the solver. NumPy refuses to set the writeable flag of the view
-        and of each array that the caller makes from the view.
-        """
+        """Get a read-only view of the integrated source. The view shares the memory of the solver."""
         return np.asarray(memoryview(self._rhsvec).toreadonly())
 
     @property
@@ -2347,9 +2338,10 @@ class SpencerFanoSolver:
                         bands[k] = (delta * unitvec, delta * unitfracvec)
             templates = element.excitation_templates.get(ion_stage)
             if templates:
-                self._excitationlists[(Z, ion_stage)] = {
-                    transitionkey: template.at_population(n_new) for transitionkey, template in templates.items()
-                }
+                # a change in place, so a mapping that the caller keeps for the stage shows the new populations
+                transitions = self._excitationlists[(Z, ion_stage)]
+                for transitionkey, template in templates.items():
+                    transitions[transitionkey] = template.at_population(n_new)
 
         for k, (bandvec, bandfracvec) in sorted(bands.items()):
             self._add_excitation_band(bandvec, bandfracvec, k)

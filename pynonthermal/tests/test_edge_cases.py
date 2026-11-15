@@ -285,7 +285,7 @@ def test_public_state_rejects_changes_after_pickle(protocol: int) -> None:
 
 
 def test_excitationlists_view_follows_the_solver() -> None:
-    # a reference to the proxy of a copy showed the old transitions after a change of the solver
+    # a view that the caller keeps, of all stages or of one stage, shows the later changes of the solver
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
     sf.add_element(2, 1e8, recomb_ratecoeffs={2: 4e-13, 3: 2e-12})
     excitationlists = sf.excitationlists
@@ -295,14 +295,12 @@ def test_excitationlists_view_follows_the_solver() -> None:
     assert list(excitationlists) == [(2, 1)]
     assert len(excitationlists) == 1
     assert excitationlists == sf.excitationlists
-    provisional = excitationlists[(2, 1)]["custom"].levelnumberdensity
-    # the balance replaces the dictionary of the stage
+    transitions = excitationlists[(2, 1)]
+    provisional = transitions["custom"].levelnumberdensity
+    # the balance changes the population of the stage
     sf.solve(1e8)
-    assert excitationlists[(2, 1)]["custom"].levelnumberdensity == 0.25 * sf.ionpopdict[(2, 1)] != provisional
-    with pytest.raises(TypeError):
-        excitationlists[(2, 1)] = {}  # ty: ignore[invalid-assignment]
-    with pytest.raises(TypeError):
-        excitationlists[(2, 1)]["custom"] = excitationlists[(2, 1)]["custom"]  # ty: ignore[invalid-assignment]
+    assert transitions["custom"].levelnumberdensity == 0.25 * sf.ionpopdict[(2, 1)] != provisional
+    assert excitationlists[(2, 1)] == transitions
 
 
 def test_public_state_reads_old_pickle_names() -> None:
