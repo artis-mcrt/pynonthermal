@@ -264,9 +264,17 @@ def test_public_state_rejects_changes_after_pickle(protocol: int) -> None:
             solver.excitationlists[(8, 1)] = {}  # ty: ignore[invalid-assignment]
         with pytest.raises(TypeError):
             solver.excitationlists[(8, 1)]["custom"] = solver.excitationlists[(8, 1)]["custom"]  # ty: ignore[invalid-assignment]
-        for array in (solver.sfmatrix, solver.rhsvec):
+        for array, stored in ((solver.sfmatrix, solver._sfmatrix), (solver.rhsvec, solver._rhsvec)):
             with pytest.raises(ValueError, match="read-only"):
                 array.flat[0] = 0.0
+            # the property gives a view and not a copy, and a caller cannot make the view writeable again
+            assert np.shares_memory(array, stored)
+            assert array.shape == stored.shape
+            assert array.dtype == stored.dtype
+            for view in (array, array.view(), array[1:], array.T):
+                with pytest.raises(ValueError, match="cannot set WRITEABLE flag"):
+                    view.flags.writeable = True
+                assert not view.flags.writeable
         for attribute in ("ionpopdict", "excitationlists", "sfmatrix", "rhsvec", "heating_only_approximation"):
             with pytest.raises(AttributeError):
                 setattr(solver, attribute, getattr(solver, attribute))

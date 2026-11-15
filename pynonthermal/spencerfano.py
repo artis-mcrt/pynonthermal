@@ -720,17 +720,23 @@ class SpencerFanoSolver:
 
     @property
     def sfmatrix(self) -> npt.NDArray[np.float64]:
-        """Get a read-only view of the current matrix."""
-        matrix = self._sfmatrix.view()
-        matrix.flags.writeable = False
-        return matrix
+        """Get a read-only view of the current matrix.
+
+        The view shares the memory of the solver, so an access does not copy the matrix. NumPy refuses
+        to set the writeable flag of the view and of each array that the caller makes from the view.
+        """
+        # A view of a read-only buffer. NumPy lets a caller set the writeable flag of an ndarray view
+        # again, because the array of the solver stays writeable.
+        return np.asarray(memoryview(self._sfmatrix).toreadonly())
 
     @property
     def rhsvec(self) -> npt.NDArray[np.float64]:
-        """Get a read-only view of the integrated source."""
-        source = self._rhsvec.view()
-        source.flags.writeable = False
-        return source
+        """Get a read-only view of the integrated source.
+
+        The view shares the memory of the solver. NumPy refuses to set the writeable flag of the view
+        and of each array that the caller makes from the view.
+        """
+        return np.asarray(memoryview(self._rhsvec).toreadonly())
 
     @property
     def heating_only_approximation(self) -> bool:
