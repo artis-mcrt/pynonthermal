@@ -701,6 +701,9 @@ class _GridXs:
     # The np.where keeps the function at zero below its own ionisation potential, where a straight
     # interpolation from the last grid point below it would give a small positive value. An
     # autoionisation channel keeps its value at the threshold (keep_threshold).
+    # For the other channels, the function is linear from zero at the ionisation potential to the first
+    # grid point above it. The secondary distribution diverges at the threshold as the inverse of the
+    # energy above it. A positive cross section there made the integrals of calculate_N_e() diverge.
     # A class at module level and not a closure, so that pickle can serialise a solver that holds the channel.
     arr_enev: npt.NDArray[np.float64]
     xs_grid: npt.NDArray[np.float64]
@@ -708,8 +711,16 @@ class _GridXs:
     keep_threshold: bool = False
 
     def __call__(self, en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        above = en_ev >= self.ionpot_ev if self.keep_threshold else en_ev > self.ionpot_ev
-        return np.where(above, np.interp(en_ev, self.arr_enev, self.xs_grid, left=0.0, right=0.0), 0.0)
+        xs = np.interp(en_ev, self.arr_enev, self.xs_grid, left=0.0, right=0.0)
+        if self.keep_threshold:
+            return np.where(en_ev >= self.ionpot_ev, xs, 0.0)
+        # the index of the first grid point above the ionisation potential
+        i = int(np.searchsorted(self.arr_enev, self.ionpot_ev, side="right"))
+        if 0 < i < len(self.arr_enev):
+            en_first = self.arr_enev[i]
+            xs_threshold = self.xs_grid[i] * (en_ev - self.ionpot_ev) / (en_first - self.ionpot_ev)
+            xs = np.where(en_ev < en_first, xs_threshold, xs)
+        return np.where(en_ev > self.ionpot_ev, xs, 0.0)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
