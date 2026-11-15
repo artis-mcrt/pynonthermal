@@ -31,6 +31,7 @@ from pynonthermal.axelrod import LOTZ_A_CM2_EV2
 from pynonthermal.base import _check_bool
 from pynonthermal.base import _check_ion
 from pynonthermal.base import _get_lossvec
+from pynonthermal.base import _get_n_e_limit
 from pynonthermal.base import _is_bool
 from pynonthermal.base import _is_integer
 from pynonthermal.base import _warn
@@ -91,10 +92,9 @@ BALANCE_ANDERSON_DEPTH: int = 4
 BALANCE_ANDERSON_MAX_LN_STEP: float = 5.0
 
 # The provisional populations of a balanced element before the first solve: each stage holds this
-# fraction of the stage below it. The first solve runs at the free electron density of the seed.
-# For a chain that starts at the neutral stage, the seed keeps that density at about one per cent
-# of the element density. Equal fractions put the density at the order of the element density.
-# That is above the limit of the loss function for a dense gas whose balanced density is far lower.
+# fraction of the stage below it. A neutral element starts with about one free electron per hundred nuclei.
+# The first solve multiplies the ionised populations by this ratio until the free electron density is
+# below the limit of the loss function.
 BALANCE_SEED_STAGE_RATIO: float = 1e-2
 
 # The memory [bytes] that the unit matrices of the balanced stages can use (see
@@ -2595,6 +2595,29 @@ class SpencerFanoSolver:
         # gives them. A later solve starts from the rates of the last solution: at fixed populations
         # the rates are proportional to the deposition rate density.
         if any(element.ratecoeffs_per_deposition is None for element in elements):
+            if self._n_e_override is None:
+                # The provisional populations of a dense gas can put the free electron density above
+                # the limit of the loss function. Only the ions above the lowest stage of a balanced
+                # element can move, so the density has a part that stays and a part that the seed can
+                # reduce. The fixed populations and an explicit free electron density do not change.
+                n_e_limit = _get_n_e_limit(float(self.engrid[0]))
+                n_e_seed = sum(
+                    (ion_stage - element.ion_stages[0]) * self.ionpopdict[(element.Z, ion_stage)]
+                    for element in elements
+                    for ion_stage in element.ion_stages
+                )
+                n_e_min = self.get_n_e() - n_e_seed
+                scale = 1.0
+                while n_e_min < n_e_limit <= n_e_min + scale * n_e_seed:
+                    scale *= BALANCE_SEED_STAGE_RATIO
+                if scale < 1.0:
+                    for element in elements:
+                        populations = {
+                            ion_stage: scale * self.ionpopdict[(element.Z, ion_stage)]
+                            for ion_stage in element.ion_stages[1:]
+                        }
+                        populations[element.ion_stages[0]] = element.n_elem - sum(populations.values())
+                        self._set_balanced_populations(element, populations)
             self._solve_matrix()
             for element in elements:
                 if element.ratecoeffs_per_deposition is None:
