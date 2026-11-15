@@ -12,7 +12,7 @@ sf.solve(deposition_ev_per_s_per_cm3=1e8)
 # A positive excitation fraction shows that the wheel contains the excitation data.
 fractions = (sf.get_frac_heating(), sf.get_frac_ionisation_tot(), sf.get_frac_excitation_tot())
 assert all(fraction > 0.0 for fraction in fractions)
-# The default grid gives an energy sum within 1e-5 of one for this model. A grid of 200 points gives 1.09.
+# The default grid gives an energy sum within 1e-5 of one for this model. A grid of 200 points gives 1.08.
 assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=1e-3)
 
 # The chained comparisons also reject nan.
