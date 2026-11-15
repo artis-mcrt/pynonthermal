@@ -68,12 +68,20 @@ def test_zero_energy_rate_with_array_threshold_between_grid_points() -> None:
         assert rate == pytest.approx(sf.calculate_N_e(energy_ev), rel=1e-4)
 
 
-def test_zero_energy_rate_rejects_function_with_step_at_threshold() -> None:
+@pytest.mark.parametrize("slope", [0.0, 1000.0])
+def test_zero_energy_rate_rejects_function_with_step_at_threshold(slope: float) -> None:
     # The secondary distribution is 2 / (E' - I) near the threshold. With a step in the cross section, the
     # rate at zero energy is infinite, and the midpoint sum gave a finite value that grew with the sub-grid.
+    # With the slope, the step is small in relation to the cross section at the first node of the sub-grid.
     sf = pynonthermal.SpencerFanoSolver(npts=200, emax_ev=500)
     ionpot_ev = float(sf.engrid[10]) + 0.5 * sf.deltaen
-    sf.add_ionisation_channel(1, 1, 1e7, ionpot_ev, lambda en_ev: np.where(en_ev > ionpot_ev, 1e-17, 0.0))
+    sf.add_ionisation_channel(
+        1,
+        1,
+        1e7,
+        ionpot_ev,
+        lambda en_ev: np.where(en_ev > ionpot_ev, 1e-17 * (1.0 + slope * (en_ev / ionpot_ev - 1.0)), 0.0),
+    )
     sf.override_n_e(1e7)
     sf.solve(1e8)
 

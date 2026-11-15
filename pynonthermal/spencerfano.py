@@ -335,11 +335,13 @@ NCELLS_SECOND_INTEGRAL_SUBGRID: int = 2
 
 # The test of calculate_N_e(0) for a cross section with a step at the ionisation potential. The secondary
 # distribution of KF92 equation 4 is 2 / (E' - I) near the potential, so a step makes N(0) infinite. The
-# test compares the cross section at the first midpoint of the sub-grid with the cross section at an energy
-# that is nearer to the potential by the factor ZERO_ENERGY_THRESHOLD_STEP_REL_EN. A ratio above
-# ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO is a step. A power law with an exponent of 0.05 gives a ratio of 0.5.
+# test uses two energies very near to the potential. The first one is above the potential by the fraction
+# ZERO_ENERGY_THRESHOLD_STEP_REL_EN of the distance to the first midpoint of the sub-grid. The second one
+# is at two times that distance. A cross section that goes to zero as a power law with the exponent p gives
+# the ratio 2**-p of the two values. A ratio above ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO (p below 0.044)
+# is a step. This local test also finds a small step below a cross section that increases quickly.
 ZERO_ENERGY_THRESHOLD_STEP_REL_EN: float = 1e-6
-ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO: float = 0.5
+ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO: float = 0.97
 
 # Number of nodes for the integral over E in [0, E_0] of KF92 equation 8. This one is not
 # free: every node costs the ionisation terms of calculate_N_e() over all ions and shells, so it dominates
@@ -3005,15 +3007,15 @@ class SpencerFanoSolver:
                     if energy_ev == 0.0 and n_ion > 0.0:
                         # The distribution is 2 / (E' - I) near the threshold. If the cross section has a
                         # step there, the integral is infinite and the midpoint sum depends on the sub-grid.
-                        # The check compares the first midpoint with an energy much nearer to the threshold.
-                        en_near = ionpot_ev + ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev)
-                        xs_near = float(channel.xs(np.array([en_near], dtype=np.float64))[0])
-                        if xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * arr_xs_low[0]:
+                        # The check compares the cross section at two energies very near to the threshold.
+                        delta_near = ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev)
+                        xs_near, xs_ref = channel.xs(ionpot_ev + delta_near * np.array([1.0, 2.0]))
+                        if xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * xs_ref:
                             msg = (
                                 f"The cross section of ionisation channel {channel.key} of Z={Z} ion_stage"
                                 f" {ion_stage} does not go to zero continuously at ionpot_ev ({ionpot_ev} eV),"
                                 " so N(E) is infinite at energy_ev = 0. Give a cross section that goes to zero"
-                                " at ionpot_ev, or use an energy_ev above zero."
+                                " continuously at ionpot_ev."
                             )
                             raise ValueError(msg)
                     N_e_ion += self._integrate_shell_secondaries(
