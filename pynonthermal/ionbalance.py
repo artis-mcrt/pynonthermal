@@ -299,7 +299,13 @@ def solve_charge_neutral_n_e(
     ln_upper = math.log(n_e_upper)
     for _ in range(_N_BISECTION_STEPS):
         ln_mid = 0.5 * (ln_lower + ln_upper)
-        if residual(math.exp(ln_mid)) > 0.0:
+        n_e_mid = math.exp(ln_mid)
+        residual_mid = residual(n_e_mid)
+        if residual_mid == 0.0:
+            # The density is an exact root. The rounding of the last midpoint can give the adjacent
+            # double, which is a large relative error for a subnormal root.
+            return n_e_mid
+        if residual_mid > 0.0:
             ln_lower = ln_mid
         else:
             ln_upper = ln_mid

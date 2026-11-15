@@ -114,6 +114,10 @@ def test_charge_neutral_n_e_small_roots() -> None:
     for root, upper in ((1e-300, 1e-300), (1e-310, 1e-300), (math.ulp(0.0), 1e-300)):
         result = solve(0.0, lambda _n_e, value=root: value, 0.0, upper)
         assert math.isclose(result, root, rel_tol=1e-12)
+    # The solver gives an exact subnormal root and not the adjacent double.
+    for multiple in (2, 3, 5, 100):
+        root = multiple * math.ulp(0.0)
+        assert solve(0.0, lambda _n_e, value=root: value, 0.0, 1e-300) == root
     with pytest.raises(ValueError, match="free electron density is zero"):
         solve(0.0, lambda _n_e: 0.0, 0.0, 1e-300)
 
