@@ -6,10 +6,12 @@ add noise to the tracked benchmark set. Performance-relevant cases live in test_
 """
 
 import itertools
+import json
 import math
 import pickle
 import typing as t
 import warnings
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -1462,3 +1464,15 @@ def test_population_arguments_check_their_types() -> None:
             sf.add_ionisation(8, 1, True)
         with pytest.raises(TypeError, match="ion_fractions must be a mapping"):
             sf.add_element(8, 1e8, ion_fractions=[0.3, 0.7])  # ty: ignore[invalid-argument-type]
+
+
+def test_iron_notebook_deposition_is_independent_of_the_selected_epoch() -> None:
+    # The deposition function scaled the constants of 250 days with the selected epoch T_DAYS.
+    notebook = json.loads((Path(__file__).parents[2] / "fe_ionbalance_sn1a.ipynb").read_text(encoding="utf-8"))
+    sources = ["".join(cell["source"]) for cell in notebook["cells"]]
+    namespace: dict[str, t.Any] = {"math": math}
+    # the source is the notebook of this repository
+    exec(next(source for source in sources if "def get_deposition_rate_density" in source), namespace)  # noqa: S102
+    deposition = namespace["get_deposition_rate_density"](500.0)
+    namespace["T_DAYS"] = 500.0
+    assert namespace["get_deposition_rate_density"](500.0) == deposition

@@ -127,6 +127,10 @@ the other options default to the ARTIS values (collision strengths where availab
 the lowest 5 levels up to the lowest 250). Without this call the solver uses the internal database with
 those defaults.
 
+With `use_collstrengths=False`, the solver excludes forbidden transitions from the level data.
+The solver also excludes transitions whose cross section is zero at every energy grid point.
+Excluded transitions have no key in `excitationlists`.
+
 ### 3. Add the elements
 
 ```python
@@ -287,8 +291,9 @@ Points to note:
   therefore depend on the deposition rate density, unlike the fixed-population case.
 - The top stage of the chain is a sink. Its ionisation is an energy loss in the matrix, but the ions
   it makes have no stage to go to. The solver gives a warning if the ionisation rate out of the top
-  stage exceeds 1 % of the total ionisation rate of the element, because about that fraction of the
-  element then belongs in a higher stage. Extend the chain with a rate coefficient for the next stage.
+  stage exceeds 1 % of the total ionisation rate of the element. The ratio of the two rates is the
+  fraction of the ionisation events of the element that leave the chain. The ratio does not estimate
+  the omitted population. Extend the chain with a rate coefficient for the next stage.
   If a channel of the top stage removes `k` electrons, extend the chain to the top stage plus `k`.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
@@ -348,7 +353,7 @@ with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4096, verbose=
     sf.plot_channels(xscalelog=True)
 ```
 
-The plot shows the energy distribution of the contributions to ionisation, excitation, and heating. The area under each curve gives the fraction of the deposited energy in that channel:
+The plot shows the contribution of each channel per logarithmic energy interval, `E dη/dE`. One scale applies to all the curves and sets the largest peak to one. Thus the area under a curve does not give an energy fraction. The heating curve also excludes the energy that thermalises below `emin_ev`. Get the energy fractions from `get_frac_heating()`, `get_frac_ionisation_tot()`, and `get_frac_excitation_tot()`.
 
 ![Energy deposition channels for a pure oxygen plasma](https://raw.githubusercontent.com/artis-mcrt/pynonthermal/main/docs/oxygen_channels.svg)
 

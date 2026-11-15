@@ -380,6 +380,22 @@ class IonisationChannel:
         """
         return self.n_ejected if self.autoionisation else self.n_ejected - 1
 
+    def evaluate_xs(self, energies_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Evaluate and check the cross section at each supplied energy."""
+        values = np.asarray(self.xs(energies_ev), dtype=np.float64)
+        name = f"The cross section of ionisation channel {self.key}"
+        if values.shape != energies_ev.shape:
+            msg = f"{name} must have shape {energies_ev.shape}, but has shape {values.shape}"
+            raise ValueError(msg)
+        invalid = ~np.isfinite(values) | (values < 0.0)
+        if invalid.any():
+            index = int(np.flatnonzero(invalid)[0])
+            msg = (
+                f"{name} must be finite and non-negative. Its value at {energies_ev[index]} eV is {values[index]} cm^2."
+            )
+            raise ValueError(msg)
+        return values
+
     @property
     def extra_electron_energy_ev(self) -> float:
         """The former name of auger_electron_energy_ev. It is deprecated."""

@@ -237,6 +237,18 @@ def _get_lossvec(energies_ev: npt.NDArray[np.float64], n_e_cgs: float) -> npt.ND
     return n_e * 2 * math.pi * QE**4 / energy * np.log(coulomblog_arg) / EV
 
 
+def _get_n_e_limit(energy_ev: float) -> float:
+    # the free electron density [cm^-3] at which the Coulomb logarithm of electronlossfunction() is zero
+    # at this energy. The loss function is valid only below this density. The limit increases with the
+    # energy, so the lowest energy of a grid gives the limit of the grid.
+    energy = energy_ev * EV
+    if energy_ev > 14:
+        omegap_limit = 4 * math.pi * energy / H
+    else:
+        omegap_limit = ME * math.sqrt(2 * energy / ME) ** 3 / (math.exp(np.euler_gamma) * QE**2)
+    return omegap_limit**2 * ME / (4 * math.pi * QE**2)
+
+
 def get_n_tot(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
     # total number density of all nuclei [cm^-3]
     n_tot = 0.0
