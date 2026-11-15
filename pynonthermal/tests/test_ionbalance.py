@@ -292,7 +292,10 @@ def test_top_stage_leak_warning() -> None:
     # a chain that stops at a stage with a large ionisation rate gets a warning
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(8, 1e10, recomb_ratecoeffs={2: 3e-13})
-        with pytest.warns(UserWarning, match="top stage 2 of Z=8"):
+        # the ratio is a fraction of the ionisation events. It is not a fraction of the element
+        with pytest.warns(
+            UserWarning, match="top stage 2 of Z=8.* of the ionisation events of the element leave the chain"
+        ):
             sf.solve(deposition_ev_per_s_per_cm3=1e12)
 
 
