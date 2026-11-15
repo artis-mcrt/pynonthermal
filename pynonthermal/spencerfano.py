@@ -17,6 +17,7 @@ import math
 import typing as t
 import warnings
 from collections.abc import Collection
+from collections.abc import Iterator
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -403,6 +404,25 @@ def integrate_simpson_uniform(y: npt.NDArray[np.float64], x: npt.NDArray[np.floa
     return float(h / 3.0 * (weights @ y))
 
 
+class _ExcitationListsView(Mapping[tuple[int, int], Mapping[t.Any, ExcitationTransition]]):
+    # A read-only view of the excitation transitions of a solver. The view reads the dictionary of the
+    # solver at each access. A reference that the caller keeps therefore shows later changes. A proxy of
+    # a copy of the dictionary showed the old transitions after the solver replaced the dictionary of a stage.
+    __slots__ = ("_excitationlists",)
+
+    def __init__(self, excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]) -> None:
+        self._excitationlists = excitationlists
+
+    def __getitem__(self, ion: tuple[int, int]) -> Mapping[t.Any, ExcitationTransition]:
+        return MappingProxyType(self._excitationlists[ion])
+
+    def __iter__(self) -> Iterator[tuple[int, int]]:
+        return iter(self._excitationlists)
+
+    def __len__(self) -> int:
+        return len(self._excitationlists)
+
+
 class SpencerFanoSolver:
     """Solve the Spencer-Fano equation for non-thermal heating, ionisation, and excitation.
 
@@ -695,10 +715,8 @@ class SpencerFanoSolver:
 
     @property
     def excitationlists(self) -> Mapping[tuple[int, int], Mapping[t.Any, ExcitationTransition]]:
-        """Get read-only mappings of the current excitation transitions."""
-        return MappingProxyType(
-            {ion: MappingProxyType(transitions) for ion, transitions in self._excitationlists.items()}
-        )
+        """Get a read-only view of the current excitation transitions."""
+        return _ExcitationListsView(self._excitationlists)
 
     @property
     def sfmatrix(self) -> npt.NDArray[np.float64]:
