@@ -289,8 +289,7 @@ Points to note:
   it makes have no stage to go to. The solver gives a warning if the ionisation rate out of the top
   stage exceeds 1 % of the total ionisation rate of the element. The ratio of the two rates is the
   fraction of the ionisation events of the element that leave the chain. The ratio does not estimate
-  the omitted population.
-  Extend the chain with a rate coefficient for the next stage.
+  the omitted population. Extend the chain with a rate coefficient for the next stage.
   If a channel of the top stage removes `k` electrons, extend the chain to the top stage plus `k`.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 

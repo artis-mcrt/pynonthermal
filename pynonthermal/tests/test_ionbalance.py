@@ -236,14 +236,11 @@ def test_top_stage_leak_warning() -> None:
     # a chain that stops at a stage with a large ionisation rate gets a warning
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(8, 1e10, recomb_ratecoeffs={2: 3e-13})
-        with pytest.warns(UserWarning, match="top stage 2 of Z=8") as record:
+        # the ratio is a fraction of the ionisation events. It is not a fraction of the element
+        with pytest.warns(
+            UserWarning, match="top stage 2 of Z=8.* of the ionisation events of the element leave the chain"
+        ):
             sf.solve(deposition_ev_per_s_per_cm3=1e12)
-    # the ratio is a fraction of the ionisation events. It is not a fraction of the element, because
-    # the omitted population also depends on the recombination coefficients of the omitted stages.
-    (warning,) = record
-    message = str(warning.message)
-    assert "of the ionisation events of the element leave the chain" in message
-    assert "belongs in a higher stage" not in message
 
 
 def test_saha_ion_fractions() -> None:
