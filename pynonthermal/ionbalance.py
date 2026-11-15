@@ -267,15 +267,15 @@ def solve_charge_neutral_n_e(
 
     # the residual divided by n_e falls with n_e, so the residual changes sign once. It is at most
     # zero at the upper bracket.
+    # a positive lower bracket is exact: the charge density is at least charge_density_min, so the
+    # residual there is at least zero. Zero means that the populations sit at the bound, and then the
+    # lower bracket is the solution. This check runs first, because the sum for the upper bracket can
+    # overflow, and a charge density function can reject an infinite n_e.
+    if n_e_lower > 0.0 and residual(n_e_lower) <= 0.0:
+        return n_e_lower
     if residual(n_e_upper) == 0.0:
         return n_e_upper
-    if n_e_lower > 0.0:
-        # the lower bracket is exact: the charge density is at least charge_density_min, so the residual
-        # there is at least zero. Zero means that the populations sit at the bound, and then the lower
-        # bracket is the solution.
-        if residual(n_e_lower) <= 0.0:
-            return n_e_lower
-    else:
+    if n_e_lower <= 0.0:
         # no exact positive lower bound. As n_e falls, the charge density tends to a positive constant
         # (every population that can be ionised is), so the residual turns positive at a small enough
         # n_e unless the charge density is zero everywhere.

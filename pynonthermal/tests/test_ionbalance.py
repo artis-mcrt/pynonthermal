@@ -122,6 +122,15 @@ def test_charge_neutral_n_e_small_roots() -> None:
         solve(0.0, lambda _n_e: 0.0, 0.0, 1e-300)
 
 
+def test_charge_neutral_n_e_overflowed_upper_bracket() -> None:
+    def finite_only_charge_density(n_e: float) -> float:
+        assert math.isfinite(n_e)
+        return 0.0
+
+    # The sum for the upper bracket overflows, but the lower bracket is the exact root.
+    assert pynonthermal.ionbalance.solve_charge_neutral_n_e(1e308, finite_only_charge_density, 0.0, 1e308) == 1e308
+
+
 def test_charge_neutral_n_e_numpy_density() -> None:
     # The upper charge bound exceeds the float16 range, but the physical density is valid.
     ratios = [1e4] * 8
