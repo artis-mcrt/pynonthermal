@@ -444,6 +444,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
 one bin of the grid. A cross section given as a function is called there; an array can only be interpolated, so
 resolve that region with `npts` if it matters for your ion. Between the ionisation potential and the first
 grid point above it, the solver interpolates the array from zero at the ionisation potential.
+A function must go to zero continuously at the ionisation potential for `sf.calculate_N_e(0)`. With a step
+there, the rate at zero energy is infinite, and `sf.calculate_N_e(0)` raises a `ValueError`.
 The term it feeds is the energy that
 thermalises below `emin_ev`, which is a small part of the heating fraction. An
 [autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as

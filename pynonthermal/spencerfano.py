@@ -333,6 +333,14 @@ NPTS_SUBGRID_PER_J: int = 32
 # few J above it.
 NCELLS_SECOND_INTEGRAL_SUBGRID: int = 2
 
+# The test of calculate_N_e(0) for a cross section with a step at the ionisation potential. The secondary
+# distribution of KF92 equation 4 is 2 / (E' - I) near the potential, so a step makes N(0) infinite. The
+# test compares the cross section at the first midpoint of the sub-grid with the cross section at an energy
+# that is nearer to the potential by the factor ZERO_ENERGY_THRESHOLD_STEP_REL_EN. A ratio above
+# ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO is a step. A power law with an exponent of 0.05 gives a ratio of 0.5.
+ZERO_ENERGY_THRESHOLD_STEP_REL_EN: float = 1e-6
+ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO: float = 0.5
+
 # Number of nodes for the integral over E in [0, E_0] of KF92 equation 8. This one is not
 # free: every node costs the ionisation terms of calculate_N_e() over all ions and shells, so it dominates
 # the cost of the analysis. The excitation terms come from the matrix instead (see
@@ -1848,7 +1856,8 @@ class SpencerFanoSolver:
             the ionisation potential of the channel in eV, or the excitation energy of the
             autoionising level of an autoionisation channel. It must be between emin_ev and emax_ev.
             The cross section must be zero at and below it. An autoionisation channel keeps its
-            value at that energy.
+            value at that energy. calculate_N_e(0) also needs a function that goes to zero
+            continuously at ionpot_ev, and raises a ValueError for a function with a step there.
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
             array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
@@ -2872,6 +2881,10 @@ class SpencerFanoSolver:
         N(E) does not include the Auger electrons (the extra electrons of a
         multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
         the energy of those electrons at or below emin_ev in a different term.
+
+        At energy_ev = 0, the cross section of each ionisation channel must go to zero continuously at
+        its ionisation potential. A cross section with a step there makes N(0) infinite, and the method
+        raises a ValueError. An array cross section always obeys this rule.
         """
         # both this method and calculate_frac_heating() read yvec, which exists only after solve()
         self._require_solved()
@@ -2988,10 +3001,25 @@ class SpencerFanoSolver:
                         # Midpoints exclude that endpoint and integrate its finite product with the cross section.
                         quadrature_weights = np.diff(arr_e_p_low)
                         arr_e_p_low = arr_e_p_low[:-1] + quadrature_weights / 2.0
+                    arr_xs_low = channel.xs(arr_e_p_low)
+                    if energy_ev == 0.0 and n_ion > 0.0:
+                        # The distribution is 2 / (E' - I) near the threshold. If the cross section has a
+                        # step there, the integral is infinite and the midpoint sum depends on the sub-grid.
+                        # The check compares the first midpoint with an energy much nearer to the threshold.
+                        en_near = ionpot_ev + ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev)
+                        xs_near = float(channel.xs(np.array([en_near], dtype=np.float64))[0])
+                        if xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * arr_xs_low[0]:
+                            msg = (
+                                f"The cross section of ionisation channel {channel.key} of Z={Z} ion_stage"
+                                f" {ion_stage} does not go to zero continuously at ionpot_ev ({ionpot_ev} eV),"
+                                " so N(E) is infinite at energy_ev = 0. Give a cross section that goes to zero"
+                                " at ionpot_ev, or use an energy_ev above zero."
+                            )
+                            raise ValueError(msg)
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
-                        arr_xs=channel.xs(arr_e_p_low),
+                        arr_xs=arr_xs_low,
                         e_s=energy_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
