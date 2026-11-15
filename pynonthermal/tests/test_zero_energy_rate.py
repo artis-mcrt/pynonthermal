@@ -93,18 +93,20 @@ def test_zero_energy_rate_rejects_function_with_step_at_threshold(slope: float) 
 
 
 @pytest.mark.parametrize("step", [True, False])
-def test_zero_energy_rate_step_check_with_threshold_near_emax(step: bool) -> None:
+@pytest.mark.parametrize("spacings_below_emax", [6, 2**24])
+def test_zero_energy_rate_step_check_with_threshold_near_emax(step: bool, spacings_below_emax: int) -> None:
     # With a threshold very near to emax_ev, the two energies of the check were equal to the threshold in
-    # floating point. The check then did not find the step.
+    # floating point. The check then did not find the step. With a threshold some spacings of the
+    # floating-point numbers below emax_ev, one energy of the check was above the grid, where this function is zero.
     sf = pynonthermal.SpencerFanoSolver(npts=200, emax_ev=500)
-    ionpot_ev = float(sf.engrid[-1]) - 1e-6
-    sf.add_ionisation_channel(
-        1,
-        1,
-        1e7,
-        ionpot_ev,
-        lambda en_ev: np.where(en_ev > ionpot_ev, 1e-17 if step else 1e-17 * (en_ev / ionpot_ev - 1.0), 0.0),
-    )
+    emax_ev = float(sf.engrid[-1])
+    ionpot_ev = emax_ev - spacings_below_emax * float(np.spacing(emax_ev))
+
+    def xs(en_ev: np.ndarray) -> np.ndarray:
+        in_range = (en_ev > ionpot_ev) & (en_ev <= emax_ev)
+        return np.where(in_range, 1e-17 if step else 1e-17 * (en_ev / ionpot_ev - 1.0), 0.0)
+
+    sf.add_ionisation_channel(1, 1, 1e7, ionpot_ev, xs)
     sf.override_n_e(1e7)
     sf.solve(1e8)
 
