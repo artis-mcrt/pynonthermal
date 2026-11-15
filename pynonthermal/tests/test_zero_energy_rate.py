@@ -92,6 +92,29 @@ def test_zero_energy_rate_rejects_function_with_step_at_threshold(slope: float) 
     assert 0.0 < sf.get_frac_heating() < 1.0
 
 
+@pytest.mark.parametrize("step", [True, False])
+def test_zero_energy_rate_step_check_with_threshold_near_emax(step: bool) -> None:
+    # With a threshold very near to emax_ev, the two energies of the check were equal to the threshold in
+    # floating point. The check then did not find the step.
+    sf = pynonthermal.SpencerFanoSolver(npts=200, emax_ev=500)
+    ionpot_ev = float(sf.engrid[-1]) - 1e-6
+    sf.add_ionisation_channel(
+        1,
+        1,
+        1e7,
+        ionpot_ev,
+        lambda en_ev: np.where(en_ev > ionpot_ev, 1e-17 if step else 1e-17 * (en_ev / ionpot_ev - 1.0), 0.0),
+    )
+    sf.override_n_e(1e7)
+    sf.solve(1e8)
+
+    if step:
+        with pytest.raises(ValueError, match="does not go to zero continuously at ionpot_ev"):
+            sf.calculate_N_e(0.0)
+    else:
+        assert 0.0 < sf.calculate_N_e(0.0) < np.inf
+
+
 @pytest.mark.parametrize("exponent", [0.5, 1.0])
 def test_zero_energy_rate_accepts_function_that_is_zero_at_threshold(exponent: float) -> None:
     sf = pynonthermal.SpencerFanoSolver(npts=200, emax_ev=500)

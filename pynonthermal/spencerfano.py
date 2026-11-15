@@ -3008,7 +3008,12 @@ class SpencerFanoSolver:
                         quadrature_weights = np.diff(arr_e_p_low)
                         arr_e_p_low = arr_e_p_low[:-1] + quadrature_weights / 2.0
                         # the midpoint sum has no limit for a step at the threshold (see the constants)
-                        delta_near = ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev)
+                        # The lower limit keeps the two energies above the threshold in floating point,
+                        # for a threshold very near to the top of the grid.
+                        delta_near = max(
+                            ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev),
+                            4.0 * float(np.spacing(ionpot_ev)),
+                        )
                         xs_near, xs_ref = channel.xs(ionpot_ev + delta_near * np.array([1.0, 2.0]))
                         if n_ion > 0.0 and xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * xs_ref:
                             msg = (
