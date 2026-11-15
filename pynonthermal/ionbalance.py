@@ -267,33 +267,29 @@ def solve_charge_neutral_n_e(
 
     # the residual divided by n_e falls with n_e, so the residual changes sign once. It is at most
     # zero at the upper bracket.
-    # a positive lower bracket is exact: the charge density is at least charge_density_min, so the
-    # residual there is at least zero. Zero means that the populations sit at the bound, and then the
-    # lower bracket is the solution. This check runs first, because the sum for the upper bracket can
-    # overflow, and a charge density function can reject an infinite n_e.
-    if n_e_lower > 0.0 and residual(n_e_lower) <= 0.0:
-        return n_e_lower
-    if residual(n_e_upper) == 0.0:
-        return n_e_upper
-    if n_e_lower <= 0.0:
-        # no exact positive lower bound. As n_e falls, the charge density tends to a positive constant
-        # (every population that can be ionised is), so the residual turns positive at a small enough
-        # n_e unless the charge density is zero everywhere.
-        minimum_density = math.ulp(0.0)
-        n_e_lower = max(n_e_upper * _N_E_LOWER_BRACKET_FRACTION, minimum_density)
+    if n_e_lower > 0.0:
+        # the lower bracket is exact: the charge density is at least charge_density_min, so the residual
+        # there is at least zero. Zero means that the populations sit at the bound, and then the lower
+        # bracket is the solution.
+        if residual(n_e_lower) <= 0.0:
+            return n_e_lower
+    else:
+        # no exact positive lower bound, and n_e_fixed is zero. As n_e falls, the charge density tends
+        # to a positive constant (every population that can be ionised is), so the residual turns
+        # positive at a small enough n_e unless the charge density is zero everywhere. The search
+        # starts at the upper bracket, which can be the exact root, and stops at the smallest double.
+        n_e_lower = n_e_upper
         while True:
             charge_density_lower = checked_charge_density(n_e_lower)
             if charge_density_lower == n_e_lower:
                 return n_e_lower
             if charge_density_lower > n_e_lower:
                 break
-            if charge_density_lower <= 0.0:
+            if n_e_lower == math.ulp(0.0):
+                # no double is between zero and n_e_lower, so the charge density is zero
                 msg = "the charge density is zero and no fixed ion is ionised, so the free electron density is zero"
                 raise ValueError(msg)
-            if n_e_lower == minimum_density:
-                msg = "the charge-neutral free electron density is below the range of a double precision number"
-                raise ValueError(msg)
-            n_e_lower = max(n_e_lower * _N_E_LOWER_BRACKET_FRACTION, minimum_density)
+            n_e_lower = max(n_e_lower * _N_E_LOWER_BRACKET_FRACTION, math.ulp(0.0))
 
     ln_lower = math.log(n_e_lower)
     ln_upper = math.log(n_e_upper)
