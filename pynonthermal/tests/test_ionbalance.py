@@ -108,6 +108,19 @@ def test_charge_neutral_n_e_two_stages() -> None:
         pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(0.0, 1, [1.0])])
 
 
+def test_charge_neutral_n_e_numpy_density() -> None:
+    # The upper charge bound exceeds the float16 range, but the physical density is valid.
+    ratios = [1e4] * 8
+    expected = pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(0.0, [(1e4, 1, ratios)])
+    actual = pynonthermal.ionbalance.solve_charge_neutral_n_e_ratios(
+        0.0,
+        [(np.float16(1e4), np.int16(1), ratios)],  # ty: ignore[invalid-argument-type]
+    )
+    assert math.isclose(actual, expected, rel_tol=1e-12)
+    fractions = pynonthermal.ionbalance.get_ion_fractions(ratios, actual)
+    assert math.isclose(actual, 1e4 * sum(i * frac for i, frac in enumerate(fractions)), rel_tol=1e-12)
+
+
 def test_charge_neutral_n_e_two_elements() -> None:
     # the result is charge neutral for two elements together with fixed ions
     elements = [(1e10, 1, [1e9, 1e6]), (2e9, 2, [3e8])]
@@ -144,6 +157,49 @@ def build_direct_solver(
     for ion_stage in excitation_stages:
         sf.add_ion_excitation(Z, ion_stage, n_ion=sf_balanced.ionpopdict[(Z, ion_stage)])
     return sf
+
+
+@pytest.mark.parametrize("energy_ev", [0.1, 14.0, 20.0])
+def test_n_e_limit_of_loss_function(energy_ev: float) -> None:
+    n_e_limit = pynonthermal.base._get_n_e_limit(energy_ev)
+    grid = np.linspace(energy_ev, 1000.0, 32)
+    assert (pynonthermal.base._get_lossvec(grid, n_e_limit * (1 - 1e-9)) > 0.0).all()
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        pynonthermal.base._get_lossvec(grid, n_e_limit * (1 + 1e-9))
+
+
+def test_dense_neutral_balance_seed() -> None:
+    alphas = {2: 1e-12}
+    sf = pynonthermal.SpencerFanoSolver(npts=256, emax_ev=1000)
+    sf.add_element(1, n_elem=1e20, recomb_ratecoeffs=alphas)
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        sf.electronlossfunction(0.1)
+    sf.solve(1e8)
+    assert math.isclose(sf.get_n_e(), 2.19876e9, rel_tol=1e-4)
+    assert math.isclose(sf.get_n_ion_tot(), 1e20, rel_tol=1e-12)
+    check_balance_identity(sf, 1, alphas, tol=2e-4)
+
+    # An explicit invalid density must still fail instead of changing the caller's plasma.
+    sf.override_n_e(1e18)
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        sf.solve(1e8)
+    assert sf.get_n_e() == 1e18
+
+
+def test_balance_seed_keeps_fixed_charge() -> None:
+    sf = pynonthermal.SpencerFanoSolver(npts=256, emax_ev=1000)
+    sf.add_element(1, n_elem=1e20, recomb_ratecoeffs={2: 1e-12})
+    sf.add_element(2, ion_densities={3: 1e8})
+    sf.solve(1e8)
+    assert sf.ionpopdict[(2, 3)] == 1e8
+    check_balance_identity(sf, 1, {2: 1e-12}, tol=2e-4)
+
+    # A fixed charge above the loss function limit cannot have a valid initial population.
+    invalid = pynonthermal.SpencerFanoSolver(npts=32, emax_ev=1000)
+    invalid.add_element(1, n_elem=1e20, recomb_ratecoeffs={2: 1e-12})
+    invalid.add_element(2, ion_densities={3: 1e18})
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        invalid.solve(1e8)
 
 
 def test_recombination_balance_oxygen() -> None:
@@ -236,7 +292,10 @@ def test_top_stage_leak_warning() -> None:
     # a chain that stops at a stage with a large ionisation rate gets a warning
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(8, 1e10, recomb_ratecoeffs={2: 3e-13})
-        with pytest.warns(UserWarning, match="top stage 2 of Z=8"):
+        # the ratio is a fraction of the ionisation events. It is not a fraction of the element
+        with pytest.warns(
+            UserWarning, match="top stage 2 of Z=8.* of the ionisation events of the element leave the chain"
+        ):
             sf.solve(deposition_ev_per_s_per_cm3=1e12)
 
 
@@ -658,7 +717,8 @@ def test_charge_neutral_n_e_general_model() -> None:
         pynonthermal.ionbalance.solve_charge_neutral_n_e(-1.0, lambda _n_e: 1.0, 0.0, 1.0)
 
 
-def test_deprecated_excitation_name() -> None:
+@pytest.mark.parametrize("Z", [2, 8])
+def test_deprecated_excitation_name(Z: int) -> None:
     # the old name still works and warns
     with (
         pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_old,
@@ -667,11 +727,14 @@ def test_deprecated_excitation_name() -> None:
         for sf in (sf_old, sf_new):
             sf.set_temperature(3000)
             sf.set_atomic_data(use_collstrengths=False)
-            sf.add_ionisation(2, 2, n_ion=1e8)
+            sf.add_ionisation(Z, 2, n_ion=1e8)
         with pytest.warns(DeprecationWarning, match="add_ion_excitation"):
-            sf_old.add_ion_ltepopexcitation(2, 2, n_ion=1e8, use_collstrengths=False)
-        sf_new.add_ion_excitation(2, 2, n_ion=1e8)
-        assert sf_old.excitationlists[(2, 2)].keys() == sf_new.excitationlists[(2, 2)].keys()
+            sf_old.add_ion_ltepopexcitation(Z, 2, n_ion=1e8, use_collstrengths=False)
+        sf_new.add_ion_excitation(Z, 2, n_ion=1e8)
+        # He II has no active transition with these settings. O II has active transitions.
+        assert bool(sf_new.excitationlists) == (Z == 8)
+        assert sf_old.excitationlists.keys() == sf_new.excitationlists.keys()
+        assert sf_old.excitationlists.get((Z, 2), {}).keys() == sf_new.excitationlists.get((Z, 2), {}).keys()
         assert np.array_equal(sf_old.sfmatrix, sf_new.sfmatrix)
 
 

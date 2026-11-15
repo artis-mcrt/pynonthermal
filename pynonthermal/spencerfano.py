@@ -31,9 +31,11 @@ from pynonthermal.axelrod import LOTZ_A_CM2_EV2
 from pynonthermal.base import _check_bool
 from pynonthermal.base import _check_ion
 from pynonthermal.base import _get_lossvec
+from pynonthermal.base import _get_n_e_limit
 from pynonthermal.base import _is_bool
 from pynonthermal.base import _is_integer
 from pynonthermal.base import _warn
+from pynonthermal.base import CrossSectionFunc
 from pynonthermal.base import electronlossfunction
 from pynonthermal.base import get_betasq
 from pynonthermal.base import get_xs_on_grid
@@ -52,8 +54,6 @@ if t.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import matplotlib.axes as mplax
-
-    from pynonthermal.base import CrossSectionFunc
 else:
 
     class _LazyMatplotlibAxes:
@@ -91,10 +91,9 @@ BALANCE_ANDERSON_DEPTH: int = 4
 BALANCE_ANDERSON_MAX_LN_STEP: float = 5.0
 
 # The provisional populations of a balanced element before the first solve: each stage holds this
-# fraction of the stage below it. The first solve runs at the free electron density of the seed.
-# For a chain that starts at the neutral stage, the seed keeps that density at about one per cent
-# of the element density. Equal fractions put the density at the order of the element density.
-# That is above the limit of the loss function for a dense gas whose balanced density is far lower.
+# fraction of the stage below it. A neutral element starts with about one free electron per hundred nuclei.
+# The first solve multiplies the ionised populations by this ratio until the free electron density is
+# below the limit of the loss function.
 BALANCE_SEED_STAGE_RATIO: float = 1e-2
 
 # The memory [bytes] that the unit matrices of the balanced stages can use (see
@@ -104,11 +103,10 @@ BALANCE_SEED_STAGE_RATIO: float = 1e-2
 # gives no unit matrices.
 BALANCE_STAGE_MATRIX_MAX_BYTES: int = 512 * 2**20
 
-# The top stage of a balanced element is a sink: its ionisation is an energy loss in the matrix, but
-# the ions it makes have no stage to go to. In a longer chain those ions would sit in the next stage,
-# and their fraction of the element is about the ionisation rate out of the top stage divided by the
-# total ionisation rate of the element (which recombination balances). Warn when that ratio exceeds
-# this value, because the chain then needs a higher stage.
+# The top stage has no stage to ionise into. Its ionisation still removes energy from the electrons.
+# Warn when events from this stage exceed this fraction of all ionisation events of the element.
+# The ratio indicates a possible error from the chain limit. It does not estimate the omitted population.
+# That population also depends on the recombination coefficients of the omitted stages.
 BALANCE_TOP_STAGE_LEAK_WARN_FRACTION: float = 0.01
 
 # The plausible range of a recombination rate coefficient [cm^3 s^-1] of an atomic ion. The published
@@ -774,8 +772,10 @@ class SpencerFanoSolver:
         use_collstrengths:
             compute cross sections from tabulated collision strengths where available (LHD12
             equation 11). Permitted transitions without one (or all permitted transitions,
-            when False) instead use the oscillator strength via the VR62 approximation;
-            forbidden transitions outside the collision-strength path get a zero cross section
+            when False) instead use the oscillator strength via the VR62 approximation.
+            The solver excludes forbidden transitions when it cannot use their collision strengths.
+            It also excludes transitions whose cross section is zero at every energy grid point.
+            Excluded transitions have no key in excitationlists.
         maxnlevelslower, maxnlevelsupper:
             include only transitions whose lower level index is below maxnlevelslower and whose
             upper level index is below maxnlevelsupper; None disables that cutoff. The values
@@ -1438,7 +1438,9 @@ class SpencerFanoSolver:
                 " strength has collstr -1, and a permitted transition has forbidden 0."
             )
             raise ValueError(msg)
-        transition_filter = (pl.col("collstr") >= 0).or_(pl.col("forbidden") == 0)
+        transition_filter = pl.col("forbidden") == 0
+        if use_collstrengths:
+            transition_filter |= pl.col("collstr") >= 0
         # default maxnlevelslower/maxnlevelsupper of 5/250 match the ARTIS defaults
         if maxnlevelslower is not None:
             transition_filter &= pl.col("lower") < maxnlevelslower
@@ -1504,6 +1506,8 @@ class SpencerFanoSolver:
                 self.engrid,
                 f"The cross section of transition {transitionkey} of Z={Z} ion_stage {ion_stage}",
             )
+            if not xs_vec.any():
+                continue
             templates.append(
                 (
                     transitionkey,
@@ -2595,6 +2599,29 @@ class SpencerFanoSolver:
         # gives them. A later solve starts from the rates of the last solution: at fixed populations
         # the rates are proportional to the deposition rate density.
         if any(element.ratecoeffs_per_deposition is None for element in elements):
+            if self._n_e_override is None:
+                # The provisional populations of a dense gas can put the free electron density above
+                # the limit of the loss function. Only the ions above the lowest stage of a balanced
+                # element can move, so the density has a part that stays and a part that the seed can
+                # reduce. The fixed populations and an explicit free electron density do not change.
+                n_e_limit = _get_n_e_limit(float(self.engrid[0]))
+                n_e_seed = sum(
+                    (ion_stage - element.ion_stages[0]) * self.ionpopdict[(element.Z, ion_stage)]
+                    for element in elements
+                    for ion_stage in element.ion_stages
+                )
+                n_e_min = self.get_n_e() - n_e_seed
+                scale = 1.0
+                while n_e_min < n_e_limit <= n_e_min + scale * n_e_seed:
+                    scale *= BALANCE_SEED_STAGE_RATIO
+                if scale < 1.0:
+                    for element in elements:
+                        populations = {
+                            ion_stage: scale * self.ionpopdict[(element.Z, ion_stage)]
+                            for ion_stage in element.ion_stages[1:]
+                        }
+                        populations[element.ion_stages[0]] = element.n_elem - sum(populations.values())
+                        self._set_balanced_populations(element, populations)
             self._solve_matrix()
             for element in elements:
                 if element.ratecoeffs_per_deposition is None:
@@ -2810,9 +2837,9 @@ class SpencerFanoSolver:
             )
             _warn(
                 f"the ionisation rate out of the top stage {top} of Z={Z} is {rates[top]:.2e} /s/cm3."
-                f" The total ionisation rate of the element is {rate_total:.2e} /s/cm3. Thus about"
-                f" {rates[top] / rate_total:.1%} of the element belongs in a higher stage. Extend the chain with"
-                f" recombination rate coefficients up to ion stage {stage_needed}."
+                f" The total ionisation rate of the element is {rate_total:.2e} /s/cm3."
+                f" Thus {rates[top] / rate_total:.1%} of the ionisation events of the element leave the chain."
+                f" Extend the chain with recombination rate coefficients up to ion stage {stage_needed}."
             )
 
     def calculate_nt_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
@@ -2957,7 +2984,7 @@ class SpencerFanoSolver:
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p),
-                        arr_xs=channel.xs(arr_e_p),
+                        arr_xs=channel.evaluate_xs(arr_e_p),
                         e_s=arr_epsilon - ionpot_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
@@ -2984,7 +3011,7 @@ class SpencerFanoSolver:
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
-                        arr_xs=channel.xs(arr_e_p_low),
+                        arr_xs=channel.evaluate_xs(arr_e_p_low),
                         e_s=energy_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
