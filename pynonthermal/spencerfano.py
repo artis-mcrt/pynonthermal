@@ -35,6 +35,7 @@ from pynonthermal.base import _get_n_e_limit
 from pynonthermal.base import _is_bool
 from pynonthermal.base import _is_integer
 from pynonthermal.base import _warn
+from pynonthermal.base import CrossSectionFunc
 from pynonthermal.base import electronlossfunction
 from pynonthermal.base import get_betasq
 from pynonthermal.base import get_xs_on_grid
@@ -53,8 +54,6 @@ if t.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import matplotlib.axes as mplax
-
-    from pynonthermal.base import CrossSectionFunc
 else:
 
     class _LazyMatplotlibAxes:
