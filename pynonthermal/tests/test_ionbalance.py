@@ -146,6 +146,15 @@ def build_direct_solver(
     return sf
 
 
+@pytest.mark.parametrize("energy_ev", [0.1, 14.0, 20.0])
+def test_n_e_limit_of_loss_function(energy_ev: float) -> None:
+    n_e_limit = pynonthermal.base._get_n_e_limit(energy_ev)
+    grid = np.linspace(energy_ev, 1000.0, 32)
+    assert (pynonthermal.base._get_lossvec(grid, n_e_limit * (1 - 1e-9)) > 0.0).all()
+    with pytest.raises(ValueError, match="loss function is not valid"):
+        pynonthermal.base._get_lossvec(grid, n_e_limit * (1 + 1e-9))
+
+
 def test_dense_neutral_balance_seed() -> None:
     alphas = {2: 1e-12}
     sf = pynonthermal.SpencerFanoSolver(npts=256, emax_ev=1000)
