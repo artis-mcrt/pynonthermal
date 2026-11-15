@@ -1860,9 +1860,8 @@ class SpencerFanoSolver:
             the ionisation potential of the channel in eV, or the excitation energy of the
             autoionising level of an autoionisation channel. It must be between emin_ev and emax_ev.
             The cross section must be zero at and below it. An autoionisation channel keeps its
-            value at that energy. calculate_N_e(0) also needs a function that goes to zero
-            continuously at ionpot_ev. It raises a ValueError for a function with a step there, or
-            for a function that goes to zero more slowly than a power law with the exponent 0.044.
+            value at that energy. calculate_N_e(0) has a stricter rule for a function (see
+            calculate_N_e()).
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
             array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
@@ -3008,15 +3007,10 @@ class SpencerFanoSolver:
                         # Midpoints exclude that endpoint and integrate its finite product with the cross section.
                         quadrature_weights = np.diff(arr_e_p_low)
                         arr_e_p_low = arr_e_p_low[:-1] + quadrature_weights / 2.0
-                    arr_xs_low = channel.xs(arr_e_p_low)
-                    if energy_ev == 0.0 and n_ion > 0.0:
-                        # The distribution is 2 / (E' - I) near the threshold. If the cross section has a
-                        # step there, the integral is infinite and the midpoint sum depends on the sub-grid.
-                        # The sum also depends on the sub-grid if the cross section goes to zero very slowly.
-                        # The check compares the cross section at two energies very near to the threshold.
+                        # the midpoint sum has no limit for a step at the threshold (see the constants)
                         delta_near = ZERO_ENERGY_THRESHOLD_STEP_REL_EN * (arr_e_p_low[0] - ionpot_ev)
                         xs_near, xs_ref = channel.xs(ionpot_ev + delta_near * np.array([1.0, 2.0]))
-                        if xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * xs_ref:
+                        if n_ion > 0.0 and xs_near > ZERO_ENERGY_THRESHOLD_STEP_MAX_RATIO * xs_ref:
                             msg = (
                                 f"The cross section of ionisation channel {channel.key} of Z={Z} ion_stage"
                                 f" {ion_stage} does not go to zero continuously at ionpot_ev ({ionpot_ev} eV),"
@@ -3028,7 +3022,7 @@ class SpencerFanoSolver:
                     N_e_ion += self._integrate_shell_secondaries(
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
-                        arr_xs=arr_xs_low,
+                        arr_xs=channel.xs(arr_e_p_low),
                         e_s=energy_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
