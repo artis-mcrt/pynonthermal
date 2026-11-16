@@ -38,7 +38,7 @@ jobs:
               run: |
                   wheel="$(ls "$PWD"/dist/*.whl)"
                   cd "$RUNNER_TEMP"
-                  uv run --isolated --no-project --with "$wheel" -- python -c 'import pynonthermal; sf = pynonthermal.SpencerFanoSolver(npts=200); sf.add_element(Z=8, ion_densities={2: 1e8}); sf.solve(deposition_ev_per_s_per_cm3=1e8)'
+                  uv run --isolated --no-project --with "$wheel" -- python "$GITHUB_WORKSPACE/.github/scripts/check_wheel.py"
 
             - uses: actions/upload-artifact@v7
               with:
