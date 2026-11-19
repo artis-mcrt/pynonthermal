@@ -28,13 +28,13 @@ dependencies = [
 [dependency-groups]
 dev = [
     "prek>=0.2.25",
-    "pyrefly>=1.3.0",
+    "pyrefly>=1.5.0",
     "pytest>=9.0.2",
     "pytest-codspeed>=4.1.1",
     "pytest-cov>=2.10.1",
     "pytest-xdist[psutil]>=3.6.1",
     "ruff>=0.16.7",
-    "ty>=0.0.80",
+    "ty>=0.0.107",
 ]
 
 [project.urls]
@@ -51,6 +51,11 @@ project-excludes = [
     "**/venv*",
     "**/_version.py",
 ]
+
+[tool.pyrefly.errors]
+# The annotations say int, but a caller can pass a numpy integer. The int() calls make a Python
+# integer on purpose, so this rule gives only false positives here.
+unnecessary-type-conversion = false
 
 [tool.pytest.ini_options]
 addopts = " --durations=0 -n auto"

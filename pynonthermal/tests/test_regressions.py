@@ -1230,7 +1230,7 @@ def test_shared_tables_are_not_writable() -> None:
         pynonthermal.collion.read_colliondata(), 8, 2, np.linspace(1.0, 3000.0, 100)
     )[0]
     with pytest.raises(TypeError):
-        channel.xs.shell["A"] = 0.0  # ty: ignore[unresolved-attribute]
+        channel.xs.shell["A"] = 0.0  # ty: ignore[missing-attribute]
 
 
 def test_solver_with_channels_can_be_pickled() -> None:
