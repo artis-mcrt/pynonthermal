@@ -61,6 +61,7 @@ uv run -- python3 -m pytest
 
 Make a solver, add the elements of the gas, solve, then read the results:
 
+<!-- test -->
 ```python
 import pynonthermal
 
@@ -310,7 +311,10 @@ The Saha equation is not a population rule. It describes a gas whose ionisation 
 with non-thermal ionisation is not in local thermodynamic equilibrium. It is still a useful comparison,
 so `pynonthermal.ionbalance` gives it as a function of its own:
 
+<!-- test -->
 ```python
+import pynonthermal
+
 fractions = pynonthermal.ionbalance.get_saha_ion_fractions(
     Z=26, ion_stages=[1, 2, 3, 4, 5], temperature=6000.0, n_elem=1.0e6
 )
@@ -333,6 +337,7 @@ This reproduces Figure 2 of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:
 x_e = 0.01, with both ionisation and excitation channels. With `verbose=True` the solver prints its
 setup and a per-ion, per-shell breakdown as it runs.
 
+<!-- test -->
 ```python
 import pynonthermal
 
@@ -394,6 +399,7 @@ solver can only interpolate between the points.
 A custom cross section follows the same path through the solver as a built-in one, so the matrix, the
 energy fractions, and the rate coefficients stay consistent.
 
+<!-- test -->
 ```python
 import numpy as np
 import pynonthermal
@@ -480,6 +486,7 @@ The examples below use a made-up cross section with the shape of the Lotz formul
 below its threshold, as a direct-ionisation channel must be. The two examples of the next sections
 continue from this one, with the same `lotz_like_xs`, `nist`, and `recomb`.
 
+<!-- test -->
 ```python
 import numpy as np
 import pynonthermal
@@ -561,6 +568,7 @@ ion must keep the sum of the NIST potentials less `level_energy_ev`, and the def
 `n_ion` stays the population of the whole ion, as for every channel. The channel rate uses that
 population. Scale the cross section by the population fraction of the level.
 
+<!-- test: continue -->
 ```python
 level_energy_ev = 1.8  # a metastable level of Sr I, 1.8 eV above the ground state
 level_popfrac = 0.2  # the fraction of the Sr I ions in that level
@@ -595,6 +603,7 @@ electron of one energy. Set `autoionisation=True`. Set `ionpot_ev` to the excita
 autoionising level. The solver sets the cross section below that energy to zero, as
 `add_excitation()` does, and it keeps the value at that energy.
 
+<!-- test: continue -->
 ```python
 with pynonthermal.SpencerFanoSolver() as sf:
     sf.add_element(Z=38, n_elem=1.0e6, recomb_ratecoeffs=recomb)
