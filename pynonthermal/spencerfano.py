@@ -725,7 +725,10 @@ class SpencerFanoSolver:
 
     def _require_not_solved(self, action: str) -> None:
         if self._solved:
-            msg = f"Can't {action} after solving the Spencer-Fano equation"
+            msg = (
+                f"Can't {action} after solving the Spencer-Fano equation."
+                " Make a new SpencerFanoSolver for a different plasma."
+            )
             raise RuntimeError(msg)
 
     def _get_all_ions(self) -> list[tuple[int, int]]:

@@ -80,7 +80,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
 ```
 
 The solver is a builder. Each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
-solves it. The `with` block is optional and only scopes the solver.
+solves it. The `with` block is optional. It has no effect on the solver, and `sf` stays
+available after the block.
 
 The [quickstart notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example. Binder can run it:
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/artis-mcrt/pynonthermal/HEAD?filepath=quickstart.ipynb)

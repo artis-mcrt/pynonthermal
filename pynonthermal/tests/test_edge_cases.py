@@ -73,8 +73,8 @@ def test_failed_solve_keeps_the_last_solution() -> None:
     assert sf.ionpopdict == pytest.approx(populations, rel=1e-12)
     np.testing.assert_allclose(sf.yvec, yvec, rtol=1e-12)
     np.testing.assert_allclose(sf.sfmatrix, matrix, rtol=1e-9, atol=1e-12 * np.abs(matrix).max())
-    # the solver is still solved, so it accepts no more ions
-    with pytest.raises(RuntimeError, match="after solving"):
+    # the solver is still solved, so it accepts no more ions, and the message gives the remedy
+    with pytest.raises(RuntimeError, match=r"after solving the Spencer-Fano equation\. Make a new SpencerFanoSolver"):
         sf.add_ionisation(26, 2, 1e5)
 
 
