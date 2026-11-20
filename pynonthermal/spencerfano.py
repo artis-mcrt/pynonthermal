@@ -1961,8 +1961,11 @@ class SpencerFanoSolver:
             appear at the energy auger_electron_energy_ev / n_ejected. The default
             auger_electron_energy_ev is then the energy of the autoionising level above the
             ionisation limit. The channel counts as an ionisation of n_ejected electrons for the
-            rate coefficients and the ionisation balance. Give an exclusive cross section. Do not
-            include these events in a direct-ionisation channel of the same ion.
+            rate coefficients and the ionisation balance. The level can also emit a photon, so give
+            the excitation cross section times the probability of autoionisation. Give the remainder
+            to add_excitation(), with epsilon_trans_ev equal to ionpot_ev. Give an exclusive cross
+            section. Do not include these events in a direct-ionisation channel, in another
+            add_excitation() transition, or in the level-table excitations of the same ion.
         extra_electron_energy_ev:
             the former name of auger_electron_energy_ev. It is deprecated.
 

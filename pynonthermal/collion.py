@@ -502,7 +502,9 @@ class IonisationChannel:
             True for an excitation-autoionisation channel. Then ionpot_ev is the excitation
             energy of the autoionising level, and all n_ejected electrons are Auger electrons.
             The cross section below that energy is set to zero, as in
-            SpencerFanoSolver.add_excitation().
+            SpencerFanoSolver.add_excitation(). The cross section is the excitation cross
+            section times the probability of autoionisation, because the level can also emit
+            a photon.
         extra_electron_energy_ev:
             the former name of auger_electron_energy_ev. It is deprecated.
         """
