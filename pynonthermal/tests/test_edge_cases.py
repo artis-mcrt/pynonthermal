@@ -3,6 +3,7 @@
 Each test gives the input that failed before the fix and checks the behaviour after it.
 """
 
+import importlib
 import os
 import pickle
 import shutil
@@ -234,6 +235,19 @@ def test_a_source_copy_does_not_take_the_version_of_an_installed_release(tmp_pat
     imported_file, version = result.stdout.splitlines()
     assert Path(imported_file).resolve().parent == copy_dir.resolve()
     assert version == "unknown"
+
+
+def test_version_is_unknown_without_the_version_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the test above runs in a subprocess, which the coverage of the tests does not measure. None in
+    # sys.modules makes the import of pynonthermal._version raise ImportError, as in a source directory
+    # that no build has written to.
+    monkeypatch.setitem(sys.modules, "pynonthermal._version", None)
+    try:
+        assert importlib.reload(pynonthermal).__version__ == "unknown"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(pynonthermal)
+    assert pynonthermal.__version__ != "unknown"
 
 
 def test_inputs_with_a_bad_type_fail_with_a_named_message() -> None:
