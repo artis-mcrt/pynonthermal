@@ -20,7 +20,6 @@ readme = { file = "README.md", content-type = 'text/markdown' }
 dependencies = [
     "artistools>=2026.4.20",
     "matplotlib>=3.10.7",
-    "matplotlib-inline>=0.2.1",
     "numpy>=2.4.4",
     "polars>=1.40.1",
 ]
