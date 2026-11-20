@@ -18,5 +18,9 @@ from pynonthermal.excitation import ExcitationTransition as ExcitationTransition
 from pynonthermal.spencerfano import LotzApproximationWarning as LotzApproximationWarning
 from pynonthermal.spencerfano import SpencerFanoSolver as SpencerFanoSolver
 
-# the version of the installed package, for example to record with a result
-__version__: str = importlib.metadata.version("pynonthermal")
+# the version of the installed package, for example to record with a result. A source directory on
+# sys.path has no package metadata, and the import must work there too.
+try:
+    __version__: str = importlib.metadata.version("pynonthermal")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "unknown"

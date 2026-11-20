@@ -393,8 +393,8 @@ The package includes this atomic data:
 | Data | Ions | Source |
 | --- | --- | --- |
 | Ionisation cross sections from fits | all ion stages of H, He, C, N, O, Ne, Na, Mg, Al, Si, S, Ar, Ca, Fe, and Ni; Co I to Co III | Arnaud and Rothenflug (1985, A&AS, 60, 425–457); for Fe, Arnaud and Raymond (1992, ApJ, 398, 394–406, doi:10.1086/171864) |
-| Ionisation cross sections from the Lotz formula | every other ion with at least one electron, up to Z = 108 | Axelrod (1980, PhD thesis, University of California, Santa Cruz), with the subshell energies of Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206) |
-| Ionisation potentials | the ground states of all ions up to Z = 110 | the NIST Atomic Spectra Database |
+| Ionisation cross sections from the Lotz formula | every other ion with at least one electron up to Z = 100, and some ions of Z = 101 to 108 | Axelrod (1980, PhD thesis, University of California, Santa Cruz), with the subshell energies of Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206) |
+| Ionisation potentials | the ground states of all ions up to Z = 100, and some ions of Z = 101 to 110 | the NIST Atomic Spectra Database |
 | Levels and transitions, for excitation and for the Saha partition functions | He I to He II, O I to O IV, and Fe I to Fe V | the CMFGEN atomic data compilation |
 
 [Cross-section datasets](#cross-section-datasets) gives more information about the ionisation data.
@@ -683,7 +683,7 @@ The default Auger electron energy then comes from that lowest level.
 If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
 
 Give the version of pynonthermal that you used. `pynonthermal.__version__` holds it, and the solver
-prints it with `verbose=True`. [CITATION.cff](CITATION.cff) gives these references in the Citation File
+prints it with `verbose=True`. [CITATION.cff](https://github.com/artis-mcrt/pynonthermal/blob/main/CITATION.cff) gives these references in the Citation File
 Format, and GitHub shows them under "Cite this repository".
 
 ## License
