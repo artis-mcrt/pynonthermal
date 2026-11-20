@@ -398,9 +398,19 @@ energy fractions, and the rate coefficients stay consistent.
 import numpy as np
 import pynonthermal
 
+# a tabulated ionisation cross section, for example from a calculation. It is zero at and below
+# the threshold of 35 eV.
+my_en_ev = np.array([35.0, 50.0, 100.0, 300.0, 1000.0, 16000.0])
+my_xs_cm2 = np.array([0.0, 2.0e-18, 4.0e-18, 3.0e-18, 1.5e-18, 2.0e-19])
+
 
 def my_ionisation_xs(en_ev):
     return np.interp(en_ev, my_en_ev, my_xs_cm2, left=0.0, right=0.0)
+
+
+def my_excitation_xs(en_ev):
+    # zero below the transition energy of 20 eV
+    return np.where(en_ev >= 20.0, 1.0e-17 * 20.0 / en_ev, 0.0)
 
 
 with pynonthermal.SpencerFanoSolver() as sf:
@@ -416,6 +426,9 @@ with pynonthermal.SpencerFanoSolver() as sf:
         transitionkey=(0, 3),
         levelpopfrac=0.9,
     )
+    sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
+    print(f"O II ionisation rate coefficient {sf.get_ionisation_ratecoeff(Z=8, ion_stage=2):.2e} /s")
+    print(f"excitation rate coefficient {sf.get_excitation_ratecoeff(Z=8, ion_stage=2, transitionkey=(0, 3)):.2e} /s")
 ```
 
 `add_ionisation_channel()` takes:
