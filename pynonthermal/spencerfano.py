@@ -622,8 +622,8 @@ class SpencerFanoSolver:
 
         if self.verbose:
             print(
-                f"\nSetting up Spencer-Fano equation with {npts} energy points from"
-                f" {self.engrid[0]} to {self.engrid[-1]} eV..."
+                f"\nSetting up Spencer-Fano equation (pynonthermal {pynonthermal.__version__}) with {npts}"
+                f" energy points from {self.engrid[0]} to {self.engrid[-1]} eV..."
             )
             print(
                 f"  source is a box function from {source_emin:.2f} to"

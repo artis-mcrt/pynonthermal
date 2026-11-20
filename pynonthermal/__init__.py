@@ -1,5 +1,7 @@
 """A non-thermal electron deposition (Spencer-Fano equation) solver."""
 
+import importlib.metadata
+
 from pynonthermal import axelrod as axelrod
 from pynonthermal import base as base
 from pynonthermal import collion as collion
@@ -15,3 +17,6 @@ from pynonthermal.collion import IonisationChannel as IonisationChannel
 from pynonthermal.excitation import ExcitationTransition as ExcitationTransition
 from pynonthermal.spencerfano import LotzApproximationWarning as LotzApproximationWarning
 from pynonthermal.spencerfano import SpencerFanoSolver as SpencerFanoSolver
+
+# the version of the installed package, for example to record with a result
+__version__: str = importlib.metadata.version("pynonthermal")

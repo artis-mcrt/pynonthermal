@@ -681,6 +681,9 @@ The default Auger electron energy then comes from that lowest level.
 
 If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
 
+Give the version of pynonthermal that you used. `pynonthermal.__version__` holds it, and the solver
+prints it with `verbose=True`.
+
 ## License
 
 Distributed under the MIT license. See [LICENSE](LICENSE) for details.

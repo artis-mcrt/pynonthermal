@@ -1476,3 +1476,10 @@ def test_iron_notebook_deposition_is_independent_of_the_selected_epoch() -> None
     deposition = namespace["get_deposition_rate_density"](500.0)
     namespace["T_DAYS"] = 500.0
     assert namespace["get_deposition_rate_density"](500.0) == deposition
+
+
+def test_verbose_output_gives_the_version(capsys: pytest.CaptureFixture[str]) -> None:
+    # a log of a result must record the version of the package that made it
+    assert pynonthermal.__version__
+    pynonthermal.SpencerFanoSolver(npts=100, verbose=True)
+    assert f"(pynonthermal {pynonthermal.__version__})" in capsys.readouterr().out
