@@ -288,3 +288,32 @@ def test_messages_name_the_cause() -> None:
     sf.set_atomic_data(adata_polars=_oxygen_level_table())
     with pytest.raises(ValueError, match="in the level/transition table of set_atomic_data"):
         sf.add_ion_excitation(26, 2, 1e4)
+
+
+@pytest.mark.parametrize("with_ion_pot", [True, False])
+def test_verbose_output_counts_excitations_above_the_ionisation_potential(
+    with_ion_pot: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the built-in O IV levels go above the ionisation limit, and the solver treats the transitions to
+    # them as excitation. A table without ion_pot uses the NIST potential.
+    table = _oxygen_level_table().filter(pl.col("ion_stage") == 4)
+    ionpot_ev = (
+        table["ion_pot"].item() if with_ion_pot else pynonthermal.collion.get_nist_ionisation_energies_ev()[(8, 4)]
+    )
+    sf = pynonthermal.SpencerFanoSolver(verbose=True)
+    sf.set_temperature(10000.0)
+    sf.set_atomic_data(adata_polars=table if with_ion_pot else table.drop("ion_pot"))
+    capsys.readouterr()
+    sf.add_ion_excitation(Z=8, ion_stage=4, n_ion=1e8)
+    out = capsys.readouterr().out
+    n_excitations = len(sf.excitationlists[(8, 4)])
+    assert f"of the {n_excitations} excitations of Z=8 ion_stage 4 (O IV) go to levels above" in out
+    assert f"({ionpot_ev:.2f} eV)" in out
+
+
+def test_verbose_output_has_no_count_for_bound_levels(capsys: pytest.CaptureFixture[str]) -> None:
+    # all levels of the built-in O II data are below the ionisation limit
+    sf = pynonthermal.SpencerFanoSolver(verbose=True)
+    sf.set_temperature(10000.0)
+    sf.add_ion_excitation(Z=8, ion_stage=2, n_ion=1e8)
+    assert "go to levels above the ionisation potential" not in capsys.readouterr().out

@@ -803,7 +803,10 @@ class SpencerFanoSolver:
             ARTIS atomic data), in the format returned by artistools.atomic.get_levels() with
             get_transitions=True and derived_transitions_columns=["epsilon_trans_ev", "lower_g",
             "upper_g"]: one row per ion with Z, ion_stage, and nested "levels" and
-            "transitions" frames. None keeps the table that the solver has.
+            "transitions" frames. None keeps the table that the solver has. The solver treats a
+            transition to a level above the ionisation limit as an excitation. For an excitation
+            autoionisation, remove the transition from the table and use add_ionisation_channel()
+            with autoionisation=True.
         use_collstrengths:
             compute cross sections from tabulated collision strengths where available (LHD12
             equation 11). Permitted transitions without one (or all permitted transitions,
@@ -1557,6 +1560,26 @@ class SpencerFanoSolver:
                     ),
                 )
             )
+
+        if self.verbose:
+            # a level above the ionisation limit can autoionise, but the solver counts each transition
+            # to it as an excitation. The level energies and the potential of the table come from one
+            # data set, so the comparison uses that potential. A table without it uses the NIST value.
+            levels = ion["levels"].item()
+            ionpot_ev = (
+                float(ion["ion_pot"].item())
+                if "ion_pot" in ion.columns
+                else _get_nist_ionisation_energies_ev_cached().get((Z, ion_stage))
+            )
+            if ionpot_ev is not None:
+                levels_above = set(levels.filter(pl.col("energy_ev") > ionpot_ev)["levelindex"].to_list())
+                n_above = sum(upper in levels_above for (_, upper), _ in templates)
+                if n_above:
+                    print(
+                        f"  {n_above} of the {len(templates)} excitations of Z={Z} ion_stage {ion_stage}"
+                        f" ({_ionstring(Z, ion_stage)}) go to levels above the ionisation potential"
+                        f" ({ionpot_ev:.2f} eV). The solver counts them as excitation and not as autoionisation."
+                    )
 
         return templates
 
