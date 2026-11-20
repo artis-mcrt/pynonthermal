@@ -3646,7 +3646,8 @@ class SpencerFanoSolver:
         ax.set_xlabel(r"Electron energy [eV]", fontsize=fs)
         if axis is None:
             if outputfilename is not None:
-                print(f"Saving '{outputfilename}'")
+                if self.verbose:
+                    print(f"Saving '{outputfilename}'")
                 assert fig is not None
                 fig.savefig(str(outputfilename))
                 plt.close()
@@ -3755,7 +3756,8 @@ class SpencerFanoSolver:
         ax.set_xlabel(r"Electron energy [eV]", fontsize=fs)
         if axis is None:
             if outputfilename is not None:
-                print(f"Saving '{outputfilename}'")
+                if self.verbose:
+                    print(f"Saving '{outputfilename}'")
                 assert fig is not None
                 fig.savefig(str(outputfilename))
                 plt.close()
@@ -3788,7 +3790,8 @@ class SpencerFanoSolver:
         self.plot_channels(axis=axes[1], xscalelog=xscalelog)
 
         if outputfilename is not None:
-            print(f"Saving '{outputfilename}'")
+            if self.verbose:
+                print(f"Saving '{outputfilename}'")
             fig.savefig(str(outputfilename))
             plt.close()
         else:

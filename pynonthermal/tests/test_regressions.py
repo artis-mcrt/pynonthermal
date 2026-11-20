@@ -1483,3 +1483,13 @@ def test_verbose_output_gives_the_version(capsys: pytest.CaptureFixture[str]) ->
     assert pynonthermal.__version__
     pynonthermal.SpencerFanoSolver(npts=100, verbose=True)
     assert f"(pynonthermal {pynonthermal.__version__})" in capsys.readouterr().out
+
+
+def test_plot_prints_the_path_only_with_verbose(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    for verbose in (False, True):
+        sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, verbose=verbose)
+        sf.add_element(8, ion_densities={2: 1e8})
+        sf.solve(1e8)
+        capsys.readouterr()
+        sf.plot_yspectrum(outputfilename=tmp_path / "yspectrum.pdf")
+        assert ("Saving" in capsys.readouterr().out) == verbose
