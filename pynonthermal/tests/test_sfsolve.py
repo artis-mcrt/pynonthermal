@@ -71,7 +71,7 @@ def test_api_guards() -> None:
 
         # excitation data must exist for the requested ion
         sf.set_atomic_data(adata_polars=pl.DataFrame({"Z": [2], "ion_stage": [1]}))
-        with pytest.raises(ValueError, match="No excitation data"):
+        with pytest.raises(ValueError, match=r"No excitation data .* has the ions \[\(2, 1\)\]"):
             sf.add_ion_excitation(3, 1, n_ion=1.0)
 
         # a zero-population ion is registered with no channel, and a negative population is rejected

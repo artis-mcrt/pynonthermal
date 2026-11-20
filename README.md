@@ -26,6 +26,7 @@ These quantities are important in models of the late-time spectra and light curv
 - [Where the ion populations come from](#where-the-ion-populations-come-from)
 - [Complete example: pure-oxygen plasma](#complete-example-pure-oxygen-plasma)
 - [Units and conventions](#units-and-conventions)
+- [Built-in atomic data](#built-in-atomic-data)
 - [Method background](#method-background)
 - [Cross-section datasets](#cross-section-datasets)
 - [Advanced usage: custom cross sections](#advanced-usage-custom-cross-sections)
@@ -371,6 +372,22 @@ The plot shows the contribution of each channel per logarithmic energy interval,
 - `deposition_ev_per_s_per_cm3` is in eV s^-1 cm^-3.
 - `get_ionisation_ratecoeff()` and `get_excitation_ratecoeff()` both return rates in s^-1.
 - The `recomb_ratecoeffs` of `add_element()` are in cm^3 s^-1, keyed by the ion stage that recombines.
+
+## Built-in atomic data
+
+The package includes this atomic data:
+
+| Data | Ions | Source |
+| --- | --- | --- |
+| Ionisation cross sections from fits | all ion stages of H, He, C, N, O, Ne, Na, Mg, Al, Si, S, Ar, Ca, Fe, and Ni; Co I to Co III | Arnaud and Rothenflug (1985, A&AS, 60, 425–457); for Fe, Arnaud and Raymond (1992, ApJ, 398, 394–406, doi:10.1086/171864) |
+| Ionisation cross sections from the Lotz formula | every other ion with at least one electron, up to Z = 108 | Axelrod (1980, PhD thesis, University of California, Santa Cruz), with the subshell energies of Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206) |
+| Ionisation potentials | the ground states of all ions up to Z = 110 | the NIST Atomic Spectra Database |
+| Levels and transitions, for excitation and for the Saha partition functions | He I to He II, O I to O IV, and Fe I to Fe V | the CMFGEN atomic data compilation |
+
+[Cross-section datasets](#cross-section-datasets) gives more information about the ionisation data.
+For an ion that has no level data, give the excitations with `add_excitation()`, or give a level
+table to `set_atomic_data()`. The error of `add_element(excitation=True)` lists the ions that have
+level data.
 
 ## Method background
 

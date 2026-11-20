@@ -360,7 +360,7 @@ def test_saha_ion_fractions_validation() -> None:
     with pytest.raises(ValueError, match="not in the chain"):
         get_fractions(8, [1, 2], 6000.0, n_e=1e8, partfuncs={3: 1.0})
     # Ba has no level data in the internal database, so its partition functions must be given
-    with pytest.raises(ValueError, match="No level data for Z=56 ion_stage 1"):
+    with pytest.raises(ValueError, match=r"No level data for Z=56 ion_stage 1 .* the ions \[\(2, 1\), .*\(26, 5\)\]"):
         get_fractions(56, [1, 2], 6000.0, n_e=1e8)
     with pytest.raises(ValueError, match="partition function of Z=56 ion_stage 2"):
         get_fractions(56, [1, 2], 6000.0, n_e=1e8, partfuncs={1: 1.0, 2: 0.0})
@@ -590,7 +590,7 @@ def test_element_excitation() -> None:
         with pytest.raises(ValueError, match="n_ion is required"):
             sf_element.add_ion_excitation(8, 1, None)
         # an element without any level data cannot get excitations
-        with pytest.raises(ValueError, match="No excitation data for any ion stage 1-2 of Z=56"):
+        with pytest.raises(ValueError, match=r"No excitation data for any ion stage 1-2 of Z=56\. .*\(8, 4\)"):
             sf_element.add_element(56, 1e8, recomb_ratecoeffs={2: 1e-12}, excitation=True)
 
 

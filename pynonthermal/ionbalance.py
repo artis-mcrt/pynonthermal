@@ -498,8 +498,10 @@ def get_saha_ion_fractions(
                 adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
             ion = adata_polars.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
             if ion.is_empty():
+                ions_with_levels = sorted(adata_polars.select("Z", "ion_stage").unique().iter_rows())
                 msg = (
                     f"No level data for Z={Z} ion_stage {ion_stage} to calculate a partition function."
+                    f" The level table has the ions {ions_with_levels} as (Z, ion_stage) pairs."
                     " Give it in partfuncs or supply a level table in adata_polars."
                 )
                 raise ValueError(msg)

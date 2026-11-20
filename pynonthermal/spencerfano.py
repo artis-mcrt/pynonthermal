@@ -1320,8 +1320,10 @@ class SpencerFanoSolver:
             ion_stage for ion_stage in ion_stages if ion_stage <= Z and self._get_ion_levels(Z, ion_stage) is not None
         ]
         if not stages_with_levels:
+            ions_with_levels = sorted(self._get_adata_polars().select("Z", "ion_stage").unique().iter_rows())
             msg = (
                 f"No excitation data for any ion stage {min(ion_stages)}-{max(ion_stages)} of Z={Z}."
+                f" The level data has the ions {ions_with_levels} as (Z, ion_stage) pairs."
                 " Supply a custom level/transition table with set_atomic_data()."
             )
             raise ValueError(msg)
@@ -1389,8 +1391,10 @@ class SpencerFanoSolver:
             source = (
                 "internal database" if self._adata_polars_is_internal else "level/transition table of set_atomic_data()"
             )
+            ions_with_levels = sorted(self._get_adata_polars().select("Z", "ion_stage").unique().iter_rows())
             msg = (
                 f"No excitation data for Z={Z} ion_stage {ion_stage} in the {source}."
+                f" The {source} has the ions {ions_with_levels} as (Z, ion_stage) pairs."
                 " Supply a level/transition table with this ion to set_atomic_data(), or add cross"
                 " sections directly with add_excitation()."
             )
