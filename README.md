@@ -225,6 +225,18 @@ the lower level population `levelnumberdensity` in cm^-3, the cross sections `xs
 The solution itself is `sf.yvec` over `sf.engrid`, both read-only arrays. With `verbose=True` the
 solver prints the per-ion and per-shell breakdown as it analyses the solution.
 
+For a plot of your own, three arrays on `sf.engrid` give the share of the deposited energy per unit
+electron energy, in eV^-1:
+
+```python
+sf.get_d_etaheating_by_d_en_vec()  # to heating, without the energy that thermalises below emin_ev
+sf.get_d_etaion_by_d_en_vec()  # to ionisation
+sf.get_d_etaexcitation_by_d_en_vec()  # to excitation
+```
+
+The sum of the ionisation array times `sf.deltaen` is `get_frac_ionisation_tot()`, and the same is
+true for excitation. `plot_channels()` draws each array times the energy.
+
 ### 6. Plot the solution
 
 ```python

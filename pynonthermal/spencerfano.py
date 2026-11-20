@@ -693,12 +693,24 @@ class SpencerFanoSolver:
         """Exit the context manager."""
 
     def get_energyindex_lteq(self, en_ev: float) -> int:
+        """Get the index of the last point of engrid that is less than or equal to en_ev [eV].
+
+        An energy below the grid gives 0, and an energy above the grid gives the last index.
+        """
         return pynonthermal.get_energyindex_lteq(en_ev, engrid=self.engrid)
 
     def get_energyindex_gteq(self, en_ev: float) -> int:
+        """Get the index of the first point of engrid that is greater than or equal to en_ev [eV].
+
+        An energy below the grid gives 0, and an energy above the grid gives the last index.
+        """
         return pynonthermal.get_energyindex_gteq(en_ev, engrid=self.engrid)
 
     def electronlossfunction(self, en_ev: float) -> float:
+        """Get the energy loss rate L(E) [eV cm^-1] of an electron at en_ev [eV] to the free electrons.
+
+        It uses the free electron density of get_n_e(). See pynonthermal.electronlossfunction().
+        """
         return electronlossfunction(en_ev, self.get_n_e())
 
     def _require_solved(self) -> None:
@@ -2847,6 +2859,12 @@ class SpencerFanoSolver:
             )
 
     def calculate_nt_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
+        """Calculate the share of the deposited energy that goes to the excitations of one ion (KF92 equation 9).
+
+        The value is the sum over the transitions of the ion. An ion that the solver holds without
+        excitations gives zero.
+        get_frac_excitation_ion() gives the same value from the analysis of the solution.
+        """
         self._require_solved()
         if (Z, ion_stage) not in self.excitationlists:
             # zero for an ion that the solver holds without excitations. An ion that the solver does
@@ -3077,7 +3095,11 @@ class SpencerFanoSolver:
         return float(np.dot(xs_vec[jstart:jstop] * self.yvec[jstart:jstop], energy_below_e0_ev) * deltaen)
 
     def calculate_frac_heating(self) -> float:
-        # fraction of the deposited energy that heats the free thermal electrons: KF92 equation 8.
+        """Calculate the share of the deposited energy that heats the free thermal electrons (KF92 equation 8).
+
+        The method also stores the value, and get_frac_heating() then gives it without a new
+        calculation. The value includes the energy of the electrons that thermalise below emin_ev.
+        """
         # The four parts below are each divided by the deposition rate density:
         # - the loss-function integral over the solved grid;
         # - the boundary term E_0 y(E_0) L(E_0) for the electrons that flow through the bottom of
@@ -3171,10 +3193,21 @@ class SpencerFanoSolver:
         self._eff_ionpot = {}
 
     def reset_solution_analysis(self) -> None:
+        """Discard the stored energy fractions and rate coefficients of the analysis of the solution.
+
+        The next getter of a result calculates them again from yvec. solve() calls this method.
+        """
         self._reset_channel_fractions()
         self._frac_heating = None
 
     def analyse_ntspectrum(self) -> None:
+        """Calculate the energy fractions and the rate coefficients of each ion from the solution.
+
+        The getters of the results call this method when they need it, so a call is not necessary.
+        With verbose=True, the method prints a per-ion and per-shell breakdown. It warns if the
+        energy fractions do not sum to one within 5 per cent. With heating_only_approximation, it
+        warns if the heating fraction is not one within 5 per cent.
+        """
         self._require_solved()
         # keep any frac_heating already computed for this solution, since it only depends on yvec
         self._reset_channel_fractions()
@@ -3500,6 +3533,13 @@ class SpencerFanoSolver:
         return self.get_frac_heating() + self.get_frac_excitation_tot() + self.get_frac_ionisation_tot()
 
     def get_d_etaheating_by_d_en_vec(self) -> npt.NDArray[np.float64]:
+        """Get d(eta_heating)/dE [eV^-1] at each energy of engrid.
+
+        This is the share of the deposited energy that goes to heating per unit electron energy,
+        L(E) y(E) divided by the deposition rate density. The array excludes the energy that
+        thermalises below emin_ev, which get_frac_heating() includes. plot_channels() draws E times
+        this array.
+        """
         self._require_solved()
         # an array, as the two other get_d_eta*_by_d_en_vec() methods give. A list repeats under * 2.
         n_e = self.get_n_e()
@@ -3507,6 +3547,12 @@ class SpencerFanoSolver:
         return lossvec * self.yvec / self.deposition_ev_per_s_per_cm3
 
     def get_d_etaexcitation_by_d_en_vec(self) -> npt.NDArray[np.float64]:
+        """Get d(eta_excitation)/dE [eV^-1] at each energy of engrid, summed over every ion.
+
+        This is the share of the deposited energy that goes to excitation per unit electron energy.
+        The sum of the array times deltaen is get_frac_excitation_tot(). plot_channels() draws E
+        times this array.
+        """
         self._require_solved()
         part_integrand = np.zeros(len(self.engrid))
 
@@ -3519,6 +3565,13 @@ class SpencerFanoSolver:
         return self.yvec * part_integrand
 
     def get_d_etaion_by_d_en_vec(self) -> npt.NDArray[np.float64]:
+        """Get d(eta_ionisation)/dE [eV^-1] at each energy of engrid, summed over every ion.
+
+        This is the share of the deposited energy that goes to ionisation per unit electron energy.
+        Only the energy that the ion keeps counts, so the energy of an Auger electron is not part of
+        it. The sum of the array times deltaen is get_frac_ionisation_tot(). plot_channels() draws E
+        times this array.
+        """
         self._require_solved()
         part_integrand = np.zeros(len(self.engrid))
 

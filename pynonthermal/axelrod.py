@@ -3,6 +3,7 @@
 The comments and the docstrings of this module cite these publications by their labels:
 
 - A80: Axelrod 1980, PhD thesis, University of California, Santa Cruz, ADS 1980PhDT.........1A
+- L70: Lotz 1970, J. Opt. Soc. Am., 60, 206-210, doi:10.1364/JOSA.60.000206
 """
 
 import math
@@ -39,6 +40,11 @@ LOTZ_A_CM2_EV2_LOTZ1967: float = 4.5e-14
 
 @lru_cache
 def get_binding_energies() -> npt.NDArray[np.float64]:
+    """Get the subshell binding energies [erg] of L70.
+
+    Row i holds the element Z = i + 1, and each column is one subshell. A value that is not positive
+    means that the table has no binding energy. The array is read-only.
+    """
     collionfilepath = Path(pynonthermal.DATADIR, "binding_energies_lotz1970.txt")
 
     with collionfilepath.open() as f:
@@ -65,6 +71,11 @@ def get_binding_energies() -> npt.NDArray[np.float64]:
 
 @lru_cache
 def get_shell_configs() -> npt.NDArray[np.int64]:
+    """Get the number of electrons in each subshell of each neutral atom.
+
+    Row i holds the element Z = i + 1, and the columns are the subshells of get_binding_energies().
+    The array is read-only.
+    """
     shellfilepath = Path(pynonthermal.DATADIR, "electron_shell_occupancy.txt")
 
     with shellfilepath.open() as f:
@@ -91,9 +102,13 @@ def get_shell_configs() -> npt.NDArray[np.int64]:
 
 
 def get_shell_occupancies(atomic_number: int, ion_stage: int) -> npt.NDArray[np.int64]:
-    # electrons in each shell of one ion, taken from the neutral configuration with the outermost
-    # electrons removed. An ion outside the tables gave a row of another element, a bare
-    # AssertionError, or a bare IndexError.
+    """Get the number of electrons in each subshell of one ion.
+
+    The values are those of the neutral atom of get_shell_configs(), with the outermost electrons
+    removed. A ValueError reports an element that the shell tables do not hold. The array is read-only.
+    """
+    # An ion outside the tables gave a row of another element, a bare AssertionError, or a bare
+    # IndexError.
     # The check runs before the cache. A float or a bool that is equal to a cached integer key
     # otherwise got the cached array with no check.
     atomic_number, ion_stage = _check_ion(atomic_number, ion_stage)
@@ -139,6 +154,12 @@ def _get_shell_occupancies_cached(atomic_number: int, ion_stage: int) -> npt.NDA
 
 
 def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev: float) -> float:
+    """Get the sum over the subshells of one ion of q / max(B, I) [erg^-1].
+
+    q is the number of electrons in a subshell, B is its binding energy, and I is ionpot_ev. A
+    subshell without a binding energy takes the binding energy of the next inner subshell.
+    get_workfn_ev() uses the sum.
+    """
     # LJS: translated from artis nonthermal.cc
     electron_binding = get_binding_energies()
     q = get_shell_occupancies(atomic_number, ion_stage)
@@ -166,10 +187,14 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
 def get_workfn_ev(
     atomic_number: int, ion_stage: int, ionpot_ev: float, Zbar: float, lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> float:
-    # the A80 high-energy-limit approximation to the work per ion pair W, an estimate
-    # of the effective ionisation potential without solving the Spencer-Fano equation:
-    # 1/W = sigma / L with both taken in their high-energy limits and losses to the free
-    # electrons neglected, which reduces to the shell-occupancy-over-binding-energy sum
+    """Get an estimate [eV] of the work per ion pair W of one ion, without a Spencer-Fano solution.
+
+    This is the A80 approximation 1/W = sigma / L, with both terms in their high-energy limits and
+    without the losses to the free electrons. It is an estimate of the effective ionisation
+    potential. Zbar is the mean atomic number of the plasma (see pynonthermal.base.get_Zbar()), and
+    lotz_a_cm2_ev2 [cm^2 eV^2] is the constant of the Lotz formula.
+    """
+    # the approximation reduces to the sum of the shell occupancies over the binding energies
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
     oneoverW = lotz_a_cm2_ev2 * EV * EV * binding / Zbar / (2 * math.pi * pow(QE, 4))
 
@@ -179,9 +204,13 @@ def get_workfn_ev(
 def get_lotz_xs_ionisation_vec(
     shell: Mapping[str, int | float], arr_en_ev: npt.NDArray[np.float64], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
-    # A80 Eq 3.38 evaluated at an array of energies [eV], with the constant A of the Lotz
-    # formula lotz_a_cm2_ev2 [cm^2 eV^2]
+    """Get the Lotz ionisation cross section [cm^2] of one subshell at each energy of arr_en_ev [eV].
 
+    This is A80 equation 3.38, with its relativistic terms, and the constant A of the Lotz formula
+    lotz_a_cm2_ev2 [cm^2 eV^2]. shell is a row of pynonthermal.collion.read_colliondata() with
+    n < 0, and -l is the index of its subshell. The cross section is zero at and below the
+    ionisation potential of the shell.
+    """
     arr_en_erg = arr_en_ev * EV
 
     # relativistic, to match the relativistic correction terms in the Axelrod equation below. The

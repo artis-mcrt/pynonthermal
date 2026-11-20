@@ -228,10 +228,13 @@ def Psecondary_vec(
 
 
 def Psecondary(e_p: float, ionpot_ev: float, J: float, e_s: float = -1, epsilon: float = -1) -> float:
-    # probability distribution function for secondaries energy e_s [eV] (or equivalently the energy loss of
-    # the primary electron epsilon [eV]) given a primary energy e_p [eV] for an impact ionisation event
+    """Evaluate the secondary-electron energy distribution [eV^-1] of KF92 equation 4 at one energy.
 
-    # see Psecondary_vec() for the support that the caller's limits of integration must stay inside
+    e_p is the energy [eV] of the primary electron of an impact ionisation. Give the energy e_s [eV]
+    of the secondary electron, or the energy loss epsilon [eV] of the primary electron. Then e_s is
+    epsilon - ionpot_ev. J [eV] is the width parameter of get_J(). Psecondary_vec() is the form for
+    arrays, and its docstring gives the support that the limits of integration must stay inside.
+    """
     if e_s < 0 and epsilon < 0:
         msg = "either the secondary energy e_s or the primary energy loss epsilon must be given"
         raise ValueError(msg)
@@ -243,7 +246,11 @@ def Psecondary(e_p: float, ionpot_ev: float, J: float, e_s: float = -1, epsilon:
 
 
 def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
-    # returns an energy in eV
+    """Get the width parameter J [eV] of the secondary-electron distribution of one ion.
+
+    He I, Ne I, and Ar I have the values of OPB71, as KF92 applied them. Every other ion has 0.6
+    times ionpot_ev [eV]. The solver uses the same J for every shell of an ion, as ARTIS does.
+    """
     # a charge in place of the ion stage would give the J of the wrong stage
     Z, ion_stage = _check_ion(Z, ion_stage)
     # values from OPB71 as applied by KF92. They are whole-atom measurements
@@ -262,11 +269,13 @@ def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
 def get_arxs_array_shell(
     arr_enev: npt.NDArray[np.float64], shell: Mapping[str, int | float], lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2
 ) -> npt.NDArray[np.float64]:
-    # the shell's total impact-ionisation cross section in cm^2 at each energy [eV]: the
-    # sigma_ic of KF92 (equations 5, 10, and 11 and the ionisation term of
-    # equation 7). Shells with fit data use the formula of Y81 with the A-D
-    # coefficients of the AR85 compilation; shells marked n < 0 have no
-    # fit data and use the Lotz approximation with the constant lotz_a_cm2_ev2 instead.
+    """Get the impact ionisation cross section [cm^2] of one shell at each energy of arr_enev [eV].
+
+    This is the sigma_ic of KF92 (equations 5, 10, and 11, and the ionisation term of equation 7).
+    shell is a row of read_colliondata(). A shell with fit data uses the formula of Y81 with the A to
+    D coefficients of AR85. A shell with n < 0 has no fit data, so it uses the Lotz formula with the
+    constant lotz_a_cm2_ev2 [cm^2 eV^2].
+    """
     if shell["n"] < 0:
         return get_lotz_xs_ionisation_vec(shell, arr_en_ev=arr_enev, lotz_a_cm2_ev2=lotz_a_cm2_ev2)
 

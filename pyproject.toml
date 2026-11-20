@@ -80,8 +80,6 @@ ignore = [
     "COM812",  # missing-trailing-comma
     "CPY001",  # missing-copyright-notice
     "D100",    # undocumented-public-module
-    "D102",    # undocumented-public-method
-    "D103",    # undocumented-public-function
     "D203",    # one-blank-line-before-class
     "D213",    # multi-line-summary-second-line
     "ERA001",  # commented-out-code
@@ -120,8 +118,10 @@ unfixable = [
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "pynonthermal/tests/*" = [
-    "SLF001",
-] # tests may use private members to compare against production inputs
+    "D102",   # undocumented-public-method
+    "D103",   # undocumented-public-function
+    "SLF001", # tests may use private members to compare against production inputs
+]
 
 [tool.ruff.lint.isort]
 force-single-line = true
