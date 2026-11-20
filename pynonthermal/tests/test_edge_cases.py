@@ -205,6 +205,7 @@ def test_import_loads_neither_artistools_nor_matplotlib() -> None:
         " typing.get_type_hints(pynonthermal.SpencerFanoSolver.add_excitation);"
         " typing.get_type_hints(pynonthermal.SpencerFanoSolver.add_ionisation_channel);"
         " print('artistools' in sys.modules, 'matplotlib' in sys.modules);"
+        " typing.get_type_hints(pynonthermal.SpencerFanoSolver.plot_spec_channels);"
         " print(typing.get_type_hints(pynonthermal.SpencerFanoSolver.plot_channels)['axis'])"
     )
     repo = Path(pynonthermal.__file__).parent.parent

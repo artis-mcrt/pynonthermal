@@ -1392,6 +1392,24 @@ def test_plot_spec_channels_on_an_unsolved_solver_opens_no_figure() -> None:
     assert len(plt.get_fignums()) == figures_before
 
 
+def test_plot_spec_channels_draws_into_the_axes_of_the_caller(tmp_path: Path) -> None:
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200)
+    sf.add_element(8, ion_densities={2: 1e8})
+    sf.solve(1e8)
+    fig, axes = plt.subplots(nrows=2, sharex=True)
+    figures_before = plt.get_fignums()
+    # the caller owns the figure, so the method neither makes a figure nor saves one
+    sf.plot_spec_channels(axes=axes, xscalelog=True, outputfilename=tmp_path / "unused.pdf")
+    assert plt.get_fignums() == figures_before
+    assert not (tmp_path / "unused.pdf").exists()
+    assert len(axes[0].lines) == 1
+    assert {line.get_label() for line in axes[1].lines} == {"Ionisation", "Heating"}
+    assert axes[1].get_xscale() == "log"
+    plt.close(fig)
+
+
 def test_ionbalance_checks_and_edge_cases() -> None:
     ionbalance = pynonthermal.ionbalance
     # an iterator gave one stage, because the check used it up

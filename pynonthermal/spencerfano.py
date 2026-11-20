@@ -3826,30 +3826,46 @@ class SpencerFanoSolver:
             else:
                 plt.show()
 
-    def plot_spec_channels(self, outputfilename: Path | str | None = None, xscalelog: bool = False) -> None:
+    def plot_spec_channels(
+        self,
+        outputfilename: Path | str | None = None,
+        xscalelog: bool = False,
+        axes: tuple[mplax.Axes, mplax.Axes] | None = None,
+    ) -> None:
         """Plot the degradation spectrum and the deposition channels as two stacked panels.
 
         outputfilename:
             save the figure to this path; None shows it interactively instead
         xscalelog:
             use a logarithmic energy axis
+        axes:
+            draw into these two existing matplotlib Axes, the spectrum into the first and the
+            channels into the second, instead of creating (and saving or showing) a new figure.
+            The two Axes of plt.subplots(nrows=2) are an example.
         """
         # the check runs before the figure exists, so a call on an unsolved solver leaves no open figure
         self._require_solved()
+        if axes is not None:
+            # a numpy array of Axes from plt.subplots() is also correct here
+            ax_spectrum, ax_channels = axes
+            self.plot_yspectrum(axis=ax_spectrum, en_y_on_d_en=True, xscalelog=xscalelog)
+            self.plot_channels(axis=ax_channels, xscalelog=xscalelog)
+            return
+
         import matplotlib.pyplot as plt  # noqa: PLC0415
 
-        fig, axes = plt.subplots(
+        fig, new_axes = plt.subplots(
             nrows=2,
             ncols=1,
             sharex=True,
             figsize=(4.5, 5),
             tight_layout={"pad": 0.5, "w_pad": 0.3, "h_pad": 0.3},
         )
-        assert isinstance(axes, np.ndarray)
+        assert isinstance(new_axes, np.ndarray)
 
-        self.plot_yspectrum(axis=axes[0], en_y_on_d_en=True, xscalelog=xscalelog)
+        self.plot_yspectrum(axis=new_axes[0], en_y_on_d_en=True, xscalelog=xscalelog)
 
-        self.plot_channels(axis=axes[1], xscalelog=xscalelog)
+        self.plot_channels(axis=new_axes[1], xscalelog=xscalelog)
 
         if outputfilename is not None:
             if self.verbose:

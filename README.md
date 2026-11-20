@@ -251,8 +251,28 @@ sf.plot_channels(xscalelog=True)  # energy going to each channel vs electron ene
 sf.plot_spec_channels(outputfilename="channels.pdf")  # both panels in one figure, saved to file
 ```
 
-Each method shows the figure interactively, or saves it when `outputfilename` is given;
-`plot_yspectrum()` and `plot_channels()` also accept a Matplotlib `axis` to draw into an existing figure.
+Each method shows the figure interactively, or saves it when `outputfilename` is given. The methods
+return `None`.
+
+To change a figure before you show or save it, make the figure yourself. Give a Matplotlib `axis` to
+`plot_yspectrum()` or `plot_channels()`, or two Axes as `axes` to `plot_spec_channels()`. The method
+then draws into your Axes, and it does not show or save the figure:
+
+<!-- test -->
+```python
+import matplotlib.pyplot as plt
+import pynonthermal
+
+with pynonthermal.SpencerFanoSolver() as sf:
+    sf.add_element(Z=8, ion_densities={2: 1.0e8})
+    sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    sf.plot_channels(axis=ax, xscalelog=True)
+    ax.set_title("O II at 1e8 cm^-3")
+    ax.set_xlim(left=10.0)
+    plt.show()  # or fig.savefig("channels.pdf")
+```
 
 ## Where the ion populations come from
 
