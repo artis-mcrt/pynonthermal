@@ -1550,6 +1550,27 @@ def test_ion_results_agree_with_the_getters() -> None:
         sf.get_ion_results()
 
 
+def test_ion_results_give_null_for_an_unknown_population() -> None:
+    # an excitation with only a level density gives the solver no population for its ion. The table
+    # must not report zero for that ion, because the ion has at least the level density.
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200)
+    sf.add_element(8, ion_densities={2: 1e8})
+    sf.add_excitation(
+        Z=26,
+        ion_stage=2,
+        levelnumberdensity=1e8,
+        xs_vec=np.where(sf.engrid >= 5.0, 1e-16 * 5.0 / sf.engrid, 0.0),
+        epsilon_trans_ev=5.0,
+        transitionkey=(0, 1),
+    )
+    sf.solve(1e8)
+    table = sf.get_ion_results()
+    fe_ii = table.filter((pl.col("Z") == 26) & (pl.col("ion_stage") == 2))
+    assert fe_ii["n_ion"].to_list() == [None]
+    assert fe_ii["frac_excitation"].item() > 0.0
+    assert table.filter(pl.col("Z") == 8)["n_ion"].to_list() == [1e8]
+
+
 def test_repr_gives_the_state_without_a_calculation() -> None:
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200)
     assert repr(sf) == "SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, ions=[], not solved)"

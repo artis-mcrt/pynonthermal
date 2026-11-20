@@ -18,6 +18,7 @@ import typing as t
 import warnings
 from collections.abc import Collection
 from collections.abc import Mapping
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -51,8 +52,6 @@ from pynonthermal.ionbalance import get_ion_fractions_cuts
 from pynonthermal.ionbalance import solve_charge_neutral_n_e_cuts
 
 if t.TYPE_CHECKING:
-    from collections.abc import Sequence
-
     import matplotlib.axes as mplax
 else:
 
@@ -3586,7 +3585,9 @@ class SpencerFanoSolver:
         The columns are:
 
         - Z and ion_stage;
-        - n_ion: the number density of the ion [cm^-3];
+        - n_ion: the number density of the ion [cm^-3], or null if the solver has no population for
+          the ion. An ion with only add_excitation() transitions that give a level density has no
+          population;
         - frac_ionisation and frac_excitation: the shares of the deposited energy, as from
           get_frac_ionisation_ion() and get_frac_excitation_ion();
         - ionisation_ratecoeff: the non-thermal ionisation rate coefficient [s^-1], as from
@@ -3605,7 +3606,8 @@ class SpencerFanoSolver:
             {
                 "Z": [Z for Z, _ in ions],
                 "ion_stage": [ion_stage for _, ion_stage in ions],
-                "n_ion": [self.ionpopdict.get(ion, 0.0) for ion in ions],
+                # an unknown population is null and not zero. A zero population stays zero.
+                "n_ion": [self.ionpopdict.get(ion) for ion in ions],
                 "frac_ionisation": [self._frac_ionisation_ion[ion] for ion in ions],
                 "frac_excitation": [self._frac_excitation_ion[ion] for ion in ions],
                 "ionisation_ratecoeff": [self._nt_ionisation_ratecoeff[ion] for ion in ions],
@@ -3855,7 +3857,7 @@ class SpencerFanoSolver:
         self,
         outputfilename: Path | str | None = None,
         xscalelog: bool = False,
-        axes: tuple[mplax.Axes, mplax.Axes] | None = None,
+        axes: Sequence[mplax.Axes] | npt.NDArray[np.object_] | None = None,
     ) -> None:
         """Plot the degradation spectrum and the deposition channels as two stacked panels.
 
