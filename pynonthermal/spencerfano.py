@@ -1564,13 +1564,12 @@ class SpencerFanoSolver:
         if self.verbose:
             # a level above the ionisation limit can autoionise, but the solver counts each transition
             # to it as an excitation. The level energies and the potential of the table come from one
-            # data set, so the comparison uses that potential. A table without it uses the NIST value.
+            # data set, so the comparison uses that potential. A table without it, or with a null
+            # value, uses the NIST value. The verbose output must not make a valid table fail.
             levels = ion["levels"].item()
-            ionpot_ev = (
-                float(ion["ion_pot"].item())
-                if "ion_pot" in ion.columns
-                else _get_nist_ionisation_energies_ev_cached().get((Z, ion_stage))
-            )
+            ionpot_ev = ion["ion_pot"].item() if "ion_pot" in ion.columns else None
+            if ionpot_ev is None:
+                ionpot_ev = _get_nist_ionisation_energies_ev_cached().get((Z, ion_stage))
             if ionpot_ev is not None:
                 levels_above = set(levels.filter(pl.col("energy_ev") > ionpot_ev)["levelindex"].to_list())
                 n_above = sum(upper in levels_above for (_, upper), _ in templates)

@@ -290,19 +290,25 @@ def test_messages_name_the_cause() -> None:
         sf.add_ion_excitation(26, 2, 1e4)
 
 
-@pytest.mark.parametrize("with_ion_pot", [True, False])
+@pytest.mark.parametrize("ion_pot", ["table", "absent", "null"])
 def test_verbose_output_counts_excitations_above_the_ionisation_potential(
-    with_ion_pot: bool, capsys: pytest.CaptureFixture[str]
+    ion_pot: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # the built-in O IV levels go above the ionisation limit, and the solver treats the transitions to
-    # them as excitation. A table without ion_pot uses the NIST potential.
+    # them as excitation. A table without ion_pot, or with a null value, uses the NIST potential.
     table = _oxygen_level_table().filter(pl.col("ion_stage") == 4)
     ionpot_ev = (
-        table["ion_pot"].item() if with_ion_pot else pynonthermal.collion.get_nist_ionisation_energies_ev()[(8, 4)]
+        table["ion_pot"].item()
+        if ion_pot == "table"
+        else pynonthermal.collion.get_nist_ionisation_energies_ev()[(8, 4)]
     )
+    if ion_pot == "absent":
+        table = table.drop("ion_pot")
+    elif ion_pot == "null":
+        table = table.with_columns(pl.lit(None, dtype=pl.Float64).alias("ion_pot"))
     sf = pynonthermal.SpencerFanoSolver(verbose=True)
     sf.set_temperature(10000.0)
-    sf.set_atomic_data(adata_polars=table if with_ion_pot else table.drop("ion_pot"))
+    sf.set_atomic_data(adata_polars=table)
     capsys.readouterr()
     sf.add_ion_excitation(Z=8, ion_stage=4, n_ion=1e8)
     out = capsys.readouterr().out
