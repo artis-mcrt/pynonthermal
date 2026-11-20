@@ -750,6 +750,7 @@ class _ShellXs:
     def __post_init__(self) -> None:
         object.__setattr__(self, "shell", MappingProxyType(dict(self.shell)))
 
+    @t.override
     def __reduce__(self) -> tuple[type[t.Self], tuple[dict[str, t.Any], float]]:
         # pickle cannot serialise a read-only view, so it gets a copy of the row as a dict
         return (type(self), (dict(self.shell), self.lotz_a_cm2_ev2))

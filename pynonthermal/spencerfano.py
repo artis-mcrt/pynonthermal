@@ -631,6 +631,7 @@ class SpencerFanoSolver:
 
         self.sfmatrix = np.zeros((npts, npts))
 
+    @t.override
     def __getstate__(self) -> dict[str, t.Any]:
         """Get the state that pickle serialises.
 
@@ -642,7 +643,7 @@ class SpencerFanoSolver:
         """
         state = self.__dict__.copy()
         # the unit matrices of the balanced stages are large, and the balance makes them again
-        state["_stage_matrices"] = {}
+        state["_stage_matrices"] = dict[tuple[int, int], npt.NDArray[np.float64]]()
         if self._adata_polars_is_internal or self._solved:
             if self.adata_polars is not None and not self._adata_polars_is_internal:
                 state["_custom_adata_polars_dropped"] = True
@@ -691,6 +692,7 @@ class SpencerFanoSolver:
     def __exit__(self, *args: object) -> None:
         """Exit the context manager."""
 
+    @t.override
     def __repr__(self) -> str:
         """Give the energy grid, the ions, and the state of the solution.
 
@@ -2351,7 +2353,7 @@ class SpencerFanoSolver:
                         bands[k][1][:] += delta * unitfracvec
                     else:
                         bands[k] = (delta * unitvec, delta * unitfracvec)
-            templates = element.excitation_templates.get(ion_stage)
+            templates = element.excitation_templates.get(ion_stage, {})
             if templates:
                 self.excitationlists[(Z, ion_stage)] = {
                     transitionkey: template.at_population(n_new) for transitionkey, template in templates.items()
@@ -2650,7 +2652,7 @@ class SpencerFanoSolver:
         # call, not a result.
         for element in elements:
             for ion_stage in element.ion_stages[:-1]:
-                if not self._ionisation_channels.get((element.Z, ion_stage)):
+                if not self._ionisation_channels.get((element.Z, ion_stage), []):
                     msg = (
                         f"Z={element.Z} ion_stage {ion_stage} of the ionisation balance has no ionisation channel."
                         " Add its channels with add_ionisation(Z, ion_stage, None) or"
@@ -3003,8 +3005,9 @@ class SpencerFanoSolver:
             pos = (en_ev - e_min) / deltaen
             i = min(int(pos), lastindex)
             weight = pos - i
-            return (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i])) * (
-                xsvec[i] + weight * (xsvec[i + 1] - xsvec[i])
+            return float(
+                (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i]))
+                * (xsvec[i] + weight * (xsvec[i + 1] - xsvec[i]))
             )
 
         for Z, ion_stage in self._get_all_ions():

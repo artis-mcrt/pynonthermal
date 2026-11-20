@@ -1,5 +1,8 @@
+"""Tests of the Spencer-Fano solution and of its analysis."""
+
 import dataclasses
 import math
+import typing as t
 import warnings
 from pathlib import Path
 
@@ -33,6 +36,7 @@ class CountingAnalysisSolver(pynonthermal.SpencerFanoSolver):
 
     analyse_count: int = 0
 
+    @t.override
     def analyse_ntspectrum(self) -> None:
         self.analyse_count += 1
         super().analyse_ntspectrum()

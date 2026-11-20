@@ -47,7 +47,7 @@ def get_binding_energies() -> npt.NDArray[np.float64]:
     """
     collionfilepath = Path(pynonthermal.DATADIR, "binding_energies_lotz1970.txt")
 
-    with collionfilepath.open() as f:
+    with collionfilepath.open(encoding="utf-8") as f:
         line = f.readline()
         while line.startswith("#"):
             line = f.readline()
@@ -78,7 +78,7 @@ def get_shell_configs() -> npt.NDArray[np.int64]:
     """
     shellfilepath = Path(pynonthermal.DATADIR, "electron_shell_occupancy.txt")
 
-    with shellfilepath.open() as f:
+    with shellfilepath.open(encoding="utf-8") as f:
         line = f.readline()
         while line.startswith("#"):
             line = f.readline()
@@ -128,7 +128,7 @@ def _get_shell_occupancies_cached(atomic_number: int, ion_stage: int) -> npt.NDA
     nbound = atomic_number - ion_stage + 1
     element_shells_q_neutral = all_shells_q[atomic_number - 1]
     shellcount = min(len(element_shells_q_neutral), len(electron_binding[atomic_number - 1]))
-    element_shells_q = np.zeros_like(element_shells_q_neutral)
+    element_shells_q: npt.NDArray[np.int64] = np.zeros_like(element_shells_q_neutral)
 
     electron_count = 0
     for shellindex in range(shellcount):
@@ -179,7 +179,8 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
                 enbinding = electron_binding[atomic_number - 1][electron_loop - 1]
                 assert enbinding > 0
 
-            total += electronsinshell / max(enbinding, ionpot)
+            # Python floats, so that the sum has the float type of the annotation
+            total += float(electronsinshell) / max(float(enbinding), ionpot)
 
     return total
 

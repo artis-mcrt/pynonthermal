@@ -1007,7 +1007,7 @@ def test_excitation_xs_must_be_finite() -> None:
         # a cross section of the wrong shape is named, rather than reaching the matrix band
         with pytest.raises(ValueError, match="one value for each"):
             sf.add_excitation(8, 2, levelnumberdensity=1e8, xs_vec=np.zeros((100, 1)), epsilon_trans_ev=20.0)
-        assert not sf.excitationlists.get((8, 2))
+        assert not sf.excitationlists.get((8, 2), {})
 
 
 def test_every_builtin_ion_builds_channels() -> None:
