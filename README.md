@@ -1,5 +1,5 @@
 # pynonthermal
-[![DOI](https://zenodo.org/badge/359805556.svg)](https://zenodo.org/badge/latestdoi/359805556)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10673892.svg)](https://doi.org/10.5281/zenodo.10673892)
 [![PyPI - Version](https://img.shields.io/pypi/v/pynonthermal)](https://pypi.org/project/pynonthermal)
 [![License](https://img.shields.io/github/license/artis-mcrt/pynonthermal)](https://github.com/artis-mcrt/pynonthermal/blob/main/LICENSE)
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/pynonthermal)](https://pypi.org/project/pynonthermal/)
@@ -705,7 +705,7 @@ The default Auger electron energy then comes from that lowest level.
 
 ## Citing pynonthermal
 
-If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
+If you use pynonthermal, please cite it with the Zenodo DOI [10.5281/zenodo.10673892](https://doi.org/10.5281/zenodo.10673892). This DOI always resolves to the newest version. Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
 
 Give the version of pynonthermal that you used. `pynonthermal.__version__` holds it, and the solver
 prints it with `verbose=True`. [CITATION.cff](https://github.com/artis-mcrt/pynonthermal/blob/main/CITATION.cff) gives these references in the Citation File
