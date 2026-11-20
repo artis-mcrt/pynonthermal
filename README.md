@@ -77,6 +77,7 @@ with pynonthermal.SpencerFanoSolver() as sf:
     print("excitation fraction:", sf.get_frac_excitation_tot())
     print("sum of fractions:", sf.get_frac_sum())
     print("ionisation rate coeff [s^-1]:", sf.get_ionisation_ratecoeff(Z=8, ion_stage=2))
+    print(sf.get_ion_results())  # a table of the results with one row for each ion
 ```
 
 The solver is a builder. Each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
@@ -213,6 +214,10 @@ sf.get_excitation_ratecoeff(Z, ion_stage, transitionkey)  # [s^-1]
 sf.excitationlists[(Z, ion_stage)]  # the transitions of that ion, keyed by transition key
 sf.get_eff_ionpot(Z, ion_stage)  # effective ionisation potential [eV]
 ```
+
+`sf.get_ion_results()` gives the per-ion results in one polars DataFrame, with one row for each ion.
+The columns are `Z`, `ion_stage`, `n_ion`, `frac_ionisation`, `frac_excitation`,
+`ionisation_ratecoeff`, and `eff_ionpot_ev`.
 
 Multiply `get_ionisation_ratecoeff()` by the ion number density for ionisations per second per cm^3, and
 `get_excitation_ratecoeff()` by the lower level's population density for excitations per second per cm^3.

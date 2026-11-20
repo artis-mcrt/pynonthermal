@@ -692,6 +692,26 @@ class SpencerFanoSolver:
     def __exit__(self, *args: object) -> None:
         """Exit the context manager."""
 
+    def __repr__(self) -> str:
+        """Give the energy grid, the ions, and the state of the solution.
+
+        Jupyter and debuggers call this method, so it does not calculate, warn, or raise.
+        """
+        try:
+            if self._solution_discarded_by is not None:
+                state = "solution discarded"
+            elif self._solved:
+                state = "solved"
+            else:
+                state = "not solved"
+            return (
+                f"SpencerFanoSolver(emin_ev={self.engrid[0]:g}, emax_ev={self.engrid[-1]:g},"
+                f" npts={len(self.engrid)}, ions={self._get_all_ions()}, {state})"
+            )
+        except AttributeError:
+            # a solver that __init__() did not complete
+            return object.__repr__(self)
+
     def get_energyindex_lteq(self, en_ev: float) -> int:
         """Get the index of the last point of engrid that is less than or equal to en_ev [eV].
 
@@ -3534,6 +3554,48 @@ class SpencerFanoSolver:
         grid spacing, and the sum cancels it. To check a result, compare it with a finer grid (npts).
         """
         return self.get_frac_heating() + self.get_frac_excitation_tot() + self.get_frac_ionisation_tot()
+
+    def get_ion_results(self) -> pl.DataFrame:
+        """Get the results of the solution as a table with one row for each ion, sorted by Z and ion_stage.
+
+        The columns are:
+
+        - Z and ion_stage;
+        - n_ion: the number density of the ion [cm^-3];
+        - frac_ionisation and frac_excitation: the shares of the deposited energy, as from
+          get_frac_ionisation_ion() and get_frac_excitation_ion();
+        - ionisation_ratecoeff: the non-thermal ionisation rate coefficient [s^-1], as from
+          get_ionisation_ratecoeff();
+        - eff_ionpot_ev: the effective ionisation potential [eV], as from get_eff_ionpot().
+
+        The table has a row for each ion that has a population, an ionisation channel, or an
+        excitation in the solver.
+        """
+        self._require_solved()
+        if not self._analysed:
+            self.analyse_ntspectrum()
+
+        ions = self._get_all_ions()
+        return pl.DataFrame(
+            {
+                "Z": [Z for Z, _ in ions],
+                "ion_stage": [ion_stage for _, ion_stage in ions],
+                "n_ion": [self.ionpopdict.get(ion, 0.0) for ion in ions],
+                "frac_ionisation": [self._frac_ionisation_ion[ion] for ion in ions],
+                "frac_excitation": [self._frac_excitation_ion[ion] for ion in ions],
+                "ionisation_ratecoeff": [self._nt_ionisation_ratecoeff[ion] for ion in ions],
+                "eff_ionpot_ev": [self._eff_ionpot[ion] for ion in ions],
+            },
+            schema={
+                "Z": pl.Int64,
+                "ion_stage": pl.Int64,
+                "n_ion": pl.Float64,
+                "frac_ionisation": pl.Float64,
+                "frac_excitation": pl.Float64,
+                "ionisation_ratecoeff": pl.Float64,
+                "eff_ionpot_ev": pl.Float64,
+            },
+        ).sort("Z", "ion_stage")
 
     def get_d_etaheating_by_d_en_vec(self) -> npt.NDArray[np.float64]:
         """Get d(eta_heating)/dE [eV^-1] at each energy of engrid.
