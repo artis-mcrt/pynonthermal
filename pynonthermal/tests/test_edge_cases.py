@@ -3,9 +3,12 @@
 Each test gives the input that failed before the fix and checks the behaviour after it.
 """
 
+import os
 import pickle
+import shutil
 import subprocess
 import sys
+import sysconfig
 import warnings
 from pathlib import Path
 
@@ -211,6 +214,26 @@ def test_import_loads_neither_artistools_nor_matplotlib() -> None:
     repo = Path(pynonthermal.__file__).parent.parent
     result = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, cwd=repo)  # noqa: S603
     assert result.stdout.split() == ["False", "False", "matplotlib.axes._axes.Axes", "|", "None"]
+
+
+def test_a_source_copy_does_not_take_the_version_of_an_installed_release(tmp_path: Path) -> None:
+    # the test environment has pynonthermal installed. A copy of the package on sys.path has no
+    # _version.py, so its version is unknown, and not the version of the installed distribution.
+    package_dir = Path(pynonthermal.__file__).parent
+    copy_dir = tmp_path / "pynonthermal"
+    shutil.copytree(package_dir, copy_dir, ignore=shutil.ignore_patterns("_version.py", "tests", "data", "__pycache__"))
+    code = "import pynonthermal; print(pynonthermal.__file__); print(pynonthermal.__version__)"
+    # -S leaves out the .pth files. The editable install of the tests has a .pth file whose finder gives the
+    # modules of the source directory, which an installed release does not have. The metadata of the
+    # installed distribution stays on the path, as for an installed release.
+    site_packages = dict.fromkeys(sysconfig.get_paths()[key] for key in ("purelib", "platlib"))
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), *site_packages])}
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-S", "-c", code], check=True, capture_output=True, text=True, cwd=tmp_path, env=env
+    )
+    imported_file, version = result.stdout.splitlines()
+    assert Path(imported_file).resolve().parent == copy_dir.resolve()
+    assert version == "unknown"
 
 
 def test_inputs_with_a_bad_type_fail_with_a_named_message() -> None:

@@ -1,7 +1,5 @@
 """A non-thermal electron deposition (Spencer-Fano equation) solver."""
 
-import importlib.metadata
-
 from pynonthermal import axelrod as axelrod
 from pynonthermal import base as base
 from pynonthermal import collion as collion
@@ -18,9 +16,11 @@ from pynonthermal.excitation import ExcitationTransition as ExcitationTransition
 from pynonthermal.spencerfano import LotzApproximationWarning as LotzApproximationWarning
 from pynonthermal.spencerfano import SpencerFanoSolver as SpencerFanoSolver
 
-# the version of the installed package, for example to record with a result. A source directory on
-# sys.path has no package metadata, and the import must work there too.
+# the version of this package, for example to record with a result. setuptools_scm writes _version.py
+# into the package when it builds or installs it. The metadata of an installed distribution can belong
+# to a different release than a source directory on sys.path, so the version does not come from it. A
+# source directory that no build has written to has no _version.py.
 try:
-    __version__: str = importlib.metadata.version("pynonthermal")
-except importlib.metadata.PackageNotFoundError:
+    from pynonthermal._version import __version__ as __version__
+except ImportError:
     __version__ = "unknown"

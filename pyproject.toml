@@ -152,7 +152,7 @@ include-package-data = false
 pynonthermal = ["py.typed", "data/**/*.txt", "data/**/*.zst"]
 
 [tool.setuptools_scm]
-version_file = "_version.py"
+version_file = "pynonthermal/_version.py"
 local_scheme = "no-local-version"
 
 [tool.vulture]
