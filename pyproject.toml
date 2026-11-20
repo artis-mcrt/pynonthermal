@@ -6,11 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "pynonthermal"
 authors = [{ name = "Luke J. Shingles", email = "luke.shingles@gmail.com" }]
 description = "A non-thermal electron deposition (Spencer-Fano equation) solver."
+keywords = [
+    "Spencer-Fano",
+    "non-thermal electrons",
+    "supernovae",
+    "ionisation",
+    "excitation",
+    "plasma",
+    "radiative transfer",
+    "astrophysics",
+]
 classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
 ]
 dynamic = ["version"]
 requires-python = ">=3.13"
@@ -20,7 +34,6 @@ readme = { file = "README.md", content-type = 'text/markdown' }
 dependencies = [
     "artistools>=2026.4.20",
     "matplotlib>=3.10.7",
-    "matplotlib-inline>=0.2.1",
     "numpy>=2.4.4",
     "polars>=1.40.1",
 ]
@@ -39,6 +52,9 @@ dev = [
 
 [project.urls]
 Repository = "https://github.com/artis-mcrt/pynonthermal"
+Documentation = "https://github.com/artis-mcrt/pynonthermal#readme"
+Issues = "https://github.com/artis-mcrt/pynonthermal/issues"
+Changelog = "https://github.com/artis-mcrt/pynonthermal/releases"
 
 [tool.pyrefly]
 project-includes = ["pynonthermal"]
@@ -56,6 +72,66 @@ project-excludes = [
 # The annotations say int, but a caller can pass a numpy integer. The int() calls make a Python
 # integer on purpose, so this rule gives only false positives here.
 unnecessary-type-conversion = false
+# these kinds are off by default. The checked code has no finding of them, so a new finding is a
+# regression.
+abstract-method-with-implementation = "error"
+empty-body = "error"
+implicit-abstract-class = "error"
+implicit-any = "error"
+implicit-reexport = "error"
+implicitly-defined-attribute = "error"
+incompatible-comparison = "error"
+instance-var-assign = "error"
+invalid-abstract-method = "error"
+invalid-cast = "error"
+invalid-format-spec = "error"
+method-assign = "error"
+missing-override-decorator = "error"
+missing-source = "error"
+missing-super-call = "error"
+no-any-return = "error"
+non-exhaustive-match-open-type = "error"
+not-required-key-access = "error"
+open-unpacking = "error"
+possibly-uninitialized-attribute = "error"
+potential-bad-keyword-argument = "error"
+protected-access = "error"
+string-as-iterable = "error"
+unannotated-attribute = "error"
+unannotated-parameter = "error"
+unannotated-return = "error"
+unknown-attribute-access = "error"
+unknown-attribute-type = "error"
+unknown-base-class = "error"
+unknown-from-error = "error"
+unknown-return-type = "error"
+unsupported-dynamic-base = "error"
+untyped-class-decorator = "error"
+untyped-function-decorator = "error"
+untyped-namedtuple = "error"
+unused-ignore = "error"
+unused-type-ignore = "error"
+
+[tool.ty.rules]
+# these rules are off by default. The checked code has no finding of them, so a new finding is a
+# regression.
+blanket-ignore-comment = "error"
+disjoint-cast = "error"
+division-by-zero = "error"
+dynamic-function-decorator-return = "error"
+invalid-legacy-positional-parameter = "error"
+mismatched-sentinel-name = "error"
+missing-override-decorator = "error"
+missing-type-argument = "error"
+possibly-missing-attribute = "error"
+possibly-missing-import = "error"
+possibly-unresolved-reference = "error"
+redundant-condition-strict = "error"
+truthiness-test-of-none-union = "error"
+unsound-assignment = "error"
+unsound-return = "error"
+unsound-yield = "error"
+unsupported-dynamic-base = "error"
 
 [tool.pytest.ini_options]
 addopts = " --durations=0 -n auto"
@@ -80,18 +156,13 @@ ignore = [
     "C901",    # complex-structure
     "COM812",  # missing-trailing-comma
     "CPY001",  # missing-copyright-notice
-    "D100",    # undocumented-public-module
-    "D102",    # undocumented-public-method
-    "D103",    # undocumented-public-function
     "D203",    # one-blank-line-before-class
     "D213",    # multi-line-summary-second-line
     "ERA001",  # commented-out-code
     "FBT",
-    "FIX002",  # line contains TODO
     "N802",    # Function name should be lowercase
     "N803",    # Argument name should be lowercase
     "N806",    # non-lowercase-variable-in-function
-    "N816",    # mixed-case-variable-in-global-scope
     "PLR0912", # too-many-branches
     "PLR0913", # too-many-arguments
     "PLR0915", # too-many-statements
@@ -119,10 +190,11 @@ unfixable = [
 "typing" = "t"
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]
 "pynonthermal/tests/*" = [
-    "SLF001",
-] # tests may use private members to compare against production inputs
+    "D102",   # undocumented-public-method
+    "D103",   # undocumented-public-function
+    "SLF001", # tests may use private members to compare against production inputs
+]
 
 [tool.ruff.lint.isort]
 force-single-line = true
@@ -136,7 +208,7 @@ include-package-data = false
 pynonthermal = ["py.typed", "data/**/*.txt", "data/**/*.zst"]
 
 [tool.setuptools_scm]
-version_file = "_version.py"
+version_file = "pynonthermal/_version.py"
 local_scheme = "no-local-version"
 
 [tool.vulture]

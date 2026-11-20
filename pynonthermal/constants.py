@@ -1,4 +1,5 @@
-# cgs units to match ARTIS
+"""The physical constants of the solver, in cgs units to match ARTIS."""
+
 EV = 1.6021772e-12  # eV in erg
 H = 6.6260755e-27  # Planck's constant [erg s]
 ME = 9.1093897e-28  # mass of electron [g]

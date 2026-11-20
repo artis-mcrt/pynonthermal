@@ -155,11 +155,16 @@ def get_betasq(en_ev: npt.NDArray[np.float64] | float) -> npt.NDArray[np.float64
 
 
 def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
-    # the loss function L(E) in the Spencer-Fano equation: the energy loss rate - dE / dX
-    # [eV / cm] of a non-thermal electron to the free thermal electrons. It follows KF92: their
-    # equation 1 above 14 eV and equation 2 below it, with the plasma energy zeta_e of their
-    # equation 3 in the high-energy Coulomb logarithm.
-    # returns a positive number
+    """Get the loss function L(E) [eV cm^-1] of a non-thermal electron to the free thermal electrons.
+
+    L(E) is the energy loss rate -dE/dx of an electron of kinetic energy energy_ev [eV] in a plasma
+    with the free electron density n_e_cgs [cm^-3]. It follows KF92: their equation 1 above 14 eV and
+    their equation 2 below it, with the plasma energy zeta_e of their equation 3 in the high-energy
+    Coulomb logarithm. The value is positive.
+
+    A ValueError reports a density or an energy that is not positive and finite. It also reports a
+    plasma that is so dense that the Coulomb logarithm is not positive.
+    """
     # the chained comparisons also reject nan, for which every comparison is False
     if _is_bool(n_e_cgs) or not 0.0 < n_e_cgs < math.inf:
         # the plasma frequency would be zero, making the Coulomb logarithm infinite
@@ -250,7 +255,7 @@ def _get_n_e_limit(energy_ev: float) -> float:
 
 
 def get_n_tot(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
-    # total number density of all nuclei [cm^-3]
+    """Get the total number density [cm^-3] of the nuclei of the ions, from ionpopdict."""
     n_tot = 0.0
     for Z, ion_stage in ions:
         n_tot += ionpopdict[(Z, ion_stage)]
@@ -258,8 +263,10 @@ def get_n_tot(ions: Sequence[tuple[int, int]], ionpopdict: dict[tuple[int, int],
 
 
 def get_Zbar(ions: Iterable[tuple[int, int]], ionpopdict: dict[tuple[int, int], float]) -> float:
-    # number density-weighted average atomic number
-    # i.e. protons per nucleus
+    """Get the mean atomic number of the ions, weighted by their number densities in ionpopdict.
+
+    This is the mean number of protons per nucleus.
+    """
     # a list, because the sum of the densities and the loop below both read the ions. A second pass
     # over a generator finds nothing, and then Zbar was zero.
     ions = list(ions)

@@ -1,0 +1,74 @@
+cff-version: 1.2.0
+message: >-
+  If you use pynonthermal, please cite it with the DOI of its Zenodo record. Please also consider a
+  citation of the papers that describe the method, which are in the references.
+type: software
+title: pynonthermal
+abstract: >-
+  A Python solver for the Spencer-Fano equation. The equation describes the energy distribution of
+  the non-thermal electrons that slow down in a plasma. pynonthermal computes the fractions of the
+  deposited energy that go to heating, ionisation, and excitation, and the non-thermal rate
+  coefficients.
+authors:
+  - family-names: Shingles
+    given-names: Luke J.
+doi: 10.5281/zenodo.10673892
+repository-code: https://github.com/artis-mcrt/pynonthermal
+url: https://pypi.org/project/pynonthermal
+license: MIT
+keywords:
+  - Spencer-Fano
+  - non-thermal electrons
+  - supernovae
+  - ionisation
+  - excitation
+  - plasma
+  - radiative transfer
+  - astrophysics
+references:
+  - type: article
+    title: Gamma-ray deposition and nonthermal excitation in supernovae
+    authors:
+      - family-names: Kozma
+        given-names: Cecilia
+      - family-names: Fransson
+        given-names: Claes
+    journal: The Astrophysical Journal
+    volume: 390
+    start: 602
+    end: 621
+    year: 1992
+    doi: 10.1086/171311
+  - type: article
+    title: Monte Carlo radiative transfer for the nebular phase of Type Ia supernovae
+    authors:
+      - family-names: Shingles
+        given-names: L. J.
+      - family-names: Sim
+        given-names: S. A.
+      - family-names: Kromer
+        given-names: M.
+      - family-names: Maguire
+        given-names: K.
+      - family-names: Bulla
+        given-names: M.
+      - family-names: Collins
+        given-names: C.
+      - family-names: Ballance
+        given-names: C. P.
+      - family-names: Michel
+        given-names: A. S.
+      - family-names: Ramsbottom
+        given-names: C. A.
+      - family-names: Röpke
+        given-names: F. K.
+      - family-names: Seitenzahl
+        given-names: I. R.
+      - family-names: Tyndall
+        given-names: N. B.
+    journal: Monthly Notices of the Royal Astronomical Society
+    volume: 492
+    start: 2029
+    end: 2043
+    year: 2020
+    doi: 10.1093/mnras/stz3412

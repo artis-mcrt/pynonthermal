@@ -1007,7 +1007,7 @@ def test_excitation_xs_must_be_finite() -> None:
         # a cross section of the wrong shape is named, rather than reaching the matrix band
         with pytest.raises(ValueError, match="one value for each"):
             sf.add_excitation(8, 2, levelnumberdensity=1e8, xs_vec=np.zeros((100, 1)), epsilon_trans_ev=20.0)
-        assert not sf.excitationlists.get((8, 2))
+        assert not sf.excitationlists.get((8, 2), {})
 
 
 def test_every_builtin_ion_builds_channels() -> None:
@@ -1392,6 +1392,24 @@ def test_plot_spec_channels_on_an_unsolved_solver_opens_no_figure() -> None:
     assert len(plt.get_fignums()) == figures_before
 
 
+def test_plot_spec_channels_draws_into_the_axes_of_the_caller(tmp_path: Path) -> None:
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200)
+    sf.add_element(8, ion_densities={2: 1e8})
+    sf.solve(1e8)
+    fig, axes = plt.subplots(nrows=2, sharex=True)
+    figures_before = plt.get_fignums()
+    # the caller owns the figure, so the method neither makes a figure nor saves one
+    sf.plot_spec_channels(axes=axes, xscalelog=True, outputfilename=tmp_path / "unused.pdf")
+    assert plt.get_fignums() == figures_before
+    assert not (tmp_path / "unused.pdf").exists()
+    assert len(axes[0].lines) == 1
+    assert {line.get_label() for line in axes[1].lines} == {"Ionisation", "Heating"}
+    assert axes[1].get_xscale() == "log"
+    plt.close(fig)
+
+
 def test_ionbalance_checks_and_edge_cases() -> None:
     ionbalance = pynonthermal.ionbalance
     # an iterator gave one stage, because the check used it up
@@ -1476,3 +1494,98 @@ def test_iron_notebook_deposition_is_independent_of_the_selected_epoch() -> None
     deposition = namespace["get_deposition_rate_density"](500.0)
     namespace["T_DAYS"] = 500.0
     assert namespace["get_deposition_rate_density"](500.0) == deposition
+
+
+def test_verbose_output_gives_the_version(capsys: pytest.CaptureFixture[str]) -> None:
+    # a log of a result must record the version of the package that made it
+    assert pynonthermal.__version__
+    pynonthermal.SpencerFanoSolver(npts=100, verbose=True)
+    assert f"(pynonthermal {pynonthermal.__version__})" in capsys.readouterr().out
+
+
+def test_plot_prints_the_path_only_with_verbose(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    for verbose in (False, True):
+        sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, verbose=verbose)
+        sf.add_element(8, ion_densities={2: 1e8})
+        sf.solve(1e8)
+        capsys.readouterr()
+        sf.plot_yspectrum(outputfilename=tmp_path / "yspectrum.pdf")
+        assert ("Saving" in capsys.readouterr().out) == verbose
+
+
+def test_ion_results_agree_with_the_getters() -> None:
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+    sf.set_temperature(6000)
+    sf.add_element(26, ion_densities={2: 1e5, 3: 1e5})
+    sf.add_element(8, ion_densities={1: 1e8, 2: 1e6}, excitation=True)
+    with pytest.raises(RuntimeError, match=r"Call solve\(\)"):
+        sf.get_ion_results()
+    sf.solve(1e8)
+
+    table = sf.get_ion_results()
+    assert table.columns == [
+        "Z",
+        "ion_stage",
+        "n_ion",
+        "frac_ionisation",
+        "frac_excitation",
+        "ionisation_ratecoeff",
+        "eff_ionpot_ev",
+    ]
+    # sorted by Z and ion_stage, not in the order of the add_element() calls
+    assert table.select("Z", "ion_stage").rows() == [(8, 1), (8, 2), (26, 2), (26, 3)]
+    for row in table.iter_rows(named=True):
+        Z, ion_stage = row["Z"], row["ion_stage"]
+        assert row["n_ion"] == sf.ionpopdict[(Z, ion_stage)]
+        assert row["frac_ionisation"] == sf.get_frac_ionisation_ion(Z, ion_stage)
+        assert row["frac_excitation"] == sf.get_frac_excitation_ion(Z, ion_stage)
+        assert row["ionisation_ratecoeff"] == sf.get_ionisation_ratecoeff(Z, ion_stage)
+        assert row["eff_ionpot_ev"] == sf.get_eff_ionpot(Z, ion_stage)
+    assert table["frac_ionisation"].sum() == pytest.approx(sf.get_frac_ionisation_tot(), rel=1e-12)
+    assert table["frac_excitation"].sum() == pytest.approx(sf.get_frac_excitation_tot(), rel=1e-12)
+
+    # the table must not give the rows of a solution that a later call discarded
+    sf.override_n_e(1e7)
+    with pytest.raises(RuntimeError, match="discarded the last solution"):
+        sf.get_ion_results()
+
+
+def test_ion_results_give_null_for_an_unknown_population() -> None:
+    # an excitation with only a level density gives the solver no population for its ion. The table
+    # must not report zero for that ion, because the ion has at least the level density.
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200)
+    sf.add_element(8, ion_densities={2: 1e8})
+    sf.add_excitation(
+        Z=26,
+        ion_stage=2,
+        levelnumberdensity=1e8,
+        xs_vec=np.where(sf.engrid >= 5.0, 1e-16 * 5.0 / sf.engrid, 0.0),
+        epsilon_trans_ev=5.0,
+        transitionkey=(0, 1),
+    )
+    sf.solve(1e8)
+    table = sf.get_ion_results()
+    fe_ii = table.filter((pl.col("Z") == 26) & (pl.col("ion_stage") == 2))
+    assert fe_ii["n_ion"].to_list() == [None]
+    assert fe_ii["frac_excitation"].item() > 0.0
+    assert table.filter(pl.col("Z") == 8)["n_ion"].to_list() == [1e8]
+
+
+def test_repr_gives_the_state_without_a_calculation() -> None:
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200)
+    assert repr(sf) == "SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200, ions=[], not solved)"
+    sf.add_element(8, ion_densities={2: 1e8})
+    assert repr(sf).endswith("ions=[(8, 2)], not solved)")
+    sf.solve(1e8)
+    # the solve() above did not analyse the solution, and repr() must not analyse it either
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert repr(sf).endswith("ions=[(8, 2)], solved)")
+    assert not sf._analysed
+    assert repr(pickle.loads(pickle.dumps(sf))) == repr(sf)  # noqa: S301
+    sf.override_n_e(1e7)
+    assert repr(sf).endswith(", solution discarded)")
+    # a solver that __init__() did not complete still has a repr
+    assert repr(object.__new__(pynonthermal.SpencerFanoSolver)).startswith(
+        "<pynonthermal.spencerfano.SpencerFanoSolver"
+    )

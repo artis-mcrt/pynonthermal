@@ -15,3 +15,12 @@ from pynonthermal.collion import IonisationChannel as IonisationChannel
 from pynonthermal.excitation import ExcitationTransition as ExcitationTransition
 from pynonthermal.spencerfano import LotzApproximationWarning as LotzApproximationWarning
 from pynonthermal.spencerfano import SpencerFanoSolver as SpencerFanoSolver
+
+# the version of this package, for example to record with a result. setuptools_scm writes _version.py
+# into the package when it builds or installs it. The metadata of an installed distribution can belong
+# to a different release than a source directory on sys.path, so the version does not come from it. A
+# source directory that no build has written to has no _version.py.
+try:
+    from pynonthermal._version import __version__ as __version__
+except ImportError:
+    __version__ = "unknown"

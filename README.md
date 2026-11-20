@@ -1,5 +1,5 @@
 # pynonthermal
-[![DOI](https://zenodo.org/badge/359805556.svg)](https://zenodo.org/badge/latestdoi/359805556)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10673892.svg)](https://doi.org/10.5281/zenodo.10673892)
 [![PyPI - Version](https://img.shields.io/pypi/v/pynonthermal)](https://pypi.org/project/pynonthermal)
 [![License](https://img.shields.io/github/license/artis-mcrt/pynonthermal)](https://github.com/artis-mcrt/pynonthermal/blob/main/LICENSE)
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/pynonthermal)](https://pypi.org/project/pynonthermal/)
@@ -26,6 +26,7 @@ These quantities are important in models of the late-time spectra and light curv
 - [Where the ion populations come from](#where-the-ion-populations-come-from)
 - [Complete example: pure-oxygen plasma](#complete-example-pure-oxygen-plasma)
 - [Units and conventions](#units-and-conventions)
+- [Built-in atomic data](#built-in-atomic-data)
 - [Method background](#method-background)
 - [Cross-section datasets](#cross-section-datasets)
 - [Advanced usage: custom cross sections](#advanced-usage-custom-cross-sections)
@@ -61,6 +62,7 @@ uv run -- python3 -m pytest
 
 Make a solver, add the elements of the gas, solve, then read the results:
 
+<!-- test -->
 ```python
 import pynonthermal
 
@@ -75,10 +77,12 @@ with pynonthermal.SpencerFanoSolver() as sf:
     print("excitation fraction:", sf.get_frac_excitation_tot())
     print("sum of fractions:", sf.get_frac_sum())
     print("ionisation rate coeff [s^-1]:", sf.get_ionisation_ratecoeff(Z=8, ion_stage=2))
+    print(sf.get_ion_results())  # a table of the results with one row for each ion
 ```
 
 The solver is a builder. Each call adds ions, ionisation channels, or excitations to the matrix, and `solve()`
-solves it. The `with` block is optional and only scopes the solver.
+solves it. The `with` block is optional. It has no effect on the solver, and `sf` stays
+available after the block.
 
 The [quickstart notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/quickstart.ipynb) contains a fuller worked example. Binder can run it:
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/artis-mcrt/pynonthermal/HEAD?filepath=quickstart.ipynb)
@@ -211,6 +215,10 @@ sf.excitationlists[(Z, ion_stage)]  # the transitions of that ion, keyed by tran
 sf.get_eff_ionpot(Z, ion_stage)  # effective ionisation potential [eV]
 ```
 
+`sf.get_ion_results()` gives the per-ion results in one polars DataFrame, with one row for each ion.
+The columns are `Z`, `ion_stage`, `n_ion`, `frac_ionisation`, `frac_excitation`,
+`ionisation_ratecoeff`, and `eff_ionpot_ev`.
+
 Multiply `get_ionisation_ratecoeff()` by the ion number density for ionisations per second per cm^3, and
 `get_excitation_ratecoeff()` by the lower level's population density for excitations per second per cm^3.
 For the excitations of `add_element(excitation=True)` and of `add_ion_excitation()` the key is
@@ -223,6 +231,18 @@ the lower level population `levelnumberdensity` in cm^-3, the cross sections `xs
 The solution itself is `sf.yvec` over `sf.engrid`, both read-only arrays. With `verbose=True` the
 solver prints the per-ion and per-shell breakdown as it analyses the solution.
 
+For a plot of your own, three arrays on `sf.engrid` give the share of the deposited energy per unit
+electron energy, in eV^-1:
+
+```python
+sf.get_d_etaheating_by_d_en_vec()  # to heating, without the energy that thermalises below emin_ev
+sf.get_d_etaion_by_d_en_vec()  # to ionisation
+sf.get_d_etaexcitation_by_d_en_vec()  # to excitation
+```
+
+The sum of the ionisation array times `sf.deltaen` is `get_frac_ionisation_tot()`, and the same is
+true for excitation. `plot_channels()` draws each array times the energy.
+
 ### 6. Plot the solution
 
 ```python
@@ -231,8 +251,28 @@ sf.plot_channels(xscalelog=True)  # energy going to each channel vs electron ene
 sf.plot_spec_channels(outputfilename="channels.pdf")  # both panels in one figure, saved to file
 ```
 
-Each method shows the figure interactively, or saves it when `outputfilename` is given;
-`plot_yspectrum()` and `plot_channels()` also accept a Matplotlib `axis` to draw into an existing figure.
+Each method shows the figure interactively, or saves it when `outputfilename` is given. The methods
+return `None`.
+
+To change a figure before you show or save it, make the figure yourself. Give a Matplotlib `axis` to
+`plot_yspectrum()` or `plot_channels()`, or two Axes as `axes` to `plot_spec_channels()`. The method
+then draws into your Axes, and it does not show or save the figure:
+
+<!-- test -->
+```python
+import matplotlib.pyplot as plt
+import pynonthermal
+
+with pynonthermal.SpencerFanoSolver() as sf:
+    sf.add_element(Z=8, ion_densities={2: 1.0e8})
+    sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    sf.plot_channels(axis=ax, xscalelog=True)
+    ax.set_title("O II at 1e8 cm^-3")
+    ax.set_xlim(left=10.0)
+    plt.show()  # or fig.savefig("channels.pdf")
+```
 
 ## Where the ion populations come from
 
@@ -310,7 +350,10 @@ The Saha equation is not a population rule. It describes a gas whose ionisation 
 with non-thermal ionisation is not in local thermodynamic equilibrium. It is still a useful comparison,
 so `pynonthermal.ionbalance` gives it as a function of its own:
 
+<!-- test -->
 ```python
+import pynonthermal
+
 fractions = pynonthermal.ionbalance.get_saha_ion_fractions(
     Z=26, ion_stages=[1, 2, 3, 4, 5], temperature=6000.0, n_elem=1.0e6
 )
@@ -333,6 +376,7 @@ This reproduces Figure 2 of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:
 x_e = 0.01, with both ionisation and excitation channels. With `verbose=True` the solver prints its
 setup and a per-ion, per-shell breakdown as it runs.
 
+<!-- test -->
 ```python
 import pynonthermal
 
@@ -367,6 +411,26 @@ The plot shows the contribution of each channel per logarithmic energy interval,
 - `get_ionisation_ratecoeff()` and `get_excitation_ratecoeff()` both return rates in s^-1.
 - The `recomb_ratecoeffs` of `add_element()` are in cm^3 s^-1, keyed by the ion stage that recombines.
 
+## Built-in atomic data
+
+The package includes this atomic data:
+
+| Data | Ions | Source |
+| --- | --- | --- |
+| Ionisation cross sections from fits | all ion stages of H, He, C, N, O, Ne, Na, Mg, Al, Si, S, Ar, Ca, Fe, and Ni; Co I to Co III | Arnaud and Rothenflug (1985, A&AS, 60, 425–457); for Fe, Arnaud and Raymond (1992, ApJ, 398, 394–406, doi:10.1086/171864) |
+| Ionisation cross sections from the Lotz formula | every other ion with at least one electron up to Z = 100, and some ions of Z = 101 to 108 | Axelrod (1980, PhD thesis, University of California, Santa Cruz), with the subshell energies of Lotz (1970, J. Opt. Soc. Am., 60, 206–210, doi:10.1364/JOSA.60.000206) |
+| Ionisation potentials | the ground states of all ions up to Z = 100, and some ions of Z = 101 to 110 | the NIST Atomic Spectra Database |
+| Levels and transitions, for excitation and for the Saha partition functions | He I to He II, O I to O IV, and Fe I to Fe V | the CMFGEN atomic data compilation |
+
+[Cross-section datasets](#cross-section-datasets) gives more information about the ionisation data.
+For an ion that has no level data, give the excitations with `add_excitation()`, or give a level
+table to `set_atomic_data()`. The error of `add_element(excitation=True)` lists the ions that have
+level data.
+
+The package has no data for [excitation autoionisation](#excitation-autoionisation). The level data of
+O IV has [levels above the ionisation limit](#levels-above-the-ionisation-limit-in-a-level-table), and
+the solver treats the transitions to them as excitation.
+
 ## Method background
 
 The numerical solver is similar to the Spencer-Fano implementation in the [ARTIS](https://github.com/artis-mcrt/artis) radiative transfer code ([Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)). That code is an independent implementation of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract), based on the electron slowing-down equation of [Spencer and Fano (1954, Phys. Rev., 93, 1172–1181, doi:10.1103/PhysRev.93.1172)](https://ui.adsabs.harvard.edu/abs/1954PhRv...93.1172S/abstract). [CMFGEN](https://sites.pitt.edu/~hillier/web/CMFGEN.htm) uses a similar approach.
@@ -394,13 +458,24 @@ solver can only interpolate between the points.
 A custom cross section follows the same path through the solver as a built-in one, so the matrix, the
 energy fractions, and the rate coefficients stay consistent.
 
+<!-- test -->
 ```python
 import numpy as np
 import pynonthermal
 
+# a tabulated ionisation cross section, for example from a calculation. It is zero at and below
+# the threshold of 35 eV.
+my_en_ev = np.array([35.0, 50.0, 100.0, 300.0, 1000.0, 16000.0])
+my_xs_cm2 = np.array([0.0, 2.0e-18, 4.0e-18, 3.0e-18, 1.5e-18, 2.0e-19])
+
 
 def my_ionisation_xs(en_ev):
     return np.interp(en_ev, my_en_ev, my_xs_cm2, left=0.0, right=0.0)
+
+
+def my_excitation_xs(en_ev):
+    # zero below the transition energy of 20 eV
+    return np.where(en_ev >= 20.0, 1.0e-17 * 20.0 / en_ev, 0.0)
 
 
 with pynonthermal.SpencerFanoSolver() as sf:
@@ -416,6 +491,9 @@ with pynonthermal.SpencerFanoSolver() as sf:
         transitionkey=(0, 3),
         levelpopfrac=0.9,
     )
+    sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
+    print(f"O II ionisation rate coefficient {sf.get_ionisation_ratecoeff(Z=8, ion_stage=2):.2e} /s")
+    print(f"excitation rate coefficient {sf.get_excitation_ratecoeff(Z=8, ion_stage=2, transitionkey=(0, 3)):.2e} /s")
 ```
 
 `add_ionisation_channel()` takes:
@@ -467,6 +545,7 @@ The examples below use a made-up cross section with the shape of the Lotz formul
 below its threshold, as a direct-ionisation channel must be. The two examples of the next sections
 continue from this one, with the same `lotz_like_xs`, `nist`, and `recomb`.
 
+<!-- test -->
 ```python
 import numpy as np
 import pynonthermal
@@ -548,6 +627,7 @@ ion must keep the sum of the NIST potentials less `level_energy_ev`, and the def
 `n_ion` stays the population of the whole ion, as for every channel. The channel rate uses that
 population. Scale the cross section by the population fraction of the level.
 
+<!-- test: continue -->
 ```python
 level_energy_ev = 1.8  # a metastable level of Sr I, 1.8 eV above the ground state
 level_popfrac = 0.2  # the fraction of the Sr I ions in that level
@@ -575,26 +655,49 @@ of the ground-state potentials, and the Auger electron gets zero energy.
 
 ### Excitation autoionisation
 
-An excitation autoionisation is an excitation to a level above the ionisation limit, which then
+An excitation autoionisation (EAI) is an excitation to a level above the ionisation limit, which then
 autoionises. Such a channel does not give the Lorentzian distribution of secondary electrons. The primary
 electron loses exactly the excitation energy, as in `add_excitation()`, and the ion emits an Auger
 electron of one energy. Set `autoionisation=True`. Set `ionpot_ev` to the excitation energy of the
 autoionising level. The solver sets the cross section below that energy to zero, as
 `add_excitation()` does, and it keeps the value at that energy.
 
+pynonthermal has no built-in EAI data. The built-in channels use only the direct-ionisation formula of
+each shell (see [Cross-section datasets](#cross-section-datasets)). For an ion with important EAI, add an
+autoionisation channel.
+
+A level above the ionisation limit can also decay by the emission of a photon. Then the ion stays in
+the same ion stage. Thus the cross section of the autoionisation channel is the excitation cross
+section times the probability of autoionisation. Give the remainder to `add_excitation()`, with
+`epsilon_trans_ev` equal to `ionpot_ev`.
+
+<!-- test: continue -->
 ```python
+autoionisation_probability = 0.8  # the probability that the level autoionises, not a measured value
 with pynonthermal.SpencerFanoSolver() as sf:
     sf.add_element(Z=38, n_elem=1.0e6, recomb_ratecoeffs=recomb)
-    # an autoionising level of Sr I at 20 eV, which is 14.3 eV above the ionisation limit. The
-    # Auger electron gets those 14.3 eV, and the ion keeps the 5.7 eV ionisation potential.
+    # an excitation cross section of a level of Sr I at 20 eV, which is 14.3 eV above the ionisation
+    # limit. Unlike a direct-ionisation cross section, it is not zero at the threshold.
+    excitation_xs = np.where(sf.engrid >= 20.0, 1.0e-16 * 20.0 / sf.engrid, 0.0)
+    # the Auger electron gets the 14.3 eV, and the ion keeps the 5.7 eV ionisation potential
     sf.add_ionisation_channel(
         Z=38,
         ion_stage=1,
         n_ion=None,
         ionpot_ev=20.0,
-        xs_vec=lotz_like_xs(threshold_ev=20.0, scale_cm2=1e-16),
+        xs_vec=autoionisation_probability * excitation_xs,
         channelkey="eai",
         autoionisation=True,
+    )
+    # the level emits a photon in the other cases, so these events are an excitation
+    sf.add_excitation(
+        Z=38,
+        ion_stage=1,
+        levelnumberdensity=None,
+        xs_vec=(1.0 - autoionisation_probability) * excitation_xs,
+        epsilon_trans_ev=20.0,
+        transitionkey="eai_level_radiative",
+        levelpopfrac=1.0,
     )
     sf.solve(deposition_ev_per_s_per_cm3=1.0)
     print(
@@ -603,9 +706,12 @@ with pynonthermal.SpencerFanoSolver() as sf:
     print(f"Sr I ionisation fraction {sf.get_frac_ionisation_ion(Z=38, ion_stage=1):.4f}")
 ```
 
-The same cross section as a direct channel (`autoionisation=False`) would count all 20 eV as ionisation
-energy and would give the ejected electron the Lorentzian distribution. With `autoionisation=True`, the
-ionisation fraction of Sr I is lower, and the heating fraction is higher.
+The example sets `levelpopfrac=1.0`, because the channel and the excitation both start from the ground
+state. The channel uses the population of the whole ion, as every channel does.
+
+A direct channel with the same threshold would count all 20 eV as ionisation energy. Its ejected
+electron would have the Lorentzian distribution. The autoionisation channel counts only the 5.7 eV that
+the ion keeps as ionisation energy. The Auger electron returns the other 14.3 eV to the plasma.
 
 The energy rules follow those of a multiple ionisation:
 
@@ -620,15 +726,38 @@ The energy rules follow those of a multiple ionisation:
 - The rate coefficient and the ionisation balance count the channel as an ionisation of `n_ejected`
   electrons. `get_ionisation_ratecoeff()` includes it in the total of the ion.
 
-Give an exclusive cross section. Do not include the events of an autoionisation channel in a
-direct-ionisation channel of the same ion. Many autoionising levels can share one channel with the sum of
-their cross sections, or a few channels with binned excitation energies. The excitation energy of a
-shared channel must be the lowest one of its levels, because the cross section must be zero below it.
-The default Auger electron energy then comes from that lowest level.
+Give an exclusive cross section. Each event of an autoionisation channel must be absent from these
+other inputs of the same ion:
+
+- a direct-ionisation channel;
+- an `add_excitation()` transition, other than the part that emits a photon;
+- the excitations of a level table, from `add_element(excitation=True)` or `add_ion_excitation()`.
+
+Many autoionising levels can share one channel with the sum of their cross sections, or a few channels
+with binned excitation energies. The excitation energy of a shared channel must be the lowest one of its
+levels, because the cross section must be zero below it. The default Auger electron energy then comes
+from that lowest level.
+
+### Levels above the ionisation limit in a level table
+
+A level table can have levels above the ionisation limit. The solver treats each transition to such a
+level as an excitation, and it does not compare the level energies with the ionisation potential. With
+`verbose=True`, the solver prints the number of these transitions for each ion. The built-in level data
+of O IV has such levels, and the default cutoffs of `set_atomic_data()` include transitions to some of
+them.
+
+To treat these levels as EAI, give `set_atomic_data()` a level table without the transitions to them.
+Then add their cross sections with `add_ionisation_channel(autoionisation=True)` and `add_excitation()`,
+as above. The `maxnlevelsupper` cutoff applies to all ions, so it does not remove these levels for one
+ion only.
 
 ## Citing pynonthermal
 
-If you use pynonthermal, please cite it through the [Zenodo record](https://zenodo.org/badge/latestdoi/359805556). Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
+If you use pynonthermal, please cite it with the Zenodo DOI [10.5281/zenodo.10673892](https://doi.org/10.5281/zenodo.10673892). This DOI always resolves to the newest version. Please also consider a citation of the papers that describe the method: [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) and [Shingles et al. (2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412)](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract).
+
+Give the version of pynonthermal that you used. `pynonthermal.__version__` holds it, and the solver
+prints it with `verbose=True`. [CITATION.cff](https://github.com/artis-mcrt/pynonthermal/blob/main/CITATION.cff) gives these references in the Citation File
+Format, and GitHub shows them under "Cite this repository".
 
 ## License
 

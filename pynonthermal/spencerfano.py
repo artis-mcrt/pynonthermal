@@ -18,6 +18,7 @@ import typing as t
 import warnings
 from collections.abc import Collection
 from collections.abc import Mapping
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -51,8 +52,6 @@ from pynonthermal.ionbalance import get_ion_fractions_cuts
 from pynonthermal.ionbalance import solve_charge_neutral_n_e_cuts
 
 if t.TYPE_CHECKING:
-    from collections.abc import Sequence
-
     import matplotlib.axes as mplax
 else:
 
@@ -622,8 +621,8 @@ class SpencerFanoSolver:
 
         if self.verbose:
             print(
-                f"\nSetting up Spencer-Fano equation with {npts} energy points from"
-                f" {self.engrid[0]} to {self.engrid[-1]} eV..."
+                f"\nSetting up Spencer-Fano equation (pynonthermal {pynonthermal.__version__}) with {npts}"
+                f" energy points from {self.engrid[0]} to {self.engrid[-1]} eV..."
             )
             print(
                 f"  source is a box function from {source_emin:.2f} to"
@@ -632,6 +631,7 @@ class SpencerFanoSolver:
 
         self.sfmatrix = np.zeros((npts, npts))
 
+    @t.override
     def __getstate__(self) -> dict[str, t.Any]:
         """Get the state that pickle serialises.
 
@@ -643,7 +643,7 @@ class SpencerFanoSolver:
         """
         state = self.__dict__.copy()
         # the unit matrices of the balanced stages are large, and the balance makes them again
-        state["_stage_matrices"] = {}
+        state["_stage_matrices"] = dict[tuple[int, int], npt.NDArray[np.float64]]()
         if self._adata_polars_is_internal or self._solved:
             if self.adata_polars is not None and not self._adata_polars_is_internal:
                 state["_custom_adata_polars_dropped"] = True
@@ -692,13 +692,46 @@ class SpencerFanoSolver:
     def __exit__(self, *args: object) -> None:
         """Exit the context manager."""
 
+    @t.override
+    def __repr__(self) -> str:
+        """Give the energy grid, the ions, and the state of the solution.
+
+        Jupyter and debuggers call this method, so it does not calculate, warn, or raise.
+        """
+        try:
+            if self._solution_discarded_by is not None:
+                state = "solution discarded"
+            elif self._solved:
+                state = "solved"
+            else:
+                state = "not solved"
+            return (
+                f"SpencerFanoSolver(emin_ev={self.engrid[0]:g}, emax_ev={self.engrid[-1]:g},"
+                f" npts={len(self.engrid)}, ions={self._get_all_ions()}, {state})"
+            )
+        except AttributeError:
+            # a solver that __init__() did not complete
+            return object.__repr__(self)
+
     def get_energyindex_lteq(self, en_ev: float) -> int:
+        """Get the index of the last point of engrid that is less than or equal to en_ev [eV].
+
+        An energy below the grid gives 0, and an energy above the grid gives the last index.
+        """
         return pynonthermal.get_energyindex_lteq(en_ev, engrid=self.engrid)
 
     def get_energyindex_gteq(self, en_ev: float) -> int:
+        """Get the index of the first point of engrid that is greater than or equal to en_ev [eV].
+
+        An energy below the grid gives 0, and an energy above the grid gives the last index.
+        """
         return pynonthermal.get_energyindex_gteq(en_ev, engrid=self.engrid)
 
     def electronlossfunction(self, en_ev: float) -> float:
+        """Get the energy loss rate L(E) [eV cm^-1] of an electron at en_ev [eV] to the free electrons.
+
+        It uses the free electron density of get_n_e(). See pynonthermal.electronlossfunction().
+        """
         return electronlossfunction(en_ev, self.get_n_e())
 
     def _require_solved(self) -> None:
@@ -713,7 +746,10 @@ class SpencerFanoSolver:
 
     def _require_not_solved(self, action: str) -> None:
         if self._solved:
-            msg = f"Can't {action} after solving the Spencer-Fano equation"
+            msg = (
+                f"Can't {action} after solving the Spencer-Fano equation."
+                " Make a new SpencerFanoSolver for a different plasma."
+            )
             raise RuntimeError(msg)
 
     def _get_all_ions(self) -> list[tuple[int, int]]:
@@ -768,7 +804,10 @@ class SpencerFanoSolver:
             ARTIS atomic data), in the format returned by artistools.atomic.get_levels() with
             get_transitions=True and derived_transitions_columns=["epsilon_trans_ev", "lower_g",
             "upper_g"]: one row per ion with Z, ion_stage, and nested "levels" and
-            "transitions" frames. None keeps the table that the solver has.
+            "transitions" frames. None keeps the table that the solver has. The solver treats a
+            transition to a level above the ionisation limit as an excitation. For an excitation
+            autoionisation, remove the transition from the table and use add_ionisation_channel()
+            with autoionisation=True.
         use_collstrengths:
             compute cross sections from tabulated collision strengths where available (LHD12
             equation 11). Permitted transitions without one (or all permitted transitions,
@@ -1320,8 +1359,10 @@ class SpencerFanoSolver:
             ion_stage for ion_stage in ion_stages if ion_stage <= Z and self._get_ion_levels(Z, ion_stage) is not None
         ]
         if not stages_with_levels:
+            ions_with_levels = sorted(self._get_adata_polars().select("Z", "ion_stage").unique().iter_rows())
             msg = (
                 f"No excitation data for any ion stage {min(ion_stages)}-{max(ion_stages)} of Z={Z}."
+                f" The level data has the ions {ions_with_levels} as (Z, ion_stage) pairs."
                 " Supply a custom level/transition table with set_atomic_data()."
             )
             raise ValueError(msg)
@@ -1389,8 +1430,10 @@ class SpencerFanoSolver:
             source = (
                 "internal database" if self._adata_polars_is_internal else "level/transition table of set_atomic_data()"
             )
+            ions_with_levels = sorted(self._get_adata_polars().select("Z", "ion_stage").unique().iter_rows())
             msg = (
                 f"No excitation data for Z={Z} ion_stage {ion_stage} in the {source}."
+                f" The {source} has the ions {ions_with_levels} as (Z, ion_stage) pairs."
                 " Supply a level/transition table with this ion to set_atomic_data(), or add cross"
                 " sections directly with add_excitation()."
             )
@@ -1518,6 +1561,25 @@ class SpencerFanoSolver:
                     ),
                 )
             )
+
+        if self.verbose:
+            # a level above the ionisation limit can autoionise, but the solver counts each transition
+            # to it as an excitation. The level energies and the potential of the table come from one
+            # data set, so the comparison uses that potential. A table without it, or with a null
+            # value, uses the NIST value. The verbose output must not make a valid table fail.
+            levels = ion["levels"].item()
+            ionpot_ev = ion["ion_pot"].item() if "ion_pot" in ion.columns else None
+            if ionpot_ev is None:
+                ionpot_ev = _get_nist_ionisation_energies_ev_cached().get((Z, ion_stage))
+            if ionpot_ev is not None:
+                levels_above = set(levels.filter(pl.col("energy_ev") > ionpot_ev)["levelindex"].to_list())
+                n_above = sum(upper in levels_above for (_, upper), _ in templates)
+                if n_above:
+                    print(
+                        f"  {n_above} of the {len(templates)} excitations of Z={Z} ion_stage {ion_stage}"
+                        f" ({_ionstring(Z, ion_stage)}) go to levels above the ionisation potential"
+                        f" ({ionpot_ev:.2f} eV). The solver counts them as excitation and not as autoionisation."
+                    )
 
         return templates
 
@@ -1899,8 +1961,11 @@ class SpencerFanoSolver:
             appear at the energy auger_electron_energy_ev / n_ejected. The default
             auger_electron_energy_ev is then the energy of the autoionising level above the
             ionisation limit. The channel counts as an ionisation of n_ejected electrons for the
-            rate coefficients and the ionisation balance. Give an exclusive cross section. Do not
-            include these events in a direct-ionisation channel of the same ion.
+            rate coefficients and the ionisation balance. The level can also emit a photon, so give
+            the excitation cross section times the probability of autoionisation. Give the remainder
+            to add_excitation(), with epsilon_trans_ev equal to ionpot_ev. Give an exclusive cross
+            section. Do not include these events in a direct-ionisation channel, in another
+            add_excitation() transition, or in the level-table excitations of the same ion.
         extra_electron_energy_ev:
             the former name of auger_electron_energy_ev. It is deprecated.
 
@@ -2288,7 +2353,7 @@ class SpencerFanoSolver:
                         bands[k][1][:] += delta * unitfracvec
                     else:
                         bands[k] = (delta * unitvec, delta * unitfracvec)
-            templates = element.excitation_templates.get(ion_stage)
+            templates = element.excitation_templates.get(ion_stage, {})
             if templates:
                 self.excitationlists[(Z, ion_stage)] = {
                     transitionkey: template.at_population(n_new) for transitionkey, template in templates.items()
@@ -2587,7 +2652,7 @@ class SpencerFanoSolver:
         # call, not a result.
         for element in elements:
             for ion_stage in element.ion_stages[:-1]:
-                if not self._ionisation_channels.get((element.Z, ion_stage)):
+                if not self._ionisation_channels.get((element.Z, ion_stage), []):
                     msg = (
                         f"Z={element.Z} ion_stage {ion_stage} of the ionisation balance has no ionisation channel."
                         " Add its channels with add_ionisation(Z, ion_stage, None) or"
@@ -2843,6 +2908,12 @@ class SpencerFanoSolver:
             )
 
     def calculate_nt_frac_excitation_ion(self, Z: int, ion_stage: int) -> float:
+        """Calculate the share of the deposited energy that goes to the excitations of one ion (KF92 equation 9).
+
+        The value is the sum over the transitions of the ion. An ion that the solver holds without
+        excitations gives zero.
+        get_frac_excitation_ion() gives the same value from the analysis of the solution.
+        """
         self._require_solved()
         if (Z, ion_stage) not in self.excitationlists:
             # zero for an ion that the solver holds without excitations. An ion that the solver does
@@ -2934,8 +3005,9 @@ class SpencerFanoSolver:
             pos = (en_ev - e_min) / deltaen
             i = min(int(pos), lastindex)
             weight = pos - i
-            return (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i])) * (
-                xsvec[i] + weight * (xsvec[i + 1] - xsvec[i])
+            return float(
+                (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i]))
+                * (xsvec[i] + weight * (xsvec[i + 1] - xsvec[i]))
             )
 
         for Z, ion_stage in self._get_all_ions():
@@ -3073,7 +3145,11 @@ class SpencerFanoSolver:
         return float(np.dot(xs_vec[jstart:jstop] * self.yvec[jstart:jstop], energy_below_e0_ev) * deltaen)
 
     def calculate_frac_heating(self) -> float:
-        # fraction of the deposited energy that heats the free thermal electrons: KF92 equation 8.
+        """Calculate the share of the deposited energy that heats the free thermal electrons (KF92 equation 8).
+
+        The method also stores the value, and get_frac_heating() then gives it without a new
+        calculation. The value includes the energy of the electrons that thermalise below emin_ev.
+        """
         # The four parts below are each divided by the deposition rate density:
         # - the loss-function integral over the solved grid;
         # - the boundary term E_0 y(E_0) L(E_0) for the electrons that flow through the bottom of
@@ -3167,10 +3243,21 @@ class SpencerFanoSolver:
         self._eff_ionpot = {}
 
     def reset_solution_analysis(self) -> None:
+        """Discard the stored energy fractions and rate coefficients of the analysis of the solution.
+
+        The next getter of a result calculates them again from yvec. solve() calls this method.
+        """
         self._reset_channel_fractions()
         self._frac_heating = None
 
     def analyse_ntspectrum(self) -> None:
+        """Calculate the energy fractions and the rate coefficients of each ion from the solution.
+
+        The getters of the results call this method when they need it, so a call is not necessary.
+        With verbose=True, the method prints a per-ion and per-shell breakdown. It warns if the
+        energy fractions do not sum to one within 5 per cent. With heating_only_approximation, it
+        warns if the heating fraction is not one within 5 per cent.
+        """
         self._require_solved()
         # keep any frac_heating already computed for this solution, since it only depends on yvec
         self._reset_channel_fractions()
@@ -3495,7 +3582,59 @@ class SpencerFanoSolver:
         """
         return self.get_frac_heating() + self.get_frac_excitation_tot() + self.get_frac_ionisation_tot()
 
+    def get_ion_results(self) -> pl.DataFrame:
+        """Get the results of the solution as a table with one row for each ion, sorted by Z and ion_stage.
+
+        The columns are:
+
+        - Z and ion_stage;
+        - n_ion: the number density of the ion [cm^-3], or null if the solver has no population for
+          the ion. An ion with only add_excitation() transitions that give a level density has no
+          population;
+        - frac_ionisation and frac_excitation: the shares of the deposited energy, as from
+          get_frac_ionisation_ion() and get_frac_excitation_ion();
+        - ionisation_ratecoeff: the non-thermal ionisation rate coefficient [s^-1], as from
+          get_ionisation_ratecoeff();
+        - eff_ionpot_ev: the effective ionisation potential [eV], as from get_eff_ionpot().
+
+        The table has a row for each ion that has a population, an ionisation channel, or an
+        excitation in the solver.
+        """
+        self._require_solved()
+        if not self._analysed:
+            self.analyse_ntspectrum()
+
+        ions = self._get_all_ions()
+        return pl.DataFrame(
+            {
+                "Z": [Z for Z, _ in ions],
+                "ion_stage": [ion_stage for _, ion_stage in ions],
+                # an unknown population is null and not zero. A zero population stays zero.
+                "n_ion": [self.ionpopdict.get(ion) for ion in ions],
+                "frac_ionisation": [self._frac_ionisation_ion[ion] for ion in ions],
+                "frac_excitation": [self._frac_excitation_ion[ion] for ion in ions],
+                "ionisation_ratecoeff": [self._nt_ionisation_ratecoeff[ion] for ion in ions],
+                "eff_ionpot_ev": [self._eff_ionpot[ion] for ion in ions],
+            },
+            schema={
+                "Z": pl.Int64,
+                "ion_stage": pl.Int64,
+                "n_ion": pl.Float64,
+                "frac_ionisation": pl.Float64,
+                "frac_excitation": pl.Float64,
+                "ionisation_ratecoeff": pl.Float64,
+                "eff_ionpot_ev": pl.Float64,
+            },
+        ).sort("Z", "ion_stage")
+
     def get_d_etaheating_by_d_en_vec(self) -> npt.NDArray[np.float64]:
+        """Get d(eta_heating)/dE [eV^-1] at each energy of engrid.
+
+        This is the share of the deposited energy that goes to heating per unit electron energy,
+        L(E) y(E) divided by the deposition rate density. The array excludes the energy that
+        thermalises below emin_ev, which get_frac_heating() includes. plot_channels() draws E times
+        this array.
+        """
         self._require_solved()
         # an array, as the two other get_d_eta*_by_d_en_vec() methods give. A list repeats under * 2.
         n_e = self.get_n_e()
@@ -3503,6 +3642,12 @@ class SpencerFanoSolver:
         return lossvec * self.yvec / self.deposition_ev_per_s_per_cm3
 
     def get_d_etaexcitation_by_d_en_vec(self) -> npt.NDArray[np.float64]:
+        """Get d(eta_excitation)/dE [eV^-1] at each energy of engrid, summed over every ion.
+
+        This is the share of the deposited energy that goes to excitation per unit electron energy.
+        The sum of the array times deltaen is get_frac_excitation_tot(). plot_channels() draws E
+        times this array.
+        """
         self._require_solved()
         part_integrand = np.zeros(len(self.engrid))
 
@@ -3515,6 +3660,13 @@ class SpencerFanoSolver:
         return self.yvec * part_integrand
 
     def get_d_etaion_by_d_en_vec(self) -> npt.NDArray[np.float64]:
+        """Get d(eta_ionisation)/dE [eV^-1] at each energy of engrid, summed over every ion.
+
+        This is the share of the deposited energy that goes to ionisation per unit electron energy.
+        Only the energy that the ion keeps counts, so the energy of an Auger electron is not part of
+        it. The sum of the array times deltaen is get_frac_ionisation_tot(). plot_channels() draws E
+        times this array.
+        """
         self._require_solved()
         part_integrand = np.zeros(len(self.engrid))
 
@@ -3586,7 +3738,8 @@ class SpencerFanoSolver:
         ax.set_xlabel(r"Electron energy [eV]", fontsize=fs)
         if axis is None:
             if outputfilename is not None:
-                print(f"Saving '{outputfilename}'")
+                if self.verbose:
+                    print(f"Saving '{outputfilename}'")
                 assert fig is not None
                 fig.savefig(str(outputfilename))
                 plt.close()
@@ -3695,40 +3848,58 @@ class SpencerFanoSolver:
         ax.set_xlabel(r"Electron energy [eV]", fontsize=fs)
         if axis is None:
             if outputfilename is not None:
-                print(f"Saving '{outputfilename}'")
+                if self.verbose:
+                    print(f"Saving '{outputfilename}'")
                 assert fig is not None
                 fig.savefig(str(outputfilename))
                 plt.close()
             else:
                 plt.show()
 
-    def plot_spec_channels(self, outputfilename: Path | str | None = None, xscalelog: bool = False) -> None:
+    def plot_spec_channels(
+        self,
+        outputfilename: Path | str | None = None,
+        xscalelog: bool = False,
+        axes: Sequence[mplax.Axes] | npt.NDArray[np.object_] | None = None,
+    ) -> None:
         """Plot the degradation spectrum and the deposition channels as two stacked panels.
 
         outputfilename:
             save the figure to this path; None shows it interactively instead
         xscalelog:
             use a logarithmic energy axis
+        axes:
+            draw into these two existing matplotlib Axes, the spectrum into the first and the
+            channels into the second, instead of creating (and saving or showing) a new figure.
+            The two Axes of plt.subplots(nrows=2) are an example.
         """
         # the check runs before the figure exists, so a call on an unsolved solver leaves no open figure
         self._require_solved()
+        if axes is not None:
+            # a numpy array of Axes from plt.subplots() is also correct here
+            ax_spectrum, ax_channels = axes
+            self.plot_yspectrum(axis=ax_spectrum, en_y_on_d_en=True, xscalelog=xscalelog)
+            self.plot_channels(axis=ax_channels, xscalelog=xscalelog)
+            return
+
         import matplotlib.pyplot as plt  # noqa: PLC0415
 
-        fig, axes = plt.subplots(
+        fig, new_axes = plt.subplots(
             nrows=2,
             ncols=1,
             sharex=True,
             figsize=(4.5, 5),
             tight_layout={"pad": 0.5, "w_pad": 0.3, "h_pad": 0.3},
         )
-        assert isinstance(axes, np.ndarray)
+        assert isinstance(new_axes, np.ndarray)
 
-        self.plot_yspectrum(axis=axes[0], en_y_on_d_en=True, xscalelog=xscalelog)
+        self.plot_yspectrum(axis=new_axes[0], en_y_on_d_en=True, xscalelog=xscalelog)
 
-        self.plot_channels(axis=axes[1], xscalelog=xscalelog)
+        self.plot_channels(axis=new_axes[1], xscalelog=xscalelog)
 
         if outputfilename is not None:
-            print(f"Saving '{outputfilename}'")
+            if self.verbose:
+                print(f"Saving '{outputfilename}'")
             fig.savefig(str(outputfilename))
             plt.close()
         else:

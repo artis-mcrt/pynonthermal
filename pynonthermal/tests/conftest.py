@@ -1,3 +1,5 @@
+"""The pytest configuration of the tests of pynonthermal."""
+
 import os
 
 # Plot tests use files and do not need a desktop session.

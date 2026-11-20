@@ -49,7 +49,7 @@ from pynonthermal.constants import ME
 
 # (2 pi m_e k_B / h^2)^(3/2) in cm^-3 K^-3/2, the thermal factor of the Saha equation. K_B is in
 # eV/K, so EV converts it to erg/K to match ME [g] and H [erg s].
-SAHA_CONST: float = (2.0 * math.pi * ME * (K_B * EV) / H**2) ** 1.5
+SAHA_CONST: float = math.pow(2.0 * math.pi * ME * (K_B * EV) / H**2, 1.5)
 
 # the number of bisection steps in ln(n_e). Each step halves the bracket, so 100 steps take a
 # bracket of 60 decades down to a relative width far below the double precision limit.
@@ -88,12 +88,18 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
     ):
         msg = f"partition functions must be greater than zero and finite but are {partfunc_lower}, {partfunc_upper}"
         raise ValueError(msg)
-    # Python floats, because a numpy float16 argument overflows in the product below
+    # Python floats, because a numpy float16 argument overflows in the product below. math.pow()
+    # gives the same value as the ** operator, and its result type is float.
     temperature, ionpot_ev = float(temperature), float(ionpot_ev)
     partfunc_lower, partfunc_upper = float(partfunc_lower), float(partfunc_upper)
 
     return (
-        2.0 * partfunc_upper / partfunc_lower * SAHA_CONST * temperature**1.5 * math.exp(-ionpot_ev / K_B / temperature)
+        2.0
+        * partfunc_upper
+        / partfunc_lower
+        * SAHA_CONST
+        * math.pow(temperature, 1.5)
+        * math.exp(-ionpot_ev / K_B / temperature)
     )
 
 
@@ -498,8 +504,10 @@ def get_saha_ion_fractions(
                 adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
             ion = adata_polars.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
             if ion.is_empty():
+                ions_with_levels = sorted(adata_polars.select("Z", "ion_stage").unique().iter_rows())
                 msg = (
                     f"No level data for Z={Z} ion_stage {ion_stage} to calculate a partition function."
+                    f" The level table has the ions {ions_with_levels} as (Z, ion_stage) pairs."
                     " Give it in partfuncs or supply a level table in adata_polars."
                 )
                 raise ValueError(msg)
