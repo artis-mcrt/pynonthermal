@@ -1589,3 +1589,158 @@ def test_repr_gives_the_state_without_a_calculation() -> None:
     assert repr(object.__new__(pynonthermal.SpencerFanoSolver)).startswith(
         "<pynonthermal.spencerfano.SpencerFanoSolver"
     )
+
+
+def _fail_on_call(
+    function: t.Callable[..., object], failing_call: int, exception: type[BaseException]
+) -> t.Callable[..., object]:
+    # the function, but the call with the number failing_call raises the exception
+    calls = 0
+
+    def wrapper(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == failing_call:
+            raise exception
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+def _balanced_oxygen() -> pynonthermal.SpencerFanoSolver:
+    sf = pynonthermal.SpencerFanoSolver(npts=300)
+    sf.add_element(8, n_elem=1e6, recomb_ratecoeffs={2: 3e-13, 3: 3e-12, 4: 1e-11})
+    return sf
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, MemoryError])
+@pytest.mark.parametrize("failing_call", [1, 2, 4])
+def test_solve_after_an_interrupted_population_update(exception: type[BaseException], failing_call: int) -> None:
+    # an interrupt or an error part-way through a matrix update of the balance left the matrix and ionpopdict
+    # out of step. The next update adds only the change of each population, so a later solve() gave wrong
+    # populations with no warning.
+    reference = _balanced_oxygen()
+    reference.solve(1e2)
+    sf = _balanced_oxygen()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            spencerfano,
+            "_add_scaled_upper_triangle",
+            _fail_on_call(spencerfano._add_scaled_upper_triangle, failing_call, exception),
+        )
+        with pytest.raises(exception):
+            sf.solve(1e2)
+    assert sf._sfmatrix_stale
+    sf.solve(1e2)
+    assert not sf._sfmatrix_stale
+    for ion_stage, fraction in reference.get_ion_fractions(8).items():
+        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+
+
+def test_failed_solve_after_a_solution_keeps_it_with_a_stale_matrix() -> None:
+    # a MemoryError in a matrix update of a second solve(). The restore applied the change of each population
+    # to a matrix that the update had changed only in part.
+    sf = _balanced_oxygen()
+    sf.solve(1e1)
+    frac_heating = sf.get_frac_heating()
+    populations = dict(sf.ionpopdict)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            spencerfano,
+            "_add_scaled_upper_triangle",
+            _fail_on_call(spencerfano._add_scaled_upper_triangle, 3, MemoryError),
+        )
+        with pytest.raises(MemoryError):
+            sf.solve(1e2)
+    assert sf.get_frac_heating() == frac_heating
+    assert sf.ionpopdict == populations
+    sf.solve(1e2)
+    reference = _balanced_oxygen()
+    reference.solve(1e2)
+    for ion_stage, fraction in reference.get_ion_fractions(8).items():
+        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+
+
+def test_interrupted_solve_keeps_the_last_solution() -> None:
+    # solve() caught only an Exception, so a KeyboardInterrupt (an interrupt of the kernel in Jupyter) lost
+    # the last solution and opened the add methods for the solved plasma
+    sf = _balanced_oxygen()
+    sf.solve(1e1)
+    frac_heating = sf.get_frac_heating()
+    populations = dict(sf.ionpopdict)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            pynonthermal.SpencerFanoSolver,
+            "_solve_matrix",
+            _fail_on_call(pynonthermal.SpencerFanoSolver._solve_matrix, 2, KeyboardInterrupt),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            sf.solve(1e2)
+    assert sf.get_frac_heating() == frac_heating
+    assert sf.ionpopdict == populations
+    with pytest.raises(RuntimeError, match="after solving"):
+        sf.add_ionisation(1, 1, 1e5)
+
+
+def test_copy_with_a_read_only_matrix_can_solve_and_add() -> None:
+    # joblib gives a large array of a pickled object to a worker as a read-only memory map. The solver writes
+    # to its matrix in place, so such a copy could not solve a balanced element or add an ion.
+    sf = _balanced_oxygen()
+    read_only = pickle.loads(pickle.dumps(sf))  # noqa: S301
+    read_only.sfmatrix.flags.writeable = False
+    # protocol 5 keeps the read-only flag of an array
+    copy = pickle.loads(pickle.dumps(read_only, protocol=5))  # noqa: S301
+    assert copy.sfmatrix.flags.writeable
+    copy.add_ionisation(1, 1, 1e5)
+    copy.solve(1e2)
+    reference = _balanced_oxygen()
+    reference.add_ionisation(1, 1, 1e5)
+    reference.solve(1e2)
+    for ion_stage, fraction in reference.get_ion_fractions(8).items():
+        assert math.isclose(copy.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+
+
+def test_failed_matrix_fill_leaves_the_add_call_out() -> None:
+    # an add call registered the population and stored the channel before the matrix fill. A fill that failed
+    # left both in the solver with no matrix entries, and a later solve() was silently wrong.
+    with pynonthermal.SpencerFanoSolver(npts=300) as sf:
+        sf.add_element(8, ion_densities={1: 1e8, 2: 1e7})
+        sf.sfmatrix.flags.writeable = False
+        with pytest.raises(ValueError, match="read-only"):
+            sf.add_ionisation(26, 2, 1e4)
+        assert (26, 2) not in sf.ionpopdict
+        assert (26, 2) not in sf._ionisation_channels
+        sf.solve(1e8)
+        with pynonthermal.SpencerFanoSolver(npts=300) as reference:
+            reference.add_element(8, ion_densities={1: 1e8, 2: 1e7})
+            reference.solve(1e8)
+            assert np.allclose(sf.yvec, reference.yvec, rtol=1e-12, atol=0.0)
+
+    # a call that a check rejects writes nothing, so the matrix is not filled again
+    with pynonthermal.SpencerFanoSolver(emin_ev=12.0, emax_ev=3000, npts=300) as sf:
+        with pytest.raises(ValueError, match="below emin_ev"):
+            sf.add_element(26, 1e8, ion_fractions={2: 0.5, 1: 0.5})
+        assert not sf._sfmatrix_stale
+
+
+def test_override_with_the_density_in_use_keeps_the_solution() -> None:
+    # the check compared the value only with the earlier override. An override with the density from the ion
+    # charges discarded a valid solution and said that the density changed.
+    with pynonthermal.SpencerFanoSolver(npts=300) as sf:
+        sf.add_element(8, ion_densities={1: 1e8, 2: 1e8})
+        sf.solve(1e8)
+        frac_heating = sf.get_frac_heating()
+        sf.override_n_e(sf.get_n_e())
+        assert sf.get_frac_heating() == frac_heating
+        sf.override_n_e(None)
+        assert sf.get_frac_heating() == frac_heating
+        sf.override_n_e(2e8)
+        with pytest.raises(RuntimeError, match="which changed the free electron density, discarded"):
+            sf.get_frac_heating()
+
+    # with a balanced element, a given density replaces charge neutrality, so the rule of the balance changes
+    sf = _balanced_oxygen()
+    sf.solve(1e2)
+    sf.override_n_e(sf.get_n_e())
+    with pytest.raises(RuntimeError, match="ionisation balance to a given density"):
+        sf.get_frac_heating()
