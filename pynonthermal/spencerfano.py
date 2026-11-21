@@ -98,7 +98,7 @@ BALANCE_SEED_STAGE_RATIO: float = 1e-2
 # The memory [bytes] that the unit matrices of the balanced stages can use (see
 # SpencerFanoSolver._get_stage_matrix()). A unit matrix makes an iteration of the balance two to three
 # times faster for that stage. At the default npts of 4096 a unit matrix takes 134 MB, so the default
-# gives three stages a unit matrix. The other stages fill each channel again at each iteration. Zero
+# gives four stages a unit matrix (537 MB). The other stages fill each channel again at each iteration. Zero
 # gives no unit matrices.
 BALANCE_STAGE_MATRIX_MAX_BYTES: int = 512 * 2**20
 
@@ -806,7 +806,7 @@ class SpencerFanoSolver:
             "upper_g"]: one row per ion with Z, ion_stage, and nested "levels" and
             "transitions" frames. None keeps the table that the solver has. The solver treats a
             transition to a level above the ionisation limit as an excitation. For an excitation
-            autoionisation, remove the transition from the table and use add_ionisation_channel()
+            autoionisation, remove the transition from the table. Then use add_ionisation_channel()
             with autoionisation=True.
         use_collstrengths:
             compute cross sections from tabulated collision strengths where available (LHD12
@@ -1491,8 +1491,8 @@ class SpencerFanoSolver:
             transition_filter &= pl.col("upper") < maxnlevelsupper
         dftransitions_allenergies = dftransitions_allenergies.filter(transition_filter)
 
-        # transitions outside the grid are dropped (see the docstring), but say how many, so that a grid
-        # that happens to exclude most of an ion's excitation channels doesn't go unnoticed
+        # the solver drops the transitions outside the grid (see the docstring). The verbose output gives their
+        # number, so that the user sees a grid that excludes most of the excitation channels of an ion
         dftransitions = dftransitions_allenergies.filter(
             pl.col("epsilon_trans_ev").is_between(self.engrid[0], self.engrid[-1])
         )
@@ -1961,11 +1961,14 @@ class SpencerFanoSolver:
             appear at the energy auger_electron_energy_ev / n_ejected. The default
             auger_electron_energy_ev is then the energy of the autoionising level above the
             ionisation limit. The channel counts as an ionisation of n_ejected electrons for the
-            rate coefficients and the ionisation balance. The level can also emit a photon, so give
+            rate coefficients and the ionisation balance. The level can also emit a photon. So give
             the excitation cross section times the probability of autoionisation. Give the remainder
             to add_excitation(), with epsilon_trans_ev equal to ionpot_ev. Give an exclusive cross
-            section. Do not include these events in a direct-ionisation channel, in another
-            add_excitation() transition, or in the level-table excitations of the same ion.
+            section. Do not include these events in one of these:
+
+            - a direct-ionisation channel;
+            - another add_excitation() transition;
+            - the level-table excitations of the same ion.
         extra_electron_energy_ev:
             the former name of auger_electron_energy_ev. It is deprecated.
 
@@ -3409,11 +3412,11 @@ class SpencerFanoSolver:
             print(f"         frac_heating: {frac_heating:.4f}")
             print(f"             frac_sum: {frac_sum:.4f}")
 
-        # every deposited eV must end up in exactly one of the three channels. The tolerance is loose
-        # enough to absorb the discretisation error of a coarse energy grid, so a warning here means
-        # a channel is being double counted or omitted rather than merely under-resolved. The
-        # heating-only approximation makes the sum exceed one, so there the conserved quantity
-        # is the heating fraction alone, which must be close to one.
+        # every deposited eV must end up in exactly one of the three channels. A warning here means that a
+        # channel is counted two times or not at all, or that the grid is too coarse. A sum inside the tolerance
+        # does not show that the grid is fine enough (see get_frac_sum()). The heating-only approximation makes
+        # the sum more than one, so there the conserved quantity is the heating fraction alone, which must be
+        # near one.
         if self.heating_only_approximation:
             if not math.isclose(frac_heating, 1.0, rel_tol=0.05):
                 _warn(
@@ -3700,8 +3703,8 @@ class SpencerFanoSolver:
         outputfilename:
             save the figure to this path; None shows it interactively instead
         axis:
-            draw into this existing matplotlib Axes instead of creating (and saving or
-            showing) a new figure
+            an existing matplotlib Axes to draw into. Then the method makes no figure, and the
+            caller saves or shows the figure
         """
         self._require_solved()
         import matplotlib.pyplot as plt  # noqa: PLC0415
@@ -3757,8 +3760,8 @@ class SpencerFanoSolver:
         outputfilename:
             save the figure to this path; None shows it interactively instead
         axis:
-            draw into this existing matplotlib Axes instead of creating (and saving or
-            showing) a new figure
+            an existing matplotlib Axes to draw into. Then the method makes no figure, and the
+            caller saves or shows the figure
         xscalelog:
             use a logarithmic energy axis
         """
@@ -3869,9 +3872,9 @@ class SpencerFanoSolver:
         xscalelog:
             use a logarithmic energy axis
         axes:
-            draw into these two existing matplotlib Axes, the spectrum into the first and the
-            channels into the second, instead of creating (and saving or showing) a new figure.
-            The two Axes of plt.subplots(nrows=2) are an example.
+            two existing matplotlib Axes to draw into. The method draws the spectrum into the first
+            and the channels into the second. Then the method makes no figure, and the caller saves
+            or shows the figure. The two Axes of plt.subplots(nrows=2) are an example.
         """
         # the check runs before the figure exists, so a call on an unsolved solver leaves no open figure
         self._require_solved()
