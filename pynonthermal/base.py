@@ -272,6 +272,10 @@ def get_Zbar(ions: Iterable[tuple[int, int]], ionpopdict: dict[tuple[int, int], 
     ions = list(ions)
     Zbar = 0.0
     n_tot = get_n_tot(ions, ionpopdict)
+    # the comparison also rejects nan. A total of zero gave a bare ZeroDivisionError.
+    if not n_tot > 0.0:
+        msg = f"the mean atomic number needs a total number density greater than zero, but the total is {n_tot}"
+        raise ValueError(msg)
     for Z, ion_stage in ions:
         n_ion = ionpopdict[(Z, ion_stage)]
         Zbar += Z * n_ion / n_tot
