@@ -1351,6 +1351,22 @@ def test_numpy_scalar_inputs_give_python_floats() -> None:
     )
 
 
+def test_float16_energies_give_a_uniform_grid_and_an_exact_band() -> None:
+    # np.linspace calculates in the type of its limits, so float16 limits gave a grid with repeated points
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=np.float16(0.1))  # ty: ignore[invalid-argument-type]
+    assert len(np.unique(sf.engrid)) == len(sf.engrid)
+    assert np.ptp(np.diff(sf.engrid)) < 1e-9
+
+    # the matrix band of a float16 transition energy had float16 weights, and the energy sum was 3e-4 wrong
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
+        epsilon_trans_ev = np.float16(79.9)
+        xs_vec = np.where(sf.engrid > float(epsilon_trans_ev), 1e-16, 0.0)
+        sf.add_excitation(8, 1, 1e8, xs_vec, epsilon_trans_ev)  # ty: ignore[invalid-argument-type]
+        sf.override_n_e(1e4)
+        sf.solve(1e5)
+        assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=1e-12)
+
+
 def test_getters_and_flags_check_their_arguments() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.add_element(8, ion_densities={1: 0.99e8, 2: 0.01e8})
