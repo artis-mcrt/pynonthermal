@@ -832,7 +832,8 @@ class SpencerFanoSolver:
         # matrix, the next solve() or add call fills the matrix again from the records. The checks of a call run
         # before its first write, so a rejected call does not cause a new fill.
         if self._transaction_open:
-            # an add call inside another add call, for example add_ion_ltepopexcitation()
+            # an add call inside another add call. No add method makes such a call now. The outer call keeps
+            # the only transaction, so its failure also removes the records of the inner call.
             yield
             return
         if self._sfmatrix_stale and not self._solved:

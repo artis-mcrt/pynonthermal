@@ -1637,6 +1637,68 @@ def test_solve_after_an_interrupted_population_update(exception: type[BaseExcept
         assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
 
 
+def _balanced_oxygen_with_excitation() -> pynonthermal.SpencerFanoSolver:
+    # most transitions have one energy, so that the bands of a fixed ion and of two balanced stages have one
+    # index. Then a fill of the matrix adds the bands together. The last transition has a band of its own.
+    sf = _balanced_oxygen()
+    sf.add_ionisation(1, 1, 1e5)
+    sf.add_excitation(1, 1, None, np.where(sf.engrid > 120.0, 1e-16, 0.0), 120.0, levelpopfrac=1.0)
+    for ion_stage, transitionkey, epsilon_trans_ev in (
+        (1, "a", 120.0),
+        (1, "b", 120.0),
+        (2, "a", 120.0),
+        (2, "b", 250.0),
+    ):
+        xs_vec = np.where(sf.engrid > epsilon_trans_ev, 1e-16, 0.0)
+        sf.add_excitation(8, ion_stage, None, xs_vec, epsilon_trans_ev, transitionkey, levelpopfrac=0.5)
+    return sf
+
+
+@pytest.mark.parametrize("next_call", ["solve", "add"])
+def test_matrix_fill_after_an_interrupt_keeps_the_excitation_bands(next_call: str) -> None:
+    # the fill after an interrupted population update adds the bands of the fixed transitions and the unit
+    # bands of the balanced stages. The next solve() or the next add call starts the fill.
+    reference = _balanced_oxygen_with_excitation()
+    sf = _balanced_oxygen_with_excitation()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            spencerfano,
+            "_add_scaled_upper_triangle",
+            _fail_on_call(spencerfano._add_scaled_upper_triangle, 2, KeyboardInterrupt),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            sf.solve(1e2)
+    assert sf._sfmatrix_stale
+    if next_call == "add":
+        sf.add_ionisation(2, 1, 1e4)
+        reference.add_ionisation(2, 1, 1e4)
+        assert not sf._sfmatrix_stale
+        assert np.allclose(sf.sfmatrix, reference.sfmatrix, rtol=1e-12, atol=1e-12 * np.abs(reference.sfmatrix).max())
+    sf.solve(1e2)
+    reference.solve(1e2)
+    assert math.isclose(sf.get_frac_excitation_tot(), reference.get_frac_excitation_tot(), rel_tol=1e-4)
+    for ion_stage, fraction in reference.get_ion_fractions(8).items():
+        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+
+
+def test_failed_outer_transaction_removes_the_inner_add_call() -> None:
+    # an add call inside another add call keeps the transaction of the outer call
+    sf = _balanced_oxygen()
+
+    def add_in_an_outer_transaction() -> None:
+        with sf._record_transaction():
+            sf.add_ionisation(1, 1, 1e5)
+            assert (1, 1) in sf.ionpopdict
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        add_in_an_outer_transaction()
+    assert (1, 1) not in sf.ionpopdict
+    assert (1, 1) not in sf._ionisation_channels
+    assert sf._sfmatrix_stale
+    assert not sf._transaction_open
+
+
 def test_failed_solve_after_a_solution_keeps_it_with_a_stale_matrix() -> None:
     # a MemoryError in a matrix update of a second solve(). The restore applied the change of each population
     # to a matrix that the update had changed only in part.
