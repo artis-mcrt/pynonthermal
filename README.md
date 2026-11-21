@@ -161,6 +161,25 @@ populations. Both take `n_ion=None` for an ion whose population the solver alrea
 
 ### 4. Solve
 
+The free electron density comes from the ion charges of `ionpopdict`, so it counts only the electrons
+of the ions that the solver holds. Give it yourself with `sf.override_n_e(n_e)` before `solve()`, for
+example when species that are not in the solver also give electrons:
+
+```python
+sf.override_n_e(n_e=2.0e8)  # cm^-3; None takes it from the ion charges again
+```
+
+It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality. `solve()`
+then finds the populations at your density, and they do not have to be neutral with it. The value holds
+until another call changes it. A call after `solve()` that changes the density discards the solution,
+so `solve()` must run again. A call with the density that the solver already uses keeps the solution.
+With `recomb_ratecoeffs`, a change between a given density and charge neutrality also discards the
+solution. The `override_n_e` argument of `solve()` is deprecated. The
+[iron notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
+what a given density does to a balance.
+
+Then solve:
+
 ```python
 sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
 ```
@@ -170,21 +189,6 @@ sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
   scale linearly with it; with `recomb_ratecoeffs` the populations depend on it too.
 - `balance_tol`: the relative tolerance of the ionisation rate coefficients of an element with
   `recomb_ratecoeffs` (default `1e-4`).
-
-The free electron density comes from the ion charges of `ionpopdict`, so it counts only the electrons
-of the ions that the solver holds. Give it yourself with `sf.override_n_e(n_e)` before `solve()`, for
-example when species that are not in the solver also give electrons:
-
-```python
-sf.override_n_e(n_e=2.5e6)  # cm^-3; None takes it from the ion charges again
-```
-
-It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality. `solve()`
-then finds the populations at your density, and they do not have to be neutral with it. The value holds
-until another call changes it. A call after `solve()` that changes the density discards the solution,
-so `solve()` must run again. A call with the density that the solver has already keeps the solution. The `override_n_e` argument of `solve()` is deprecated. The
-[iron notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
-what a given density does to a balance.
 
 ### 5. Read the results
 
