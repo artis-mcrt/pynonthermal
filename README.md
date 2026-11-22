@@ -15,7 +15,7 @@ Given a set of ions with number densities and an energy deposition rate, pynonth
 
 - the **degradation spectrum** y(E) of the non-thermal electron population;
 - the **fraction of the deposited energy** that goes to heating, ionisation, and excitation, per channel and per ion;
-- the **non-thermal ionisation rate coefficients** of each ion and the **excitation rate coefficients** of bound-bound transitions, for non-LTE plasma models.
+- the **non-thermal ionisation rate coefficients** of each ion and the **excitation rate coefficients** of bound-bound transitions, for plasma models that are not in local thermodynamic equilibrium (non-LTE).
 
 These quantities are important in models of the late-time spectra and light curves of Type Ia and core-collapse supernovae, where non-thermal ionisation can dominate over photoionisation. The solver follows the method of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (see [Method background](#method-background) for details and further references). It includes the atomic data that it needs: ionisation cross sections for a wide range of ions, and level and transition data for bound-bound excitation.
 
@@ -99,12 +99,13 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
   Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
   use. The default `emax_ev` is 16 keV. The built-in channels of Fe I to Fe XIV hold only their n=3 and
-  n=4 shells, so add an inner shell of iron with `add_ionisation_channel()` if it matters. Lower `emax_ev` to 3000 eV
+  n=4 shells. If the inner shells of iron are important, add them with `add_ionisation_channel()`. Lower `emax_ev` to 3000 eV
   to match [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract). `emin_ev` also sets the highest free electron density that the
   solver accepts, because the Coulomb logarithm of the loss function must stay positive at the bottom
   of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
-- `npts`: the number of energy grid points (default `4096`). More points cost memory and time; check
-  `get_frac_sum()`.
+- `npts`: the number of energy grid points (default `4096`). More points cost memory and time. To check
+  `npts`, compare the fractions with those of a finer grid. The sum of the fractions (`get_frac_sum()`)
+  can be near one on a grid that is too coarse, because the sum cancels most of the error of the grid.
 - `verbose`: print the setup, each added ionisation channel, and a per-ion, per-shell breakdown.
 - `use_ar1985`: use the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) ionisation cross sections
   (see [Cross-section datasets](#cross-section-datasets)).
@@ -198,7 +199,7 @@ Energy fractions, as shares of the deposited energy:
 sf.get_frac_heating()  # to heating of the thermal electrons
 sf.get_frac_ionisation_tot()  # to ionisation, over all ions
 sf.get_frac_excitation_tot()  # to excitation, over all ions
-sf.get_frac_sum()  # the sum; ~1.0 when the grid resolves every ionisation and excitation
+sf.get_frac_sum()  # the sum; near 1.0 also on a grid that is too coarse (see npts above)
 sf.get_frac_ionisation_ion(Z, ion_stage)  # one ion's share
 sf.get_frac_excitation_ion(Z, ion_stage)
 ```
@@ -372,7 +373,7 @@ built-in data covers He, O, and Fe. For other elements give them as `partfuncs={
 or supply a level table in `adata_polars`. The bare nucleus (`ion_stage = Z + 1`) has a partition
 function of 1. `get_saha_factor()` gives one pair's ratio coefficient by itself.
 
-The [iron ionisation balance notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example. It gives the ion fractions of iron in the core of a Type Ia supernova at 250 days, with the deposition rate from the 56Co decay, a comparison with the Saha equation, and the evolution from 150 to 400 days.
+The [iron notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) is a worked example. It gives the ion fractions of iron in the core of a Type Ia supernova at 250 days. The 56Co decay gives the deposition rate. The notebook also compares the result with the Saha equation, and it shows the change from 150 to 400 days.
 
 ## Complete example: pure-oxygen plasma
 

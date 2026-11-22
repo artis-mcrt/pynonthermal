@@ -248,8 +248,9 @@ def Psecondary(e_p: float, ionpot_ev: float, J: float, e_s: float = -1, epsilon:
 def get_J(Z: int, ion_stage: int, ionpot_ev: float) -> float:
     """Get the width parameter J [eV] of the secondary-electron distribution of one ion.
 
-    He I, Ne I, and Ar I have the values of OPB71, as KF92 applied them. Every other ion has 0.6
-    times ionpot_ev [eV]. The solver uses the same J for every shell of an ion, as ARTIS does.
+    He I, Ne I, and Ar I have the values of OPB71, as KF92 applied them. The solver uses that value for
+    every shell of these three ions, as ARTIS does. Every other ion has 0.6 times the ionpot_ev [eV] of
+    each channel, so its J is different for each shell.
     """
     # a charge in place of the ion stage would give the J of the wrong stage
     Z, ion_stage = _check_ion(Z, ion_stage)
