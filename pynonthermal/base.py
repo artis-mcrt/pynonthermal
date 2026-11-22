@@ -183,11 +183,11 @@ def electronlossfunction(energy_ev: float, n_e_cgs: float) -> float:
     omegap = math.sqrt(4 * math.pi * n_e_cgs * QE**2 / ME)
     zetae = H * omegap / 2 / math.pi
 
-    # KF92 give separate Coulomb logarithms above and below 14 eV and the two do not
-    # meet there: the branch below is lower by ln(hbar * v / (exp(eulergamma) * QE^2)), which is a step of
-    # about 2-3 per cent in the loss rate for the free electron densities of interest. The step is part of
-    # the published prescription (and of the ARTIS implementation this follows), so it is left in place
-    # rather than smoothed with a formula that is nobody's.
+    # KF92 give separate Coulomb logarithms above and below 14 eV, and the two do not meet there. At 14 eV the
+    # branch below is lower by ln(exp(eulergamma) * QE^2 / (hbar * v)), which is about 0.56. That is a step of
+    # about 2.6 to 3.6 per cent in the loss rate for free electron densities from 1e5 to 1e10 cm^-3. The step is
+    # part of the published prescription and of the ARTIS implementation that this code follows. So the code
+    # keeps the step, and it does not smooth the step with a formula that no publication gives.
     if energy_ev > 14:
         coulomblog_arg = 2 * energy / zetae
     else:

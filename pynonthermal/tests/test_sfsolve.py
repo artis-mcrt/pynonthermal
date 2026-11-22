@@ -1,4 +1,10 @@
-"""Tests of the Spencer-Fano solution and of its analysis."""
+"""Tests of the Spencer-Fano solution and of its analysis.
+
+The comments cite these publications by their labels:
+
+- A80: Axelrod 1980, PhD thesis, University of California, Santa Cruz, ADS 1980PhDT.........1A
+- L67: Lotz 1967, Zeitschrift fuer Physik, 206, 205-211, doi:10.1007/BF01325928
+"""
 
 import dataclasses
 import math
@@ -17,7 +23,7 @@ outputfolder = Path(__file__).absolute().parent / "output"
 
 
 def test_lotz_heavy_element() -> None:
-    # elements heavier than Ni (Z>28) use the Axelrod 1980/Lotz 1967 cross section approximation
+    # elements heavier than Ni (Z>28) use the A80/L67 cross section approximation
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400, verbose=True) as sf:
         with pytest.warns(pynonthermal.LotzApproximationWarning, match="Z=56 ion_stage 2"):
             sf.add_ionisation(56, 2, n_ion=1.0)
@@ -255,8 +261,12 @@ def test_iron() -> None:
 
         frac_sum = frac_excitation_tot + frac_ionisation_tot + frac_heating
         assert math.isclose(frac_sum, 1.0, abs_tol=0.005)
-        assert math.isclose(frac_excitation_tot, 0.0204, abs_tol=0.05)
-        assert math.isclose(frac_ionisation_tot, 0.1391, abs_tol=0.05)
+        # relative tolerances, because an absolute tolerance of 0.05 accepted an excitation fraction of zero. A
+        # run with maxnlevelslower=2 kept 291 of the 630 transitions and passed. The values are those of this
+        # grid. The older references 0.0204 and 0.1391 came from the test of 2024. The code of 2025-03-31 already
+        # gave 0.0223 and 0.1744 at npts=4096, and the code from then to now gives the same values.
+        assert math.isclose(frac_excitation_tot, 0.02182, rel_tol=0.01)
+        assert math.isclose(frac_ionisation_tot, 0.1709, rel_tol=0.01)
 
         assert math.isclose(sf.get_ionisation_ratecoeff(26, 2), 4.44e-01, rel_tol=0.05)
         assert math.isclose(sf.get_ionisation_ratecoeff(26, 3), 3.70e-01, rel_tol=0.05)

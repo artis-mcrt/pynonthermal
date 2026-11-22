@@ -538,7 +538,7 @@ def test_heating_only_approximation_with_balance() -> None:
 
 
 def test_zero_population_stage_has_a_rate_coefficient() -> None:
-    # a stage that the balance leaves empty still has a positive ionisation rate coefficient
+    # a stage with zero population still has a positive ionisation rate coefficient
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.add_element(8, ion_densities={1: 1e10, 2: 1e8, 3: 0.0, 4: 0.0})
         # a zero-density stage gets no channel from add_element(), so add the channels of both
@@ -928,13 +928,24 @@ def test_add_element_is_atomic() -> None:
         assert np.array_equal(sf.sfmatrix, matrix_before)
         assert sf.get_n_e() == n_e_before
 
-        # a Fixed element whose second stage has a shell below emin_ev fails after the first stage
+        # a fixed element whose lowest stage has a shell below emin_ev. add_element() sorts the stages, so
+        # Fe I fails first, also when the caller gives it last.
         with pynonthermal.SpencerFanoSolver(emin_ev=12.0, emax_ev=3000, npts=300) as sf_emin:
             with pytest.raises(ValueError, match="below emin_ev"):
                 sf_emin.add_element(26, 1e8, ion_fractions={2: 0.5, 1: 0.5})
             assert not sf_emin.ionpopdict
             assert not sf_emin._ionisation_channels
             assert not sf_emin.sfmatrix.any()
+
+        # a fixed element whose higher stage fails after the lower stage is built. The table has Lotz rows for
+        # Z=104 ion_stage 14 but no row for ion_stage 15, because the NIST data has no potential for it. A
+        # version that stored each stage before it built the next one left the lower stage in the solver.
+        with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf_high:
+            with pytest.raises(ValueError, match="No ionisation cross-section data for Z=104 ion_stage 15"):
+                sf_high.add_element(104, 1e8, ion_fractions={14: 0.5, 15: 0.5})
+            assert not sf_high.ionpopdict
+            assert not sf_high._ionisation_channels
+            assert not sf_high.sfmatrix.any()
 
         # the repeated call with a usable model succeeds
         with pytest.warns(pynonthermal.LotzApproximationWarning, match="Z=56"):
