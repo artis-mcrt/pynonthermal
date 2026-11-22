@@ -3,6 +3,12 @@
 Deliberately not marked as benchmarks: these exercise error paths and cross section edge cases
 rather than solver performance, so instrumenting them would only lengthen the CodSpeed run and
 add noise to the tracked benchmark set. Performance-relevant cases live in test_sfsolve.py.
+
+The comments cite these publications by their labels:
+
+- KF92: Kozma & Fransson 1992, ApJ, 390, 602-621, doi:10.1086/171311
+- LHD12: Li, Hillier & Dessart 2012, MNRAS, 426, 1671-1686, doi:10.1111/j.1365-2966.2012.21198.x
+- OPB71: Opal, Peterson & Beaty 1971, J. Chem. Phys., 55, 4100-4106, doi:10.1063/1.1676707
 """
 
 import itertools
@@ -32,7 +38,7 @@ def test_grid_validation() -> None:
 
 
 def test_ionpot_below_emin_rejected() -> None:
-    # Fe I has 7.9 and 9.0 eV shells. Kozma & Fransson 1992 require all thresholds above the
+    # Fe I has 7.9 and 9.0 eV shells. KF92 require all thresholds above the
     # low-energy cutoff, so a grid starting above them would not conserve energy.
     with (
         pynonthermal.SpencerFanoSolver(emin_ev=12.0, emax_ev=3000, npts=200) as sf,
@@ -204,7 +210,7 @@ def test_n_e_cache_invalidated_by_later_adds() -> None:
 
 
 def test_N_e_empty_second_integral_domain() -> None:
-    # Kozma & Fransson eq. 6 has an integral over [2E + I, E_max]. When 2E + I lies beyond the
+    # KF92 eq. 6 has an integral over [2E + I, E_max]. When 2E + I lies beyond the
     # top of the grid that domain is empty, but get_energyindex_lteq clamps to the last bin,
     # which used to add one spurious term. Na XI's single shell (I = 1465 eV) on a 1400-3000 eV
     # grid makes the domain empty for every E > 767.5 eV.
@@ -361,11 +367,12 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
 
 
 def test_quadrature_resolution_constants_are_adequate() -> None:
-    # NPTS_SUB_E0_INTEGRAL and NPTS_EPSILON_SUBGRID carry accuracy claims in their comments. Pin them,
-    # so that lowering either to buy speed cannot silently degrade frac_heating. emin_ev=7.9 is the
-    # demanding case, where the integral over [0, E_0] is about a third of the heating.
-    def frac_heating(monkeypatch: pytest.MonkeyPatch, npts_sub_e0: int, emin_ev: float, Z: int) -> float:
-        monkeypatch.setattr(spencerfano, "NPTS_SUB_E0_INTEGRAL", npts_sub_e0)
+    # NPTS_SUB_E0_INTEGRAL and the constants of the sub-grids of calculate_N_e() (NPTS_SUBGRID_MIN,
+    # NPTS_SUBGRID_MAX, NPTS_SUBGRID_PER_J, and NCELLS_SECOND_INTEGRAL_SUBGRID) carry accuracy claims in their
+    # comments. The test compares frac_heating at the configured values with frac_heating at much finer values.
+    # Then a lower value that buys speed cannot silently degrade frac_heating. emin_ev=7.9 is the demanding
+    # case, where the integral over [0, E_0] is about a third of the heating.
+    def frac_heating(emin_ev: float, Z: int) -> float:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=2000) as sf:
             sf.add_ionisation(Z, 1, n_ion=0.99)
             sf.add_ionisation(Z, 2, n_ion=0.01)
@@ -374,12 +381,15 @@ def test_quadrature_resolution_constants_are_adequate() -> None:
 
     # emin_ev has to cover the large values add_ionisation's own error message steers users towards
     # ("set emin_ev <= {lowest ionpot} eV"), not just the default grid where this term is negligible
-    # read the constant before the monkeypatch, which changes it to 129 for the converged value
-    npts_configured = spencerfano.NPTS_SUB_E0_INTEGRAL
     for emin_ev, Z in ((7.9, 26), (15.7, 18), (24.5, 2)):
+        asconfigured = frac_heating(emin_ev, Z)
         with pytest.MonkeyPatch.context() as mp:
-            converged = frac_heating(mp, 129, emin_ev, Z)
-            asconfigured = frac_heating(mp, npts_configured, emin_ev, Z)
+            mp.setattr(spencerfano, "NPTS_SUB_E0_INTEGRAL", 129)
+            mp.setattr(spencerfano, "NPTS_SUBGRID_MIN", 257)
+            mp.setattr(spencerfano, "NPTS_SUBGRID_MAX", 4097)
+            mp.setattr(spencerfano, "NPTS_SUBGRID_PER_J", 128)
+            mp.setattr(spencerfano, "NCELLS_SECOND_INTEGRAL_SUBGRID", 8)
+            converged = frac_heating(emin_ev, Z)
         assert math.isclose(asconfigured, converged, rel_tol=1e-3), (
             f"emin_ev={emin_ev}: the configured resolution gives frac_heating={asconfigured}"
             f" against a converged {converged}"
@@ -422,7 +432,7 @@ def test_excitation_xs_zero_above_grid() -> None:
     # highest transition energy
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=5.0, npts=300) as sf:
         sf.set_temperature(3000)
-        # the collision-strength cross sections of Li et al. (2012), which no other test reaches
+        # the collision-strength cross sections of LHD12, which no other test reaches
         sf.set_atomic_data(use_collstrengths=True)
         sf.add_ionisation(26, 3, n_ion=0.7)
         sf.add_ion_excitation(26, 3, n_ion=0.7)
@@ -434,7 +444,7 @@ def test_excitation_xs_zero_above_grid() -> None:
 
 def test_ionisation_ratecoeff_matches_eff_ionpot_form() -> None:
     # the rate coefficient is the direct integral of y(E) sigma(E) dE over the shells. For a
-    # populated ion that equals Kozma & Fransson 1992 equation 13 with the effective potential.
+    # populated ion that equals KF92 equation 13 with the effective potential.
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400) as sf:
         sf.add_ionisation(8, 1, n_ion=9e8)
         sf.add_ionisation(8, 2, n_ion=1e8)
@@ -521,7 +531,7 @@ def test_conservation_warning_on_coarse_grid() -> None:
 
 
 def test_opal_J_applies_to_every_shell_of_its_ion() -> None:
-    # The measured secondary-electron widths of Opal et al. 1971 are whole-atom values dominated by
+    # The measured secondary-electron widths of OPB71 are whole-atom values dominated by
     # valence-shell ionisation, but ARTIS applies each to every shell of its ion and pynonthermal
     # deliberately matches that, so Ne I's 48.5 eV 2s shell gets the same J as its 21.6 eV 2p shell.
     assert pynonthermal.collion.get_J(2, 1, 24.6) == 15.8  # He I, its only shell
@@ -709,7 +719,7 @@ def test_ionisation_fill_matches_masked_reference() -> None:
     for emin, emax, npts, Z, ion_stage in [
         (1.0, 300.0, 193, 8, 2),
         (7.9, 16000.0, 217, 26, 2),  # emin well above 1 eV and a heavy ion with many shells
-        (1.0, 3000.0, 149, 2, 1),  # helium: J takes the Opal et al. 1971 special-case value
+        (1.0, 3000.0, 149, 2, 1),  # helium: J takes the OPB71 special-case value
         (1.0, 3000.0, 300, 56, 2),  # Lotz shells only, some of them above the top of the grid
     ]:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin, emax_ev=emax, npts=npts) as sf:
