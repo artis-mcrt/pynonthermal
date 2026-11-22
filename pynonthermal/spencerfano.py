@@ -2781,22 +2781,25 @@ class SpencerFanoSolver:
             else:
                 self.balance_iterations = 0
                 self._solve_matrix()
+
+            # the output is in the guard too. An interrupt of the output, for example a KeyboardInterrupt or a
+            # BrokenPipeError, then keeps the last solution.
+            if self.verbose:
+                n_e = self.get_n_e()
+                n_ion_tot = self.get_n_ion_tot()
+                x_e = n_e / n_ion_tot if n_ion_tot > 0.0 else math.inf
+                print(f" n_ion_tot: {n_ion_tot:.2e} [/cm3]        (total ion density)")
+                print(f"       n_e: {n_e:.2e} [/cm3]        (free electron density)")
+                print(f"       x_e: {x_e:.2e}               (electrons per nucleus)")
+                print(f"deposition: {self.deposition_ev_per_s_per_cm3:7.2f}  [eV/s/cm3]")
+
+            # the last statement of the guard, so that _solved is False when the restore runs
+            self._solved = True
         except BaseException:
             # also a KeyboardInterrupt, for example from an interrupt of the kernel in Jupyter. Else the last
             # solution was lost, and the add methods were open for the solved plasma.
             self._restore_solve_state(state_before)
             raise
-
-        if self.verbose:
-            n_e = self.get_n_e()
-            n_ion_tot = self.get_n_ion_tot()
-            x_e = n_e / n_ion_tot if n_ion_tot > 0.0 else math.inf
-            print(f" n_ion_tot: {n_ion_tot:.2e} [/cm3]        (total ion density)")
-            print(f"       n_e: {n_e:.2e} [/cm3]        (free electron density)")
-            print(f"       x_e: {x_e:.2e}               (electrons per nucleus)")
-            print(f"deposition: {self.deposition_ev_per_s_per_cm3:7.2f}  [eV/s/cm3]")
-
-        self._solved = True
 
     def _get_solve_state(self) -> dict[str, t.Any]:
         # the state that solve() changes, so that a solve() that raises can return to it. The analysis

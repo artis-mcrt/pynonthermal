@@ -1754,6 +1754,37 @@ def test_interrupted_solve_keeps_the_last_solution() -> None:
         sf.add_ionisation(1, 1, 1e5)
 
 
+def test_interrupted_verbose_output_keeps_the_last_solution() -> None:
+    # the verbose output of solve() came after the guard. An interrupt of the output, for example a
+    # KeyboardInterrupt or a BrokenPipeError, left the solver with no solution and no restore.
+    sf = _balanced_oxygen()
+    sf.solve(1e1)
+    frac_heating = sf.get_frac_heating()
+    populations = dict(sf.ionpopdict)
+
+    def print_that_fails(*args: object, **_kwargs: object) -> None:
+        # only the summary at the end of solve() fails, and not an earlier output of the balance
+        if args and str(args[0]).startswith(" n_ion_tot:"):
+            raise BrokenPipeError
+
+    sf.verbose = True
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(spencerfano, "print", print_that_fails, raising=False)
+        with pytest.raises(BrokenPipeError):
+            sf.solve(1e2)
+    assert sf.get_frac_heating() == frac_heating
+    assert sf.ionpopdict == populations
+    with pytest.raises(RuntimeError, match="after solving"):
+        sf.add_ionisation(1, 1, 1e5)
+
+    sf.verbose = False
+    sf.solve(1e2)
+    reference = _balanced_oxygen()
+    reference.solve(1e2)
+    for ion_stage, fraction in reference.get_ion_fractions(8).items():
+        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+
+
 def test_copy_with_a_read_only_matrix_can_solve_and_add() -> None:
     # joblib gives a large array of a pickled object to a worker as a read-only memory map. The solver writes
     # to its matrix in place, so such a copy could not solve a balanced element or add an ion.
