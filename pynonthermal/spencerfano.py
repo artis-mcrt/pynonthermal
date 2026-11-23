@@ -3285,18 +3285,21 @@ class SpencerFanoSolver:
         N_e = 0.0
         e_min = float(self.engrid[0])
         e_max = float(self.engrid[-1])
+        e_mid_min = float(self.engrid_mid[0])
         deltaen = float(self.deltaen)
         lastindex = len(self.engrid) - 2
 
         def y_times_xs(en_ev: float, xsvec: npt.NDArray[np.float64]) -> float:
             # y and a cross section at an energy of the grid range, both by linear interpolation
-            # between the grid points, or zero outside the grid. The interpolation is written out
+            # between the middle energies of the grid intervals (engrid_mid), where the solver holds
+            # them, or zero outside the grid. Below the first middle energy, the values of the first
+            # interval apply. The interpolation is written out
             # rather than left to np.interp because this runs once per transition per quadrature
             # node, where the call overhead of np.interp costs more than the arithmetic; the grid
             # is uniform, so the index and weight are exact.
             if not e_min <= en_ev <= e_max:
                 return 0.0
-            pos = (en_ev - e_min) / deltaen
+            pos = max((en_ev - e_mid_min) / deltaen, 0.0)
             i = min(int(pos), lastindex)
             weight = pos - i
             return float(
@@ -3366,10 +3369,11 @@ class SpencerFanoSolver:
                 # backwards.
                 en_lower2 = 2 * energy_ev + ionpot_ev
                 if en_lower2 < e_max:
-                    startindex = self.get_energyindex_gteq(en_ev=en_lower2)
+                    # the solution and the cross sections of the grid are at engrid_mid
+                    startindex = pynonthermal.get_energyindex_gteq(en_ev=en_lower2, engrid=self.engrid_mid)
                     # cover whole bins of the grid with the sub-grid, so that it meets the grid part exactly
                     stopindex = min(startindex + NCELLS_SECOND_INTEGRAL_SUBGRID, len(self.engrid) - 1)
-                    en_upper_low = float(self.engrid[stopindex])
+                    en_upper_low = float(self.engrid_mid[stopindex])
                     arr_e_p_low = np.linspace(
                         en_lower2, en_upper_low, num=self._npts_subgrid(en_upper_low - en_lower2, J), dtype=np.float64
                     )
@@ -3385,7 +3389,7 @@ class SpencerFanoSolver:
                     # cross section from the on-grid array of the channel, with no new evaluation
                     if stopindex < len(self.engrid) - 1:
                         N_e_ion += self._integrate_shell_secondaries(
-                            arr_e_p=self.engrid[stopindex:],
+                            arr_e_p=self.engrid_mid[stopindex:],
                             arr_y=self.yvec[stopindex:],
                             arr_xs=channel.xs_grid[stopindex:],
                             e_s=energy_ev,
@@ -3408,8 +3412,10 @@ class SpencerFanoSolver:
         # almost zero, holds only the losses to the free electrons. At a low free electron density that
         # y is much larger than the y above it, and a linear interpolation of y spread it over the bin.
         # The heating of N(E) was then 2.6 times too large at x_e = 1e-6.
-        xs_interp = np.interp(arr_en_ev, self.engrid, xs_grid, left=0.0, right=0.0)
-        y_xs_interp = np.interp(arr_en_ev, self.engrid, self.yvec * xs_grid, left=0.0, right=0.0)
+        # the solution and the cross section of the grid are at engrid_mid. Below the first of these energies,
+        # the values of the first interval apply.
+        xs_interp = np.interp(arr_en_ev, self.engrid_mid, xs_grid, right=0.0)
+        y_xs_interp = np.interp(arr_en_ev, self.engrid_mid, self.yvec * xs_grid, right=0.0)
         return np.divide(y_xs_interp, xs_interp, out=np.zeros_like(xs_interp), where=xs_interp > 0.0)
 
     def _band_energy_below_e0(self, xs_vec: npt.NDArray[np.float64], epsilon_ev: float) -> float:
@@ -3782,7 +3788,8 @@ class SpencerFanoSolver:
     def get_n_e_nt(self) -> float:
         """Get the number density of non-thermal electrons in cm^-3."""
         self._require_solved()
-        arr_velocity = CLIGHT * np.sqrt(get_betasq(self.engrid))  # cm/s
+        # yvec[j] is the solution at the middle of grid interval j
+        arr_velocity = CLIGHT * np.sqrt(get_betasq(self.engrid_mid))  # cm/s
 
         return float(np.sum(self.yvec / arr_velocity) * self.deltaen)
 
@@ -3966,7 +3973,7 @@ class SpencerFanoSolver:
         ).sort("Z", "ion_stage")
 
     def get_d_etaheating_by_d_en_vec(self) -> npt.NDArray[np.float64]:
-        """Get d(eta_heating)/dE [eV^-1] at each energy of engrid.
+        """Get d(eta_heating)/dE [eV^-1] at each energy of engrid_mid.
 
         This is the share of the deposited energy that goes to heating per unit electron energy,
         L(E) y(E) divided by the deposition rate density. The array excludes the energy that
@@ -3976,11 +3983,11 @@ class SpencerFanoSolver:
         self._require_solved()
         # an array, as the two other get_d_eta*_by_d_en_vec() methods give. A list repeats under * 2.
         n_e = self.get_n_e()
-        lossvec = _get_lossvec(self.engrid, n_e)
+        lossvec = _get_lossvec(self.engrid_mid, n_e)
         return lossvec * self.yvec / self.deposition_ev_per_s_per_cm3
 
     def get_d_etaexcitation_by_d_en_vec(self) -> npt.NDArray[np.float64]:
-        """Get d(eta_excitation)/dE [eV^-1] at each energy of engrid, summed over every ion.
+        """Get d(eta_excitation)/dE [eV^-1] at each energy of engrid_mid, summed over every ion.
 
         This is the share of the deposited energy that goes to excitation per unit electron energy.
         The sum of the array times deltaen is get_frac_excitation_tot(). plot_channels() draws E
@@ -3998,7 +4005,7 @@ class SpencerFanoSolver:
         return self.yvec * part_integrand
 
     def get_d_etaion_by_d_en_vec(self) -> npt.NDArray[np.float64]:
-        """Get d(eta_ionisation)/dE [eV^-1] at each energy of engrid, summed over every ion.
+        """Get d(eta_ionisation)/dE [eV^-1] at each energy of engrid_mid, summed over every ion.
 
         This is the share of the deposited energy that goes to ionisation per unit electron energy.
         Only the energy that the ion keeps counts, so the energy of an Auger electron is not part of
@@ -4058,13 +4065,14 @@ class SpencerFanoSolver:
             ax = axis
 
         if en_y_on_d_en:
-            arr_y = np.log10(self.yvec * self.engrid)
+            arr_y = np.log10(self.yvec * self.engrid_mid)
             ax.set_ylabel(r"log(E y(E))", fontsize=fs)
         else:
             arr_y = np.log10(self.yvec)
             ax.set_ylabel(r"log y [y (e$^-$ / cm$^2$ / s / eV)]", fontsize=fs)
 
-        ax.plot(self.engrid, arr_y, marker="None", lw=1.5, color="black")
+        # yvec[j] is the solution at the middle of grid interval j
+        ax.plot(self.engrid_mid, arr_y, marker="None", lw=1.5, color="black")
         # axes[0].plot(engrid, np.log10(yvec), marker="None", lw=1.5, color='black')
         # axes[0].set_ylabel(r'log y(E) [s$^{-1}$ cm$^{-2}$ eV$^{-1}$]', fontsize=fs)
         # axes[0].set_ylim(bottom=15.5, top=19.)
@@ -4136,13 +4144,14 @@ class SpencerFanoSolver:
         # E_0), but it has no per-energy curve to draw here.
         engrid_low = np.arange(0.0, E_0, E_0 / 20.0, dtype=float)
         npts_low = len(engrid_low)
-        engridfull = np.append(engrid_low, self.engrid)
+        # the three arrays are at the middle of each grid interval
+        engridfull = np.append(engrid_low, self.engrid_mid)
 
         detaymax = max(
             [
-                float(np.max(d_etaion_by_d_en_vec * self.engrid)),
-                float(np.max(d_etaexc_by_d_en_vec * self.engrid)),
-                float(np.max(d_etaheat_by_d_en_vec * self.engrid)),
+                float(np.max(d_etaion_by_d_en_vec * self.engrid_mid)),
+                float(np.max(d_etaexc_by_d_en_vec * self.engrid_mid)),
+                float(np.max(d_etaheat_by_d_en_vec * self.engrid_mid)),
             ]
         )
         ax.plot(
@@ -4167,8 +4176,8 @@ class SpencerFanoSolver:
             )
 
         ax.plot(
-            self.engrid,
-            (d_etaheat_by_d_en_vec * self.engrid) / detaymax,
+            self.engrid_mid,
+            (d_etaheat_by_d_en_vec * self.engrid_mid) / detaymax,
             marker="None",
             lw=1.5,
             color="C2",

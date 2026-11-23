@@ -335,6 +335,7 @@ def test_inputs_are_at_the_middle_of_each_grid_interval() -> None:
         lossvec = pynonthermal.base._get_lossvec(sf.engrid_mid, sf.get_n_e())
         heating_on_grid = sf.deltaen * float(np.dot(lossvec, sf.yvec)) / sf.deposition_ev_per_s_per_cm3
         assert 0.0 < heating_on_grid < sf.get_frac_heating()
+        assert math.isclose(float(np.sum(sf.get_d_etaheating_by_d_en_vec()) * sf.deltaen), heating_on_grid)
         assert abs(sf.get_frac_sum() - 1.0) < 1e-12
 
 

@@ -215,8 +215,10 @@ def test_N_e_empty_second_integral_domain() -> None:
     # KF92 eq. 6 has an integral over [2E + I, E_max]. When 2E + I lies beyond the
     # top of the grid that domain is empty, but get_energyindex_lteq clamps to the last bin,
     # which used to add one spurious term. Na XI's single shell (I = 1465 eV) on a 1400-3000 eV
-    # grid makes the domain empty for every E > 767.5 eV.
-    with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=400) as sf:
+    # grid makes the domain empty for every E > 767.5 eV. The spurious term is in proportion to the square
+    # of the grid spacing. With 150 points it is 2.4e-3 of N(E), which is 20 times the quadrature error of
+    # the sub-grid of the solver.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=150) as sf:
         sf.add_ionisation(11, 10, n_ion=1e8)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
@@ -236,17 +238,18 @@ def test_N_e_empty_second_integral_domain() -> None:
         enlambda = min(float(sf.engrid[-1]) - energy_ev, energy_ev + ionpot_ev)
         arr_epsilon: npt.NDArray[np.float64] = np.linspace(ionpot_ev, enlambda, num=20001)
         arr_e_p: npt.NDArray[np.float64] = energy_ev + arr_epsilon
-        arr_y: npt.NDArray[np.float64] = np.interp(arr_e_p, sf.engrid, sf.yvec, left=0.0, right=0.0)
+        arr_y: npt.NDArray[np.float64] = np.interp(arr_e_p, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
         arr_xs = pynonthermal.collion.get_arxs_array_shell(arr_e_p, shell)
         # the closed form of Psecondary, written out so that the reference does not depend on the
         # implementation it is checking
         arr_p = 1.0 / J / np.arctan((arr_e_p - ionpot_ev) / 2 / J) / (1 + ((arr_epsilon - ionpot_ev) / J) ** 2)
         expected = 1e8 * float(np.trapezoid(arr_y * arr_xs * arr_p, arr_epsilon))
 
-        # the tolerance covers the solver's own coarser sub-grids for these integrals, and is tight
-        # enough to notice the empty-domain guard going away (asserted just below)
+        # the tolerance covers the solver's own coarser sub-grids for these integrals (up to 2e-4 for
+        # this integral, which crosses the source region), and is tight enough to notice the empty-domain
+        # guard going away (asserted just below)
         got = sf.calculate_N_e(energy_ev)
-        assert math.isclose(got, expected, rel_tol=1e-4)
+        assert math.isclose(got, expected, rel_tol=5e-4)
 
         # reproduce the term the old clamping added, and check the result would no longer pass
         clamped_index = sf.get_energyindex_lteq(2 * energy_ev + ionpot_ev)
@@ -258,8 +261,8 @@ def test_N_e_empty_second_integral_domain() -> None:
                 e_p=float(sf.engrid[clamped_index]), e_s=energy_ev, ionpot_ev=ionpot_ev, J=J
             )
         )
-        assert spurious > 0.0
-        assert not math.isclose(got + spurious, expected, rel_tol=1e-4)
+        assert spurious > 2e-3 * expected
+        assert not math.isclose(got + spurious, expected, rel_tol=5e-4)
 
 
 def test_N_e_epsilon_integral_not_keyed_to_the_grid() -> None:
@@ -350,7 +353,7 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
                 narrow_domain_seen |= (enlambda - ionpot_ev) < sf.deltaen
                 arr_epsilon = np.linspace(ionpot_ev, enlambda, num=20001)
                 arr_e_p = arr_epsilon + energy_ev
-                arr_y = np.interp(arr_e_p, sf.engrid, sf.yvec, left=0.0, right=0.0)
+                arr_y = np.interp(arr_e_p, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
                 arr_xs = pynonthermal.collion.get_arxs_array_shell(arr_e_p, shell)
                 arr_p = psecondary(arr_e_p, arr_epsilon - ionpot_ev, ionpot_ev, J)
                 expected += float(np.trapezoid(arr_y * arr_xs * arr_p, arr_epsilon))
@@ -358,7 +361,7 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
             en_lower2 = 2 * energy_ev + ionpot_ev
             if en_lower2 < emax:
                 arr_e_p2 = np.linspace(en_lower2, emax, num=40001)
-                arr_y2 = np.interp(arr_e_p2, sf.engrid, sf.yvec, left=0.0, right=0.0)
+                arr_y2 = np.interp(arr_e_p2, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
                 arr_xs2 = pynonthermal.collion.get_arxs_array_shell(arr_e_p2, shell)
                 arr_p2 = psecondary(arr_e_p2, energy_ev, ionpot_ev, J)
                 expected += float(np.trapezoid(arr_y2 * arr_xs2 * arr_p2, arr_e_p2))
@@ -587,11 +590,12 @@ def test_n_e_nt_relativistic() -> None:
 
         # the classical speed exceeds the relativistic one, so it gives a lower density. Comparing
         # against it pins the physics without restating the implementation.
-        arr_velocity_classical = np.sqrt(2 * sf.engrid * pynonthermal.constants.EV / pynonthermal.constants.ME)
+        # yvec[j] is the solution at the middle of grid interval j
+        arr_velocity_classical = np.sqrt(2 * sf.engrid_mid * pynonthermal.constants.EV / pynonthermal.constants.ME)
         assert n_e_nt > float(np.sum(sf.yvec / arr_velocity_classical) * sf.deltaen)
 
         # and no electron may travel faster than light, which the classical form allows above 511 keV
-        assert (pynonthermal.base.get_betasq(sf.engrid) < 1.0).all()
+        assert (pynonthermal.base.get_betasq(sf.engrid_mid) < 1.0).all()
         assert n_e_nt > float(np.sum(sf.yvec) * sf.deltaen / pynonthermal.constants.CLIGHT)
 
 

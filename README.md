@@ -106,6 +106,8 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time. To check
   `npts`, compare the fractions with those of a finer grid. The sum of the fractions (`get_frac_sum()`)
   is one to rounding on each grid, also on a grid that is too coarse, so it does not show convergence.
+  Each grid point `sf.engrid[j]` starts a grid interval of the width `sf.deltaen`. The solver takes the
+  loss function and each cross section of the interval at its middle, `sf.engrid_mid[j]`.
 - `verbose`: print the setup, each added ionisation channel, and a per-ion, per-shell breakdown.
 - `use_ar1985`: use the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) ionisation cross sections
   (see [Cross-section datasets](#cross-section-datasets)).
@@ -231,12 +233,13 @@ For the excitations of `add_element(excitation=True)` and of `add_ion_excitation
 
 Each value of `excitationlists[(Z, ion_stage)]` is a `pynonthermal.ExcitationTransition`, which holds
 the lower level population `levelnumberdensity` in cm^-3, the cross sections `xs_vec` in cm^2 on
-`sf.engrid`, and the transition energy `epsilon_trans_ev` in eV.
+`sf.engrid_mid`, and the transition energy `epsilon_trans_ev` in eV.
 
-The solution itself is `sf.yvec` over `sf.engrid`, both read-only arrays. With `verbose=True` the
+The solution itself is `sf.yvec` over `sf.engrid_mid`, both read-only arrays: `sf.yvec[j]` is the solution
+at the middle of the grid interval that starts at `sf.engrid[j]`. With `verbose=True` the
 solver prints the per-ion and per-shell breakdown as it analyses the solution.
 
-For a plot of your own, three arrays on `sf.engrid` give the share of the deposited energy per unit
+For a plot of your own, three arrays on `sf.engrid_mid` give the share of the deposited energy per unit
 electron energy, in eV^-1:
 
 ```python
@@ -457,8 +460,8 @@ The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solve
 Give a cross section as a function of an array of energies in eV that returns cross sections in cm^2
 (the type `pynonthermal.CrossSectionFunc`). The solver calls it on its own grid, and between the grid
 points where it needs to, so the plasma does not depend on the energy grid of the solution. The solver
-also accepts an array at every energy of `sf.engrid`. Then the plasma is tied to that grid, and the
-solver can only interpolate between the points.
+also accepts an array at every energy of `sf.engrid_mid`, the middle of each grid interval. Then the
+plasma is tied to that grid, and the solver can only interpolate between the points.
 
 A custom cross section follows the same path through the solver as a built-in one, so the matrix, the
 energy fractions, and the rate coefficients stay consistent.
@@ -683,7 +686,7 @@ with pynonthermal.SpencerFanoSolver() as sf:
     sf.add_element(Z=38, n_elem=1.0e6, recomb_ratecoeffs=recomb)
     # an excitation cross section of a level of Sr I at 20 eV, which is 14.3 eV above the ionisation
     # limit. Unlike a direct-ionisation cross section, it is not zero at the threshold.
-    excitation_xs = np.where(sf.engrid >= 20.0, 1.0e-16 * 20.0 / sf.engrid, 0.0)
+    excitation_xs = np.where(sf.engrid_mid >= 20.0, 1.0e-16 * 20.0 / sf.engrid_mid, 0.0)
     # the Auger electron gets the 14.3 eV, and the ion keeps the 5.7 eV ionisation potential
     sf.add_ionisation_channel(
         Z=38,
