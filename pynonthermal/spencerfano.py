@@ -707,7 +707,9 @@ class SpencerFanoSolver:
             for templates in element.excitation_templates.values():
                 arrays.extend(template.xs_vec for template in templates.values())
         for fill in self._channel_fills.values():
-            arrays.extend(value for value in dataclasses.astuple(fill) if isinstance(value, np.ndarray))
+            # the attributes themselves, because dataclasses.astuple() gives copies of the arrays
+            fill_values = (getattr(fill, field.name) for field in dataclasses.fields(fill))
+            arrays.extend(value for value in fill_values if isinstance(value, np.ndarray))
         for array in arrays:
             array.flags.writeable = False
 
