@@ -1531,9 +1531,22 @@ def test_pickle_protocol_4_keeps_the_arrays_read_only() -> None:
         sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid_mid > 60.0, 1e-18, 0.0))
         sf.solve(deposition_ev_per_s_per_cm3=1e3)
         sf_copy = pickle.loads(pickle.dumps(sf, protocol=4))  # noqa: S301
-        for array in (sf_copy.engrid, sf_copy.yvec, sf_copy._ionisation_channels[(8, 2)][0].xs_grid):
+        for array in (
+            sf_copy.engrid,
+            sf_copy.engrid_mid,
+            sf_copy.yvec,
+            sf_copy._ionisation_channels[(8, 2)][0].xs_grid,
+        ):
             with pytest.raises(ValueError, match="read-only"):
                 array[0] = 0.0
+
+        # a state from a release before engrid_mid gets the attribute
+        state = sf.__getstate__()
+        del state["engrid_mid"]
+        sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
+        sf_old.__setstate__(state)
+        assert np.array_equal(sf_old.engrid_mid, sf.engrid_mid)
+        assert not sf_old.engrid_mid.flags.writeable
 
 
 def test_pickle_protocol_4_keeps_the_cached_fills_read_only() -> None:
