@@ -265,6 +265,31 @@ def test_N_e_empty_second_integral_domain() -> None:
         assert not math.isclose(got + spurious, expected, rel_tol=5e-4)
 
 
+def test_N_e_second_integral_ends_at_emax() -> None:
+    # The second integral of KF92 eq. 6 runs over [2E + I, E_max]. It becomes empty at E = (E_max - I) / 2, so
+    # N(E) is continuous there. The solution is at the middle of each grid interval, and the last of these
+    # energies is half an interval above E_max. With that energy as the end of the integral, N(E) had a step
+    # of 1.2 times the term below, which is half an interval at E_max.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=150) as sf:
+        sf.add_ionisation(11, 10, n_ion=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        channel = sf._ionisation_channels[(11, 10)][0]
+        e_max = float(sf.engrid[-1])
+        energy_empty_ev = (e_max - channel.ionpot_ev) / 2
+        half_interval_term = 1e8 * float(
+            0.5
+            * sf.deltaen
+            * sf.yvec[-1]
+            * channel.evaluate_xs(np.array([e_max]))[0]
+            * pynonthermal.collion.Psecondary_vec(
+                e_p=e_max, e_s=energy_empty_ev, ionpot_ev=channel.ionpot_ev, J=channel.J_ev
+            )
+        )
+        assert half_interval_term > 1e-4 * sf.calculate_N_e(energy_empty_ev)
+        step = sf.calculate_N_e(energy_empty_ev - 1e-7) - sf.calculate_N_e(energy_empty_ev + 1e-7)
+        assert abs(step) < 1e-3 * half_interval_term
+
+
 def test_N_e_epsilon_integral_not_keyed_to_the_grid() -> None:
     # The epsilon integral of eq. 6 spans at most emin_ev, so it is narrower than one cell of a
     # typical energy grid and needs a sub-grid of its own. Evaluating it on the solver's own grid

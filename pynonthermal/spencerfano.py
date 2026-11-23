@@ -3373,7 +3373,8 @@ class SpencerFanoSolver:
                     startindex = pynonthermal.get_energyindex_gteq(en_ev=en_lower2, engrid=self.engrid_mid)
                     # cover whole bins of the grid with the sub-grid, so that it meets the grid part exactly
                     stopindex = min(startindex + NCELLS_SECOND_INTEGRAL_SUBGRID, len(self.engrid) - 1)
-                    en_upper_low = float(self.engrid_mid[stopindex])
+                    # the integral ends at E_max, and the last energy of engrid_mid is half an interval above it
+                    en_upper_low = min(float(self.engrid_mid[stopindex]), e_max)
                     arr_e_p_low = np.linspace(
                         en_lower2, en_upper_low, num=self._npts_subgrid(en_upper_low - en_lower2, J), dtype=np.float64
                     )
@@ -3386,12 +3387,18 @@ class SpencerFanoSolver:
                         J=J,
                     )
                     # the rest is smooth on the scale of J, so y comes from the solution and the
-                    # cross section from the on-grid array of the channel, with no new evaluation
+                    # cross section from the on-grid array of the channel, with no new evaluation. The
+                    # last point is E_max, which is half-way between the last two energies of engrid_mid,
+                    # so the mean of the last two values is the linear interpolation there. With the last
+                    # energy of engrid_mid as the end, N(E) had half an interval too much, and a step at
+                    # the energy where this integral becomes empty.
                     if stopindex < len(self.engrid) - 1:
                         N_e_ion += self._integrate_shell_secondaries(
-                            arr_e_p=self.engrid_mid[stopindex:],
-                            arr_y=self.yvec[stopindex:],
-                            arr_xs=channel.xs_grid[stopindex:],
+                            arr_e_p=np.append(self.engrid_mid[stopindex:-1], e_max),
+                            arr_y=np.append(self.yvec[stopindex:-1], 0.5 * (self.yvec[-2] + self.yvec[-1])),
+                            arr_xs=np.append(
+                                channel.xs_grid[stopindex:-1], 0.5 * (channel.xs_grid[-2] + channel.xs_grid[-1])
+                            ),
                             e_s=energy_ev,
                             ionpot_ev=ionpot_ev,
                             J=J,
