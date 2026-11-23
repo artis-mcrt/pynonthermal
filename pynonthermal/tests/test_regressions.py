@@ -11,12 +11,14 @@ The comments cite these publications by their labels:
 - OPB71: Opal, Peterson & Beaty 1971, J. Chem. Phys., 55, 4100-4106, doi:10.1063/1.1676707
 """
 
+import contextlib
 import itertools
 import json
 import math
 import pickle
 import typing as t
 import warnings
+from collections.abc import Generator
 from pathlib import Path
 
 import numpy as np
@@ -1617,20 +1619,23 @@ def test_repr_gives_the_state_without_a_calculation() -> None:
     )
 
 
-def _fail_on_call(
-    function: t.Callable[..., object], failing_call: int, exception: type[BaseException]
-) -> t.Callable[..., object]:
-    # the function, but the call with the number failing_call raises the exception
+@contextlib.contextmanager
+def _fail_from_call(target: object, name: str, failing_call: int, exception: type[BaseException]) -> Generator[None]:
+    # patch the function target.name, so that each call from the call with the number failing_call raises the
+    # exception
+    function = getattr(target, name)
     calls = 0
 
     def wrapper(*args: object, **kwargs: object) -> object:
         nonlocal calls
         calls += 1
-        if calls == failing_call:
+        if calls >= failing_call:
             raise exception
         return function(*args, **kwargs)
 
-    return wrapper
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(target, name, wrapper)
+        yield
 
 
 def _balanced_oxygen() -> pynonthermal.SpencerFanoSolver:
@@ -1648,19 +1653,12 @@ def test_solve_after_an_interrupted_population_update(exception: type[BaseExcept
     reference = _balanced_oxygen()
     reference.solve(1e2)
     sf = _balanced_oxygen()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            spencerfano,
-            "_add_scaled_upper_triangle",
-            _fail_on_call(spencerfano._add_scaled_upper_triangle, failing_call, exception),
-        )
-        with pytest.raises(exception):
-            sf.solve(1e2)
+    with _fail_from_call(spencerfano, "_add_scaled_upper_triangle", failing_call, exception), pytest.raises(exception):
+        sf.solve(1e2)
     assert sf._sfmatrix_stale
     sf.solve(1e2)
     assert not sf._sfmatrix_stale
-    for ion_stage, fraction in reference.get_ion_fractions(8).items():
-        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+    assert sf.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
 
 
 def _balanced_oxygen_with_excitation() -> pynonthermal.SpencerFanoSolver:
@@ -1686,14 +1684,11 @@ def test_matrix_fill_after_an_interrupt_keeps_the_excitation_bands(next_call: st
     # bands of the balanced stages. The next solve() or the next add call starts the fill.
     reference = _balanced_oxygen_with_excitation()
     sf = _balanced_oxygen_with_excitation()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            spencerfano,
-            "_add_scaled_upper_triangle",
-            _fail_on_call(spencerfano._add_scaled_upper_triangle, 2, KeyboardInterrupt),
-        )
-        with pytest.raises(KeyboardInterrupt):
-            sf.solve(1e2)
+    with (
+        _fail_from_call(spencerfano, "_add_scaled_upper_triangle", 2, KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        sf.solve(1e2)
     assert sf._sfmatrix_stale
     if next_call == "add":
         sf.add_ionisation(2, 1, 1e4)
@@ -1703,50 +1698,44 @@ def test_matrix_fill_after_an_interrupt_keeps_the_excitation_bands(next_call: st
     sf.solve(1e2)
     reference.solve(1e2)
     assert math.isclose(sf.get_frac_excitation_tot(), reference.get_frac_excitation_tot(), rel_tol=1e-4)
-    for ion_stage, fraction in reference.get_ion_fractions(8).items():
-        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+    assert sf.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
 
 
 def test_failed_outer_transaction_removes_the_inner_add_call() -> None:
-    # an add call inside another add call keeps the transaction of the outer call
+    # an add call inside another add call. The marks are sizes, so the failure of the outer call also removes
+    # the records of the inner call.
     sf = _balanced_oxygen()
 
-    def add_in_an_outer_transaction() -> None:
-        with sf._record_transaction():
-            sf.add_ionisation(1, 1, 1e5)
-            assert (1, 1) in sf.ionpopdict
-            raise KeyboardInterrupt
+    @pynonthermal.SpencerFanoSolver._add_transaction
+    def add_in_an_outer_transaction(solver: pynonthermal.SpencerFanoSolver) -> None:
+        solver.add_ionisation(1, 1, 1e5)
+        assert (1, 1) in solver.ionpopdict
+        raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        add_in_an_outer_transaction()
+        add_in_an_outer_transaction(sf)
     assert (1, 1) not in sf.ionpopdict
     assert (1, 1) not in sf._ionisation_channels
     assert sf._sfmatrix_stale
-    assert not sf._transaction_open
 
 
 def test_failed_solve_after_a_solution_keeps_it_with_a_stale_matrix() -> None:
     # a MemoryError in a matrix update of a second solve(). The restore applied the change of each population
-    # to a matrix that the update had changed only in part.
+    # to a matrix that the update had changed only in part. Now the restore does not write to the stale matrix,
+    # so a second MemoryError cannot stop it. An update makes 4 calls, so the failure is in the second update.
+    # Then the restore has a change of the populations to write.
     sf = _balanced_oxygen()
     sf.solve(1e1)
     frac_heating = sf.get_frac_heating()
     populations = dict(sf.ionpopdict)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            spencerfano,
-            "_add_scaled_upper_triangle",
-            _fail_on_call(spencerfano._add_scaled_upper_triangle, 3, MemoryError),
-        )
-        with pytest.raises(MemoryError):
-            sf.solve(1e2)
+    with _fail_from_call(spencerfano, "_add_scaled_upper_triangle", 7, MemoryError), pytest.raises(MemoryError):
+        sf.solve(1e2)
     assert sf.get_frac_heating() == frac_heating
     assert sf.ionpopdict == populations
     sf.solve(1e2)
     reference = _balanced_oxygen()
     reference.solve(1e2)
-    for ion_stage, fraction in reference.get_ion_fractions(8).items():
-        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+    assert sf.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
 
 
 def test_interrupted_solve_keeps_the_last_solution() -> None:
@@ -1756,14 +1745,11 @@ def test_interrupted_solve_keeps_the_last_solution() -> None:
     sf.solve(1e1)
     frac_heating = sf.get_frac_heating()
     populations = dict(sf.ionpopdict)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            pynonthermal.SpencerFanoSolver,
-            "_solve_matrix",
-            _fail_on_call(pynonthermal.SpencerFanoSolver._solve_matrix, 2, KeyboardInterrupt),
-        )
-        with pytest.raises(KeyboardInterrupt):
-            sf.solve(1e2)
+    with (
+        _fail_from_call(pynonthermal.SpencerFanoSolver, "_solve_matrix", 2, KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        sf.solve(1e2)
     assert sf.get_frac_heating() == frac_heating
     assert sf.ionpopdict == populations
     with pytest.raises(RuntimeError, match="after solving"):
@@ -1797,8 +1783,7 @@ def test_interrupted_verbose_output_keeps_the_last_solution() -> None:
     sf.solve(1e2)
     reference = _balanced_oxygen()
     reference.solve(1e2)
-    for ion_stage, fraction in reference.get_ion_fractions(8).items():
-        assert math.isclose(sf.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+    assert sf.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
 
 
 def test_copy_with_a_read_only_matrix_can_solve_and_add() -> None:
@@ -1815,8 +1800,7 @@ def test_copy_with_a_read_only_matrix_can_solve_and_add() -> None:
     reference = _balanced_oxygen()
     reference.add_ionisation(1, 1, 1e5)
     reference.solve(1e2)
-    for ion_stage, fraction in reference.get_ion_fractions(8).items():
-        assert math.isclose(copy.get_ion_fractions(8)[ion_stage], fraction, rel_tol=1e-4)
+    assert copy.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
 
 
 def test_failed_matrix_fill_leaves_the_add_call_out() -> None:
