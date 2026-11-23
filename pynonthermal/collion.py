@@ -900,8 +900,14 @@ def get_ion_ionisation_channels(
         raise ValueError(msg)
 
     auger_data = _read_auger_data_cached() if use_km1993_auger else {}
+    # a negative limit made the slice of the probabilities count from the end, so -1 gave the limit 9.
+    # The error type is that of SpencerFanoSolver for the same option.
+    is_integer = isinstance(max_auger_electrons, (int, np.integer)) and not isinstance(max_auger_electrons, bool)
+    if not is_integer or max_auger_electrons < 0:
+        msg = f"max_auger_electrons must be an integer of at least 0 but is {max_auger_electrons!r}"
+        raise ValueError(msg)
     # an ion cannot lose more electrons than it has
-    max_auger_electrons = min(max_auger_electrons, Z - ion_stage)
+    max_auger_electrons = min(int(max_auger_electrons), Z - ion_stage)
     channels: list[IonisationChannel] = []
     for shell in shells:
         ionpot_ev = float(shell["ionpot_ev"])

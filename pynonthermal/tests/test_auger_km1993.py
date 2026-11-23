@@ -177,6 +177,19 @@ def test_auger_option_with_an_ionisation_balance() -> None:
 
 
 def test_auger_option_validation() -> None:
+    # the function of collion also checks the limit, because a negative limit counted from the end
+    dfcollion = pynonthermal.collion.read_colliondata()
+    engrid = np.linspace(0.1, 16000.0, 200)
+    for invalid in (-1, 1.5, True):
+        with pytest.raises(ValueError, match="max_auger_electrons"):
+            pynonthermal.collion.get_ion_ionisation_channels(
+                dfcollion,
+                26,
+                3,
+                engrid,
+                use_km1993_auger=True,
+                max_auger_electrons=invalid,  # ty: ignore[invalid-argument-type]
+            )
     with pytest.raises(ValueError, match="max_auger_electrons"):
         pynonthermal.SpencerFanoSolver(npts=100, use_km1993_auger=True, max_auger_electrons=-1)
     with pytest.raises(ValueError, match="max_auger_electrons"):
