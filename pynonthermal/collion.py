@@ -468,6 +468,19 @@ class IonisationChannel:
     channels.
     """
 
+    def __setstate__(self, state: list[t.Any]) -> None:
+        """Restore the fields that pickle serialised.
+
+        The state holds the values in the order of the fields. The state of an earlier release has
+        no value for a field that a later release added at the end. Such a field gets its default,
+        because a slot with no value raises AttributeError at each read.
+        """
+        fields = dataclasses.fields(self)
+        for field, value in zip(fields, state, strict=False):
+            object.__setattr__(self, field.name, value)
+        for field in fields[len(state) :]:
+            object.__setattr__(self, field.name, field.default)
+
     @property
     def n_auger_electrons(self) -> int:
         """The number of Auger electrons in the source term of one ionisation.
