@@ -1630,8 +1630,20 @@ def test_state_before_engrid_mid_drops_the_cached_fills() -> None:
     # the copy fills the matrix again from the records, so it gives the result of the solver that made the state
     with pytest.warns(UserWarning, match="top stage"):
         sf.solve(deposition_ev_per_s_per_cm3=2e3)
-    with pytest.warns(UserWarning, match="top stage"):
+    # In a real state of that release, the cross sections are at engrid, so solve() gives a warning. In this
+    # test, they are at engrid_mid, so the two results agree.
+    with (
+        pytest.warns(UserWarning, match="top stage"),
+        pytest.warns(UserWarning, match="Its cross sections are at engrid and not at engrid_mid"),
+    ):
         sf_old.solve(deposition_ev_per_s_per_cm3=2e3)
+    # a copy of the restored solver keeps the warning
+    sf_old_copy = pickle.loads(pickle.dumps(sf_old))  # noqa: S301
+    with (
+        pytest.warns(UserWarning, match="top stage"),
+        pytest.warns(UserWarning, match="Its cross sections are at engrid and not at engrid_mid"),
+    ):
+        sf_old_copy.solve(deposition_ev_per_s_per_cm3=2e3)
     for ionkey, population in sf.ionpopdict.items():
         assert sf_old.ionpopdict[ionkey] == pytest.approx(population, rel=1e-9)
     assert sf_old.get_frac_ionisation_tot() == pytest.approx(sf.get_frac_ionisation_tot(), rel=1e-9)
