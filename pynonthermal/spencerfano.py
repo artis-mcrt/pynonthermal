@@ -390,8 +390,11 @@ def _add_scaled_upper_triangle(
 def integrate_simpson_uniform(y: npt.NDArray[np.float64], x: npt.NDArray[np.float64]) -> float:
     """Composite Simpson's rule on a uniformly-spaced grid with an odd number of points."""
     npts = x.shape[0]
-    assert npts >= 3
-    assert npts % 2 == 1
+    # a ValueError and not an assert, because python -O removes an assert. Then an even number of points gave a
+    # wrong integral.
+    if npts < 3 or npts % 2 == 0:
+        msg = f"Simpson's rule needs an odd number of at least 3 points, but the grid has {npts}"
+        raise ValueError(msg)
     weights = np.full(npts, 2.0, dtype=np.float64)
     weights[1::2] = 4.0
     weights[0] = weights[-1] = 1.0
@@ -575,7 +578,9 @@ class SpencerFanoSolver:
 
         self.verbose = _check_bool(verbose, "verbose")
         self.heating_only_approximation = _check_bool(heating_only_approximation, "heating_only_approximation")
-        self.engrid = np.linspace(emin_ev, emax_ev, num=npts, endpoint=True, dtype=float)
+        # Python floats, because np.linspace calculates in the type of its limits. Float16 limits gave a grid with
+        # repeated points, and the matrix needs a uniform grid.
+        self.engrid = np.linspace(float(emin_ev), float(emax_ev), num=npts, endpoint=True, dtype=float)
         # handed to the cross section functions of the caller, so a write must raise at the
         # mutation site. An in-place write would otherwise leave the grid and deltaen inconsistent.
         self.engrid.flags.writeable = False
@@ -1070,6 +1075,9 @@ class SpencerFanoSolver:
         self._check_not_balanced(Z)
         _check_ion(Z, ion_stage, needs_electron=True)
         self._check_epsilon_trans(epsilon_trans_ev)
+        # a Python float, because a numpy float16 overflows in the products of the analysis. The matrix band
+        # needs the same value as the analysis. A float16 band width gave an energy sum that was 3e-4 wrong.
+        epsilon_trans_ev = float(epsilon_trans_ev)
         # the stored array is a read-only copy with no cross section below the threshold, so a
         # later write by the caller cannot change what the solver holds
         xs_grid = self._get_excitation_xs_on_grid(xs_vec, epsilon_trans_ev)
@@ -1089,8 +1097,7 @@ class SpencerFanoSolver:
         self.excitationlists.setdefault((Z, ion_stage), {})[transitionkey] = ExcitationTransition(
             levelnumberdensity=levelnumberdensity,
             xs_vec=xs_grid,
-            # a Python float, because a numpy float16 overflows in the products of the analysis
-            epsilon_trans_ev=float(epsilon_trans_ev),
+            epsilon_trans_ev=epsilon_trans_ev,
         )
         return self._excitation_band_vectors(levelnumberdensity, xs_grid, epsilon_trans_ev)
 
@@ -1402,9 +1409,11 @@ class SpencerFanoSolver:
             # use ARTIS atomic data read by the artistools package to get the levels
             import artistools as at  # noqa: PLC0415
 
+            # artistools prints the names of the files that it reads, unless it is quiet
             self.adata_polars = at.atomic.get_levels(
                 Path(pynonthermal.DATADIR, "artis_files"),
                 get_transitions=True,
+                quiet=not self.verbose,
                 derived_transitions_columns=list(DERIVED_TRANSITIONS_COLUMNS),
             )
             self._adata_polars_is_internal = True
@@ -2976,7 +2985,8 @@ class SpencerFanoSolver:
         if _is_bool(energy_ev) or not 0.0 <= energy_ev < math.inf:
             msg = f"energy_ev must be at least zero and finite but is {energy_ev}"
             raise ValueError(msg)
-        return self._calculate_N_e(energy_ev, include_excitation_terms=True)
+        # a Python float, because a numpy float16 energy makes the limits of the sub-grids float16
+        return self._calculate_N_e(float(energy_ev), include_excitation_terms=True)
 
     def _calculate_N_e(self, energy_ev: float, include_excitation_terms: bool) -> float:
         # N(E) of calculate_N_e(). Without include_excitation_terms, N(E) holds only the ionisation
@@ -3744,8 +3754,11 @@ class SpencerFanoSolver:
                 if self.verbose:
                     print(f"Saving '{outputfilename}'")
                 assert fig is not None
-                fig.savefig(str(outputfilename))
-                plt.close()
+                try:
+                    fig.savefig(str(outputfilename))
+                finally:
+                    # the figure of this call, also when savefig() raises
+                    plt.close(fig)
             else:
                 plt.show()
 
@@ -3854,8 +3867,11 @@ class SpencerFanoSolver:
                 if self.verbose:
                     print(f"Saving '{outputfilename}'")
                 assert fig is not None
-                fig.savefig(str(outputfilename))
-                plt.close()
+                try:
+                    fig.savefig(str(outputfilename))
+                finally:
+                    # the figure of this call, also when savefig() raises
+                    plt.close(fig)
             else:
                 plt.show()
 
@@ -3903,7 +3919,10 @@ class SpencerFanoSolver:
         if outputfilename is not None:
             if self.verbose:
                 print(f"Saving '{outputfilename}'")
-            fig.savefig(str(outputfilename))
-            plt.close()
+            try:
+                fig.savefig(str(outputfilename))
+            finally:
+                # the figure of this call, also when savefig() raises
+                plt.close(fig)
         else:
             plt.show()

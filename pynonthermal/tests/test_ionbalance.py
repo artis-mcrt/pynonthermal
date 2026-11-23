@@ -364,6 +364,11 @@ def test_saha_ion_fractions_validation() -> None:
         get_fractions(56, [1, 2], 6000.0, n_e=1e8)
     with pytest.raises(ValueError, match="partition function of Z=56 ion_stage 2"):
         get_fractions(56, [1, 2], 6000.0, n_e=1e8, partfuncs={1: 1.0, 2: 0.0})
+    # float() took True as 1.0 and the string "9" as 9.0
+    for bad_partfunc in (True, "9"):
+        partfuncs_bad = {1: 1.0, 2: bad_partfunc}
+        with pytest.raises(ValueError, match="partition function of Z=56 ion_stage 2 in partfuncs must be a number"):
+            get_fractions(56, [1, 2], 6000.0, n_e=1e8, partfuncs=partfuncs_bad)  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match="temperature must be greater than zero"):
         get_fractions(8, [1, 2], 0.0, n_e=1e8)
     # the cold gas returns before the root find, which is the other place that checks n_elem

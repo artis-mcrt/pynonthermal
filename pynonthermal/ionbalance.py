@@ -29,6 +29,7 @@ populations that the solver finds.
 """
 
 import math
+import numbers
 from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
@@ -491,7 +492,15 @@ def get_saha_ion_fractions(
     partfunc_of_stage: dict[int, float] = {}
     for ion_stage in stages:
         if partfuncs is not None and ion_stage in partfuncs:
-            partfunc = float(partfuncs[ion_stage])
+            partfunc_given = partfuncs[ion_stage]
+            # the check runs before float(), which takes True as 1.0 and the string "9" as 9.0
+            if _is_bool(partfunc_given) or not isinstance(partfunc_given, numbers.Real):
+                msg = (
+                    f"the partition function of Z={Z} ion_stage {ion_stage} in partfuncs must be a number but is"
+                    f" {partfunc_given!r}"
+                )
+                raise ValueError(msg)
+            partfunc = float(partfunc_given)
         elif ion_stage == Z + 1:
             # a bare nucleus has one state
             partfunc = 1.0
@@ -501,7 +510,7 @@ def get_saha_ion_fractions(
                 # here, because artistools takes most of the import time of the package.
                 import artistools as at  # noqa: PLC0415
 
-                adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files")
+                adata_polars = at.atomic.get_levels(pynonthermal.DATADIR / "artis_files", quiet=True)
             ion = adata_polars.filter(pl.col("Z") == Z).filter(pl.col("ion_stage") == ion_stage)
             if ion.is_empty():
                 ions_with_levels = sorted(adata_polars.select("Z", "ion_stage").unique().iter_rows())
