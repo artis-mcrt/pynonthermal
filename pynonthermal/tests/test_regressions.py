@@ -1588,6 +1588,65 @@ def test_pickle_protocol_4_keeps_the_cached_fills_read_only() -> None:
             assert not array.flags.writeable
 
 
+def test_state_before_engrid_mid_drops_the_cached_fills() -> None:
+    # A cached fill of the release before engrid_mid has seven other attributes, and pickle restores a fill by
+    # the position of each attribute. __setstate__ of the solver then raised an AttributeError for the last
+    # attributes. The matrix of that release also has other ionisation terms.
+    sf = _balanced_oxygen()
+    with pytest.warns(UserWarning, match="top stage"):
+        sf.solve(deposition_ev_per_s_per_cm3=1e3)
+    # a copy of the state through pickle, so that the two solvers do not share their records
+    state = pickle.loads(pickle.dumps(sf.__getstate__()))  # noqa: S301
+    del state["engrid_mid"]
+    old_fills = {}
+    for channel, fill in state["_channel_fills"].items():
+        old_fill = object.__new__(type(fill))
+        # unit_prefactors, int_eps_uppers, int_eps_lowers1, int_eps_lowers2, xsstartindex, cuts1, jstarts2
+        old_fill.__setstate__(
+            [
+                fill.unit_prefactors,
+                fill.int_eps_uppers,
+                fill.int_eps_uppers,
+                fill.int_eps_uppers,
+                fill.xsstartindex,
+                [0],
+                [-1],
+            ]
+        )
+        assert not hasattr(old_fill, "partial_rows")
+        old_fills[channel] = old_fill
+    state["_channel_fills"] = old_fills
+    # a matrix that does not agree with the records, as a matrix with the terms of that release
+    state["sfmatrix"] = 2.0 * sf.sfmatrix
+    assert state["ionpopdict"] is not sf.ionpopdict
+    sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
+    sf_old.__setstate__(state)
+    assert not sf_old._channel_fills
+
+    # the copy fills the matrix again from the records, so it gives the result of the solver that made the state
+    with pytest.warns(UserWarning, match="top stage"):
+        sf.solve(deposition_ev_per_s_per_cm3=2e3)
+    with pytest.warns(UserWarning, match="top stage"):
+        sf_old.solve(deposition_ev_per_s_per_cm3=2e3)
+    for ionkey, population in sf.ionpopdict.items():
+        assert sf_old.ionpopdict[ionkey] == pytest.approx(population, rel=1e-9)
+    assert sf_old.get_frac_ionisation_tot() == pytest.approx(sf.get_frac_ionisation_tot(), rel=1e-9)
+
+
+def test_cross_section_function_cannot_write_to_the_grid_of_a_channel() -> None:
+    # the function of an ionisation channel gets the middle energies of the grid intervals. That array was
+    # writable, so a function that writes to its argument changed the energies of the checks with no error.
+    def xs_with_a_write(arr_enev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        arr_enev *= 2.0
+        return np.where(arr_enev > 60.0, 1e-18, 0.0)
+
+    with (
+        pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf,
+        pytest.raises(ValueError, match="read-only"),
+    ):
+        sf.add_ionisation_channel(8, 2, 1e4, 60.0, xs_with_a_write)
+
+
 def test_default_key_does_not_collide_with_a_named_key() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.add_excitation(8, 2, 1e3, np.full(200, 1e-18), 10.0, transitionkey=1)

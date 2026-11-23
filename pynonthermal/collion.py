@@ -582,6 +582,9 @@ class IonisationChannel:
         # the solver takes the cross section of column j at the middle of the grid interval that starts at
         # arr_enev[j] (SpencerFanoSolver.engrid_mid)
         arr_enev_mid = arr_enev + 0.5 * (arr_enev[1] - arr_enev[0])
+        # a cross section function that writes to its argument must fail at that write, as with the read-only
+        # grid of the solver. Else the checks below use energies that the function changed.
+        arr_enev_mid.flags.writeable = False
         xs_grid = get_xs_on_grid(xs, arr_enev_mid, name)
 
         # the array is a fresh copy, so the writes below are safe

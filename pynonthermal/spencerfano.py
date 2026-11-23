@@ -703,6 +703,13 @@ class SpencerFanoSolver:
         # is now at engrid_mid, so add the ions to a new solver for the full accuracy.
         if "engrid_mid" not in state:
             self.engrid_mid = self.engrid + 0.5 * self.deltaen
+            # The cached fills of that release have other attributes. pickle restores a fill by the position of
+            # each attribute, so the values are in the wrong attributes, and the last attributes have no value.
+            # The matrix of that release also has other ionisation terms, and a later update adds only the change
+            # of each population. So the cache starts empty, and the next solve() or add call fills the matrix
+            # again from the records.
+            self._channel_fills = {}
+            self._sfmatrix_stale = True
         # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
         # gets a writable copy. Else every add method and the ionisation balance raised.
         if not self.sfmatrix.flags.writeable:
