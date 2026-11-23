@@ -287,29 +287,23 @@ class _ChannelFill:
     # the parts of the matrix fill of one ionisation channel that do not depend on the population
     # (see SpencerFanoSolver._build_channel_fill)
     unit_prefactors: npt.NDArray[np.float64]
-    # per column j: the upper limit of epsilon, atan((epsilon_upper - I) / J), and the integral of the
-    # atan function from I to the upper limit
-    epsilon_uppers: npt.NDArray[np.float64]
+    # per column j: atan((epsilon_upper - I) / J)
     int_eps_uppers: npt.NDArray[np.float64]
-    atan_integral_uppers: npt.NDArray[np.float64]
-    # per offset d = j - i: the integral of the atan function from I to d * deltaen (npts + 1 values), and
-    # its mean over [d * deltaen, (d + 1) * deltaen]
-    atan_integral_offsets: npt.NDArray[np.float64]
+    # per offset d = j - i: the mean of the integral of the atan function over [d * deltaen, (d + 1) * deltaen]
     atan_mean_offsets: npt.NDArray[np.float64]
-    # per row i: the integral of the atan function from I to engrid[i] + I, and its mean over
-    # [engrid[i] + I, engrid[i] + I + deltaen]
-    atan_integral_rows: npt.NDArray[np.float64]
+    # per row i: the mean of that integral over [engrid[i] + I, engrid[i] + I + deltaen]
     atan_mean_rows: npt.NDArray[np.float64]
     # the first column with a cross section. The first integral of row i starts at max(i, this).
     xsstartindex: int
-    # per row, for the first integral: the end of the columns whose interval of epsilon is all below the
-    # upper limit, and the end of the column range
+    # per row: the end of the columns of the first integral whose interval of epsilon is all below the
+    # upper limit, and the first such column of the second integral
     cuts1_full: list[int]
-    cuts1: list[int]
-    # per row, for the second integral: the first column (-1 for a row without one), and the first
-    # column whose interval of epsilon is all below the upper limit
-    jstarts2: list[int]
     jstarts2_full: list[int]
+    # the terms of the columns between these two limits, where the upper limit of epsilon is inside the
+    # interval: the row and the column of each term, and its value for a unit population
+    partial_rows: npt.NDArray[np.intp]
+    partial_columns: npt.NDArray[np.intp]
+    partial_unit_terms: npt.NDArray[np.float64]
 
 
 @dataclasses.dataclass(slots=True, eq=False)
@@ -1825,16 +1819,12 @@ class SpencerFanoSolver:
         # the matrix entries of a channel are linear in the population, so the balance calls this
         # method with the change of the population, and the rest of the fill stays the same
         prefactors = n_ion * fill.unit_prefactors
-        epsilon_uppers = fill.epsilon_uppers
         int_eps_uppers = fill.int_eps_uppers
-        atan_integral_uppers = fill.atan_integral_uppers
-        atan_integral_offsets = fill.atan_integral_offsets
         atan_mean_offsets = fill.atan_mean_offsets
+        atan_mean_rows = fill.atan_mean_rows.tolist()
         xsstartindex = fill.xsstartindex
         sfmatrix = self.sfmatrix if matrix is None else matrix
         npts = len(self.engrid)
-        deltaen = self.deltaen
-        ionpot_ev = channel.ionpot_ev
         # one buffer for the products of every row, in place of two temporaries per row
         buffer = np.empty(npts)
         # Each term is the mean over one grid interval of the probability that the ionisation moves an
@@ -1842,9 +1832,7 @@ class SpencerFanoSolver:
         # electron. The sum of the rows times deltaen is then the exact mean energy that the primary
         # loses and that the secondary gets. A value of the probability at the row energy alone gave an
         # energy error that changed with the position of ionpot_ev between two grid points.
-        for i, (cut1_full, cut1, jstart2, jstart2_full) in enumerate(
-            zip(fill.cuts1_full, fill.cuts1, fill.jstarts2, fill.jstarts2_full, strict=True)
-        ):
+        for i, (cut1_full, jstart2_full) in enumerate(zip(fill.cuts1_full, fill.jstarts2_full, strict=True)):
             # first integral of the KF92 equation 7 ionisation term: primaries at endash carried
             # across en by the energy loss epsilon of an ionisation event.
             # at each endash (columns j >= jstart), the integral in epsilon ranges from
@@ -1859,19 +1847,8 @@ class SpencerFanoSolver:
                 )
                 product *= prefactors[jstart:cut1_full]
                 sfmatrix[i, jstart:cut1_full] += product
-            jpart = max(cut1_full, jstart)
-            if cut1 > jpart:
-                # the upper limit of epsilon is inside the interval. Above it, the atan function keeps its
-                # value at the upper limit.
-                interval_ends = (np.arange(jpart, cut1) - i + 1) * deltaen
-                atan_means = (
-                    atan_integral_uppers[jpart:cut1]
-                    + int_eps_uppers[jpart:cut1] * (interval_ends - epsilon_uppers[jpart:cut1])
-                    - atan_integral_offsets[jpart - i : cut1 - i]
-                ) / deltaen
-                sfmatrix[i, jpart:cut1] += prefactors[jpart:cut1] * (int_eps_uppers[jpart:cut1] - atan_means)
 
-            if jstart2 >= 0:
+            if jstart2_full < npts:
                 # second integral of the KF92 equation 7 ionisation term, subtracted: an
                 # ionisation by a primary above 2 * en + ionpot_ev leaves the secondary with
                 # more energy than en, adding to the electrons that cross en like an extra
@@ -1881,21 +1858,14 @@ class SpencerFanoSolver:
                 # epsilon_lower = en + ionpot_ev
                 # epsilon_upper = min((endash + ionpot_ev) / 2, endash)
                 # and the term is the mean over the lower limits en + ionpot_ev to en + ionpot_ev + deltaen
-                if jstart2_full < npts:
-                    product = buffer[: npts - jstart2_full]
-                    np.subtract(int_eps_uppers[jstart2_full:], fill.atan_mean_rows[i], out=product)
-                    product *= prefactors[jstart2_full:]
-                    sfmatrix[i, jstart2_full:] -= product
-                if jstart2_full > jstart2:
-                    interval_end = float(self.engrid[i]) + ionpot_ev + deltaen
-                    atan_means = (
-                        atan_integral_uppers[jstart2:jstart2_full]
-                        + int_eps_uppers[jstart2:jstart2_full] * (interval_end - epsilon_uppers[jstart2:jstart2_full])
-                        - fill.atan_integral_rows[i]
-                    ) / deltaen
-                    sfmatrix[i, jstart2:jstart2_full] -= prefactors[jstart2:jstart2_full] * (
-                        int_eps_uppers[jstart2:jstart2_full] - atan_means
-                    )
+                product = buffer[: npts - jstart2_full]
+                np.subtract(int_eps_uppers[jstart2_full:], atan_mean_rows[i], out=product)
+                product *= prefactors[jstart2_full:]
+                sfmatrix[i, jstart2_full:] -= product
+
+        # the columns of each row between the two ranges, where the upper limit of epsilon is inside the
+        # interval. Each row and column pair occurs one time, so one indexed write adds all of them.
+        sfmatrix[fill.partial_rows, fill.partial_columns] += n_ion * fill.partial_unit_terms
 
         self._subtract_auger_electrons(n_ion, channel, xsstartindex, matrix=sfmatrix)
 
@@ -1984,10 +1954,6 @@ class SpencerFanoSolver:
         atan_mean_rows = (atan_integral(epsilon_lowers2 + deltaen) - atan_integral_rows) / deltaen
         jstart2_indices = np.searchsorted(epsilon_uppers, epsilon_lowers2, side="right")
         jstart2_full_indices = np.searchsorted(epsilon_uppers, epsilon_lowers2 + deltaen)
-        # -1 marks a row whose second integral has an empty domain
-        second_integral_rows = jstart2_indices < npts
-        jstarts2 = np.where(second_integral_rows, jstart2_indices, -1).tolist()
-        jstarts2_full = jstart2_full_indices.tolist()
 
         # Python lists, because the loop reads one scalar per row, and a numpy scalar index costs
         # more than the comparison itself
@@ -2007,34 +1973,59 @@ class SpencerFanoSolver:
             cuts1_full.append(cut1_full)
             cuts1.append(cut1)
 
-        # the fill is shared by every later call for the channel, so a write must raise
-        arrays = (
-            unit_prefactors,
-            epsilon_uppers,
-            int_eps_uppers,
-            atan_integral_uppers,
-            atan_integral_offsets,
-            atan_mean_offsets,
-            atan_integral_rows,
-            atan_mean_rows,
+        # The columns where the upper limit of epsilon is inside the interval of the lower limit. Above the
+        # upper limit, the atan function keeps its value at the limit. Each row has a small number of these
+        # columns, so all rows go into one set of index arrays.
+        def partial_terms(
+            starts: npt.NDArray[np.intp],
+            stops: npt.NDArray[np.intp],
+            is_first_integral: bool,
+        ) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.intp], npt.NDArray[np.float64]]:
+            counts = np.maximum(stops - starts, 0)
+            rows = np.repeat(np.arange(npts), counts)
+            columns = np.arange(int(counts.sum())) - np.repeat(np.cumsum(counts) - counts, counts) + starts[rows]
+            if is_first_integral:
+                interval_ends = (columns - rows + 1) * deltaen
+                atan_integral_lowers = atan_integral_offsets[columns - rows]
+            else:
+                interval_ends = epsilon_lowers2[rows] + deltaen
+                atan_integral_lowers = atan_integral_rows[rows]
+            atan_means = (
+                atan_integral_uppers[columns]
+                + int_eps_uppers[columns] * (interval_ends - epsilon_uppers[columns])
+                - atan_integral_lowers
+            ) / deltaen
+            terms = unit_prefactors[columns] * (int_eps_uppers[columns] - atan_means)
+            return rows, columns, terms if is_first_integral else -terms
+
+        row_starts = np.maximum(np.arange(npts), xsstartindex)
+        rows1, columns1, terms1 = partial_terms(
+            np.maximum(np.array(cuts1_full, dtype=np.intp), row_starts), np.array(cuts1, dtype=np.intp), True
         )
-        for arr in arrays:
+        # the second integral of a row starts where the first integral ends, or at the first column of the row
+        rows2, columns2, terms2 = partial_terms(
+            np.maximum(jstart2_indices, row_starts), np.minimum(jstart2_full_indices, npts), False
+        )
+        partial_rows = np.concatenate((rows1, rows2))
+        partial_columns = np.concatenate((columns1, columns2))
+        partial_unit_terms = np.concatenate((terms1, terms2))
+
+        # the fill is shared by every later call for the channel, so a write must raise
+        arrays = (unit_prefactors, int_eps_uppers, atan_mean_offsets, atan_mean_rows, partial_unit_terms)
+        for arr in (*arrays, partial_rows, partial_columns):
             arr.flags.writeable = False
 
         return _ChannelFill(
             unit_prefactors=unit_prefactors,
-            epsilon_uppers=epsilon_uppers,
             int_eps_uppers=int_eps_uppers,
-            atan_integral_uppers=atan_integral_uppers,
-            atan_integral_offsets=atan_integral_offsets,
             atan_mean_offsets=atan_mean_offsets,
-            atan_integral_rows=atan_integral_rows,
             atan_mean_rows=atan_mean_rows,
             xsstartindex=xsstartindex,
             cuts1_full=cuts1_full,
-            cuts1=cuts1,
-            jstarts2=jstarts2,
-            jstarts2_full=jstarts2_full,
+            jstarts2_full=np.maximum(jstart2_full_indices, row_starts).tolist(),
+            partial_rows=partial_rows,
+            partial_columns=partial_columns,
+            partial_unit_terms=partial_unit_terms,
         )
 
     def _get_auger_electron_rows(self, channel: IonisationChannel) -> tuple[int, float]:
