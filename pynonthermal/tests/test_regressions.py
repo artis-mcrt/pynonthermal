@@ -1622,6 +1622,10 @@ def test_state_before_engrid_mid_drops_the_cached_fills() -> None:
     sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
     sf_old.__setstate__(state)
     assert not sf_old._channel_fills
+    # the solution of that release is not a solution of the new terms, so each getter asks for a new solve()
+    assert "solution discarded" in repr(sf_old)
+    with pytest.raises(RuntimeError, match=r"a state from an earlier release .* call solve\(\) again"):
+        sf_old.get_frac_heating()
 
     # the copy fills the matrix again from the records, so it gives the result of the solver that made the state
     with pytest.warns(UserWarning, match="top stage"):

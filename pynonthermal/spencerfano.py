@@ -710,6 +710,13 @@ class SpencerFanoSolver:
             # again from the records.
             self._channel_fills = {}
             self._sfmatrix_stale = True
+            # The solution of that release is at engrid, with the loss function at engrid. The analysis now takes
+            # the solution at engrid_mid and has another energy count below the grid, so its fractions for that
+            # solution do not sum to one. The getters thus ask for a new solve().
+            if self._solved and self._solution_discarded_by is None:
+                self._solution_discarded_by = (
+                    "__setstate__(), which restored a state from an earlier release with other matrix terms,"
+                )
         # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
         # gets a writable copy. Else every add method and the ionisation balance raised.
         if not self.sfmatrix.flags.writeable:
