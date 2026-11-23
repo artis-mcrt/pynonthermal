@@ -312,8 +312,9 @@ def test_N_e_epsilon_integral_not_keyed_to_the_grid() -> None:
             f" npts={npts_neighbour} gives {fracsums[npts_neighbour]}"
         )
 
-    # and the remaining error is ordinary discretisation error, which shrinks with resolution
-    assert abs(fracsums[2900] - 1.0) < abs(fracsums[600] - 1.0)
+    # the terms of the matrix give the energy below E_0, so the sum is one to rounding on each grid
+    for npts, fracsum in fracsums.items():
+        assert math.isclose(fracsum, 1.0, abs_tol=1e-9), npts
 
 
 def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
@@ -369,32 +370,29 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
 
 
 def test_quadrature_resolution_constants_are_adequate() -> None:
-    # NPTS_SUB_E0_INTEGRAL and the constants of the sub-grids of calculate_N_e() (NPTS_SUBGRID_MIN,
+    # The constants of the sub-grids of calculate_N_e() (NPTS_SUBGRID_MIN,
     # NPTS_SUBGRID_MAX, NPTS_SUBGRID_PER_J, and NCELLS_SECOND_INTEGRAL_SUBGRID) carry accuracy claims in their
-    # comments. The test compares frac_heating at the configured values with frac_heating at much finer values.
-    # Then a lower value that buys speed cannot silently degrade frac_heating. emin_ev=7.9 is the demanding
-    # case, where the integral over [0, E_0] is about a third of the heating.
-    def frac_heating(emin_ev: float, Z: int) -> float:
+    # comments. The test compares N(E) at the configured values with N(E) at much finer values.
+    # Then a lower value that buys speed cannot silently degrade N(E).
+    def n_e_below_e0(emin_ev: float, Z: int) -> float:
         with pynonthermal.SpencerFanoSolver(emin_ev=emin_ev, emax_ev=3000, npts=2000) as sf:
             sf.add_ionisation(Z, 1, n_ion=0.99)
             sf.add_ionisation(Z, 2, n_ion=0.01)
             sf.solve(deposition_ev_per_s_per_cm3=1e6)
-            return sf.get_frac_heating()
+            return sf.calculate_N_e(0.5 * emin_ev)
 
     # emin_ev has to cover the large values add_ionisation's own error message steers users towards
-    # ("set emin_ev <= {lowest ionpot} eV"), not just the default grid where this term is negligible
+    # ("set emin_ev <= {lowest ionpot} eV"), not just the default grid
     for emin_ev, Z in ((7.9, 26), (15.7, 18), (24.5, 2)):
-        asconfigured = frac_heating(emin_ev, Z)
+        asconfigured = n_e_below_e0(emin_ev, Z)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(spencerfano, "NPTS_SUB_E0_INTEGRAL", 129)
             mp.setattr(spencerfano, "NPTS_SUBGRID_MIN", 257)
             mp.setattr(spencerfano, "NPTS_SUBGRID_MAX", 4097)
             mp.setattr(spencerfano, "NPTS_SUBGRID_PER_J", 128)
             mp.setattr(spencerfano, "NCELLS_SECOND_INTEGRAL_SUBGRID", 8)
-            converged = frac_heating(emin_ev, Z)
+            converged = n_e_below_e0(emin_ev, Z)
         assert math.isclose(asconfigured, converged, rel_tol=1e-3), (
-            f"emin_ev={emin_ev}: the configured resolution gives frac_heating={asconfigured}"
-            f" against a converged {converged}"
+            f"emin_ev={emin_ev}: the configured resolution gives N(E)={asconfigured} against a converged {converged}"
         )
 
 
@@ -515,9 +513,10 @@ def test_population_mismatch_checked_before_atomic_data() -> None:
         assert not sf.excitationlists
 
 
-def test_conservation_warning_on_coarse_grid() -> None:
-    # the energy fractions of a helium plasma are ~6.5% off unity at npts=100,
-    # which must trigger the conservation diagnostic
+def test_energy_conservation_on_coarse_grid() -> None:
+    # The matrix and the analysis count each energy loss with the same weights, so the energy fractions sum
+    # to one also on a grid that is too coarse. With the ionisation terms at the grid energies alone, the sum
+    # of this helium plasma was 6.5 % from one at npts=100.
     x_e = 1e-4
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=100) as sf:
         sf.set_temperature(3000)
@@ -527,9 +526,21 @@ def test_conservation_warning_on_coarse_grid() -> None:
             sf.add_ion_excitation(Z, ion_stage, n_ion=n_ion)
         sf.solve(deposition_ev_per_s_per_cm3=100)
 
-        with pytest.warns(UserWarning, match="energy fractions sum to"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             frac_sum = sf.get_frac_sum()
-        assert not math.isclose(frac_sum, 1.0, rel_tol=0.05)
+        assert math.isclose(frac_sum, 1.0, abs_tol=1e-9)
+
+
+def test_conservation_warning() -> None:
+    # the warning shows a defect of the energy count. Here the test removes the heating to make one.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=100) as sf:
+        sf.add_ionisation(2, 1, n_ion=1.0)
+        sf.override_n_e(1e-4)
+        sf.solve(deposition_ev_per_s_per_cm3=100)
+        sf._frac_heating = 0.0
+        with pytest.warns(UserWarning, match="energy fractions sum to"):
+            sf.analyse_ntspectrum()
 
 
 def test_opal_J_applies_to_every_shell_of_its_ion() -> None:
@@ -658,42 +669,72 @@ def test_excitation_band_fill_matches_rowwise() -> None:
 def _reference_ionisation_fill(
     sf: pynonthermal.SpencerFanoSolver, n_ion: float, channel: pynonthermal.IonisationChannel
 ) -> npt.NDArray[np.float64]:
-    # the masked full-tail construction of one channel's matrix contribution that predates the
-    # forward-only cut pointers, kept verbatim as the reference the slice fill must reproduce
+    # the matrix terms of one channel from a full array for each row, with no column ranges. Each term is the
+    # mean over one grid interval of the probability that the ionisation moves an electron across an energy.
     engrid = sf.engrid
     npts = len(engrid)
     deltaen = sf.deltaen
     ionpot_ev = channel.ionpot_ev
     J = channel.J_ev
-    ar_xs_array = channel.xs_grid
-    xsstartindex = 0 if ionpot_ev <= engrid[0] else sf.get_energyindex_gteq(en_ev=ionpot_ev)
     atan_epsilon = np.arctan((engrid - ionpot_ev) / 2.0 / J)
     with np.errstate(divide="ignore", invalid="ignore"):
         prefactors = np.divide(
-            n_ion * ar_xs_array * deltaen, atan_epsilon, out=np.zeros(npts), where=atan_epsilon != 0.0
+            n_ion * channel.xs_grid * deltaen, atan_epsilon, out=np.zeros(npts), where=atan_epsilon != 0.0
         )
+    prefactors[engrid < ionpot_ev] = 0.0
     epsilon_uppers = np.minimum((engrid + ionpot_ev) / 2, engrid)
-    int_eps_uppers = np.arctan((epsilon_uppers - ionpot_ev) / J)
-    epsilon_lowers1 = np.maximum(engrid - engrid[0], ionpot_ev)
-    int_eps_lowers1 = np.arctan((epsilon_lowers1 - ionpot_ev) / J)
+    atan_uppers = np.arctan((epsilon_uppers - ionpot_ev) / J)
+
+    def atan_integral(epsilon: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        # the integral from ionpot_ev to epsilon of atan[(x - ionpot_ev) / J]. Above the upper limit of
+        # epsilon of each column, the function keeps its value at the limit.
+        u = np.maximum(np.minimum(epsilon, epsilon_uppers) - ionpot_ev, 0.0) / J
+        integral = J * (u * np.arctan(u) - 0.5 * np.log1p(u * u))
+        return integral + atan_uppers * np.maximum(epsilon - epsilon_uppers, 0.0)
+
+    def crossing_probability(epsilon_lower: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        # times the atan norm: the mean over [epsilon_lower, epsilon_lower + deltaen] of the integral of the
+        # distribution from that limit to the upper limit
+        atan_mean = (atan_integral(epsilon_lower + deltaen) - atan_integral(epsilon_lower)) / deltaen
+        return np.where(epsilon_lower < epsilon_uppers, atan_uppers - atan_mean, 0.0)
+
     contribution = np.zeros((npts, npts))
     for i, en in enumerate(engrid):
-        jstart = max(i, xsstartindex)
-        contribution[i, jstart:] += np.where(
-            epsilon_lowers1[jstart - i : npts - i] <= epsilon_uppers[jstart:],
-            prefactors[jstart:] * (int_eps_uppers[jstart:] - int_eps_lowers1[jstart - i : npts - i]),
-            0.0,
-        )
-        if 2 * en + ionpot_ev < engrid[-1] + deltaen:
-            secondintegralstartindex = sf.get_energyindex_lteq(float(2 * en + ionpot_ev))
-            epsilon_lower2 = en + ionpot_ev
-            int_eps_lower2 = math.atan((epsilon_lower2 - ionpot_ev) / J)
-            contribution[i, secondintegralstartindex:] -= np.where(
-                epsilon_lower2 <= epsilon_uppers[secondintegralstartindex:],
-                prefactors[secondintegralstartindex:] * (int_eps_uppers[secondintegralstartindex:] - int_eps_lower2),
-                0.0,
-            )
+        columns = np.arange(npts) >= i
+        contribution[i] += np.where(columns, prefactors * crossing_probability(engrid - en), 0.0)
+        contribution[i] -= prefactors * crossing_probability(np.full(npts, en + ionpot_ev))
     return contribution
+
+
+def test_ionisation_fill_holds_the_energy_of_each_ionisation() -> None:
+    # The sum of the rows of a column times deltaen is the energy that the matrix takes from the heating for
+    # one ionisation in that column: the loss of the primary less the energy of the secondary above E_0. Its
+    # mean is ionpot_ev plus the mean of min(E_s, E_0). The test gets that mean from the distribution of KF92
+    # equation 4. With the terms at the grid energies alone, the 3d shell of Fe I had 0.17 eV less than
+    # ionpot_ev on the default grid, and the energy fractions summed to more than one.
+    for emin, emax, npts, Z, ion_stage in [
+        (0.1, 16000.0, 1024, 26, 1),
+        (1.0, 3000.0, 311, 8, 2),
+        (7.9, 3000.0, 400, 26, 2),
+    ]:
+        with pynonthermal.SpencerFanoSolver(emin_ev=emin, emax_ev=emax, npts=npts) as sf:
+            sf.add_ionisation(Z, ion_stage, n_ion=1.0)
+            E_0 = float(sf.engrid[0])
+            for channel in sf._ionisation_channels[(Z, ion_stage)]:
+                matrix = np.zeros_like(sf.sfmatrix)
+                sf._add_ionisation_channel_to_matrix(1.0, channel, matrix=matrix)
+                ionpot_ev, J = channel.ionpot_ev, channel.J_ev
+                columns = np.flatnonzero((channel.xs_grid > 0.0) & (sf.engrid > ionpot_ev))
+                assert len(columns) > 10
+                for j in columns[[0, 1, 2, len(columns) // 2, -1]]:
+                    # the secondary has an energy E_s from zero to (E' - ionpot_ev) / 2. The mean of
+                    # min(E_s, E_0) is the integral over x in [0, E_0] of the probability that E_s > x.
+                    e_s_max = (sf.engrid[j] - ionpot_ev) / 2
+                    arr_x = np.linspace(0.0, min(E_0, e_s_max), 20001)
+                    arr_probability = 1.0 - np.arctan(arr_x / J) / math.atan(e_s_max / J)
+                    mean_below_e0 = float(np.trapezoid(arr_probability, arr_x))
+                    energy_ev = sf.deltaen * matrix[:, j].sum() / (channel.xs_grid[j] * sf.deltaen)
+                    assert math.isclose(energy_ev, ionpot_ev + mean_below_e0, rel_tol=1e-7), (Z, channel.key, j)
 
 
 def test_ltepop_excitation_grouped_fill() -> None:
@@ -713,11 +754,10 @@ def test_ltepop_excitation_grouped_fill() -> None:
 
 
 def test_ionisation_fill_matches_masked_reference() -> None:
-    # _add_ionisation_channel_to_matrix writes only each row's non-empty integral range, located by
-    # forward-only cut pointers that evaluate the same comparisons the per-row np.where masks
-    # used. The resulting matrix must agree with the masked full-tail construction to the rounding
-    # of the population factor, which the fill applies after the division by the arctan. The
-    # tolerance is relative to the largest entry, because the two integrals cancel in some entries.
+    # _add_ionisation_channel_to_matrix writes only the column range of each integral in each row, and it
+    # finds the ranges with pointers that only move forward. The matrix must agree with a fill from a full
+    # array for each row. The tolerance is relative to the largest entry, because the two integrals cancel
+    # in some entries.
     for emin, emax, npts, Z, ion_stage in [
         (1.0, 300.0, 193, 8, 2),
         (7.9, 16000.0, 217, 26, 2),  # emin well above 1 eV and a heavy ion with many shells
@@ -734,7 +774,6 @@ def test_ionisation_fill_matches_masked_reference() -> None:
             expected = np.zeros((npts, npts))
             for channel in sf._ionisation_channels[(Z, ion_stage)]:
                 expected += _reference_ionisation_fill(sf, n_ion, channel)
-            assert np.array_equal(sf.sfmatrix != 0.0, expected != 0.0), f"sparsity mismatch for {Z=} {ion_stage=}"
             atol = 1e-12 * float(np.abs(expected).max())
             assert np.allclose(sf.sfmatrix, expected, rtol=1e-12, atol=atol), f"mismatch for {Z=} {ion_stage=}"
 

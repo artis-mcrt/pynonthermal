@@ -287,15 +287,29 @@ class _ChannelFill:
     # the parts of the matrix fill of one ionisation channel that do not depend on the population
     # (see SpencerFanoSolver._build_channel_fill)
     unit_prefactors: npt.NDArray[np.float64]
+    # per column j: the upper limit of epsilon, atan((epsilon_upper - I) / J), and the integral of the
+    # atan function from I to the upper limit
+    epsilon_uppers: npt.NDArray[np.float64]
     int_eps_uppers: npt.NDArray[np.float64]
-    int_eps_lowers1: npt.NDArray[np.float64]
-    int_eps_lowers2: npt.NDArray[np.float64]
+    atan_integral_uppers: npt.NDArray[np.float64]
+    # per offset d = j - i: the integral of the atan function from I to d * deltaen (npts + 1 values), and
+    # its mean over [d * deltaen, (d + 1) * deltaen]
+    atan_integral_offsets: npt.NDArray[np.float64]
+    atan_mean_offsets: npt.NDArray[np.float64]
+    # per row i: the integral of the atan function from I to engrid[i] + I, and its mean over
+    # [engrid[i] + I, engrid[i] + I + deltaen]
+    atan_integral_rows: npt.NDArray[np.float64]
+    atan_mean_rows: npt.NDArray[np.float64]
     # the first column with a cross section. The first integral of row i starts at max(i, this).
     xsstartindex: int
-    # per row: the end of the column range of the first integral, and the first column of the
-    # second integral (-1 for a row without one)
+    # per row, for the first integral: the end of the columns whose interval of epsilon is all below the
+    # upper limit, and the end of the column range
+    cuts1_full: list[int]
     cuts1: list[int]
+    # per row, for the second integral: the first column (-1 for a row without one), and the first
+    # column whose interval of epsilon is all below the upper limit
     jstarts2: list[int]
+    jstarts2_full: list[int]
 
 
 @dataclasses.dataclass(slots=True, eq=False)
@@ -360,15 +374,6 @@ NPTS_SUBGRID_PER_J: int = 32
 # few J above it.
 NCELLS_SECOND_INTEGRAL_SUBGRID: int = 2
 
-# Number of nodes for the integral over E in [0, E_0] of KF92 equation 8. This one is not
-# free: every node costs the ionisation terms of calculate_N_e() over all ions and shells, so it dominates
-# the cost of the analysis. The excitation terms come from the matrix instead (see
-# _band_energy_below_e0()). It is integrated by Simpson's rule, which is fourth order here and reaches an accuracy
-# at 9 nodes that the trapezoid rule needs several hundred for. The node count is a property of this
-# integral alone: the old ceil(E_0 / deltaen) * 5 tied it to the main grid, which gave 5 nodes when
-# emin_ev was below the grid spacing and several hundred when it was well above.
-NPTS_SUB_E0_INTEGRAL: int = 9
-
 
 def solve_upper_triangular(
     a: npt.NDArray[np.float64],
@@ -415,21 +420,6 @@ def _add_scaled_upper_triangle(
     for start in range(0, npts, block_rows):
         stop = min(start + block_rows, npts)
         target[start:stop, start:] += scale * source[start:stop, start:]
-
-
-def integrate_simpson_uniform(y: npt.NDArray[np.float64], x: npt.NDArray[np.float64]) -> float:
-    """Composite Simpson's rule on a uniformly-spaced grid with an odd number of points."""
-    npts = x.shape[0]
-    # a ValueError and not an assert, because python -O removes an assert. Then an even number of points gave a
-    # wrong integral.
-    if npts < 3 or npts % 2 == 0:
-        msg = f"Simpson's rule needs an odd number of at least 3 points, but the grid has {npts}"
-        raise ValueError(msg)
-    weights = np.full(npts, 2.0, dtype=np.float64)
-    weights[1::2] = 4.0
-    weights[0] = weights[-1] = 1.0
-    h = (x[-1] - x[0]) / (npts - 1)
-    return float(h / 3.0 * (weights @ y))
 
 
 class SpencerFanoSolver:
@@ -723,7 +713,7 @@ class SpencerFanoSolver:
             for templates in element.excitation_templates.values():
                 arrays.extend(template.xs_vec for template in templates.values())
         for fill in self._channel_fills.values():
-            arrays.extend((fill.unit_prefactors, fill.int_eps_uppers, fill.int_eps_lowers1, fill.int_eps_lowers2))
+            arrays.extend(value for value in dataclasses.astuple(fill) if isinstance(value, np.ndarray))
         for array in arrays:
             array.flags.writeable = False
 
@@ -1835,26 +1825,51 @@ class SpencerFanoSolver:
         # the matrix entries of a channel are linear in the population, so the balance calls this
         # method with the change of the population, and the rest of the fill stays the same
         prefactors = n_ion * fill.unit_prefactors
+        epsilon_uppers = fill.epsilon_uppers
         int_eps_uppers = fill.int_eps_uppers
-        int_eps_lowers1 = fill.int_eps_lowers1
-        int_eps_lowers2 = fill.int_eps_lowers2
+        atan_integral_uppers = fill.atan_integral_uppers
+        atan_integral_offsets = fill.atan_integral_offsets
+        atan_mean_offsets = fill.atan_mean_offsets
         xsstartindex = fill.xsstartindex
         sfmatrix = self.sfmatrix if matrix is None else matrix
         npts = len(self.engrid)
+        deltaen = self.deltaen
+        ionpot_ev = channel.ionpot_ev
         # one buffer for the products of every row, in place of two temporaries per row
         buffer = np.empty(npts)
-        for i, (cut1, jstart2) in enumerate(zip(fill.cuts1, fill.jstarts2, strict=True)):
+        # Each term is the mean over one grid interval of the probability that the ionisation moves an
+        # electron across the energy, as for the band of an excitation and for the rows of an Auger
+        # electron. The sum of the rows times deltaen is then the exact mean energy that the primary
+        # loses and that the secondary gets. A value of the probability at the row energy alone gave an
+        # energy error that changed with the position of ionpot_ev between two grid points.
+        for i, (cut1_full, cut1, jstart2, jstart2_full) in enumerate(
+            zip(fill.cuts1_full, fill.cuts1, fill.jstarts2, fill.jstarts2_full, strict=True)
+        ):
             # first integral of the KF92 equation 7 ionisation term: primaries at endash carried
             # across en by the energy loss epsilon of an ionisation event.
             # at each endash (columns j >= jstart), the integral in epsilon ranges from
             # epsilon_lower = max(endash - en, ionpot_ev)
             # epsilon_upper = min((endash + ionpot_ev) / 2, endash)
+            # and the term is the mean over the lower limits endash - en to endash - en + deltaen
             jstart = max(xsstartindex, i)
-            if cut1 > jstart:
-                product = buffer[: cut1 - jstart]
-                np.subtract(int_eps_uppers[jstart:cut1], int_eps_lowers1[jstart - i : cut1 - i], out=product)
-                product *= prefactors[jstart:cut1]
-                sfmatrix[i, jstart:cut1] += product
+            if cut1_full > jstart:
+                product = buffer[: cut1_full - jstart]
+                np.subtract(
+                    int_eps_uppers[jstart:cut1_full], atan_mean_offsets[jstart - i : cut1_full - i], out=product
+                )
+                product *= prefactors[jstart:cut1_full]
+                sfmatrix[i, jstart:cut1_full] += product
+            jpart = max(cut1_full, jstart)
+            if cut1 > jpart:
+                # the upper limit of epsilon is inside the interval. Above it, the atan function keeps its
+                # value at the upper limit.
+                interval_ends = (np.arange(jpart, cut1) - i + 1) * deltaen
+                atan_means = (
+                    atan_integral_uppers[jpart:cut1]
+                    + int_eps_uppers[jpart:cut1] * (interval_ends - epsilon_uppers[jpart:cut1])
+                    - atan_integral_offsets[jpart - i : cut1 - i]
+                ) / deltaen
+                sfmatrix[i, jpart:cut1] += prefactors[jpart:cut1] * (int_eps_uppers[jpart:cut1] - atan_means)
 
             if jstart2 >= 0:
                 # second integral of the KF92 equation 7 ionisation term, subtracted: an
@@ -1865,10 +1880,22 @@ class SpencerFanoSolver:
                 # at each endash, the integral in epsilon ranges from
                 # epsilon_lower = en + ionpot_ev
                 # epsilon_upper = min((endash + ionpot_ev) / 2, endash)
-                product = buffer[: npts - jstart2]
-                np.subtract(int_eps_uppers[jstart2:], int_eps_lowers2[i], out=product)
-                product *= prefactors[jstart2:]
-                sfmatrix[i, jstart2:] -= product
+                # and the term is the mean over the lower limits en + ionpot_ev to en + ionpot_ev + deltaen
+                if jstart2_full < npts:
+                    product = buffer[: npts - jstart2_full]
+                    np.subtract(int_eps_uppers[jstart2_full:], fill.atan_mean_rows[i], out=product)
+                    product *= prefactors[jstart2_full:]
+                    sfmatrix[i, jstart2_full:] -= product
+                if jstart2_full > jstart2:
+                    interval_end = float(self.engrid[i]) + ionpot_ev + deltaen
+                    atan_means = (
+                        atan_integral_uppers[jstart2:jstart2_full]
+                        + int_eps_uppers[jstart2:jstart2_full] * (interval_end - epsilon_uppers[jstart2:jstart2_full])
+                        - fill.atan_integral_rows[i]
+                    ) / deltaen
+                    sfmatrix[i, jstart2:jstart2_full] -= prefactors[jstart2:jstart2_full] * (
+                        int_eps_uppers[jstart2:jstart2_full] - atan_means
+                    )
 
         self._subtract_auger_electrons(n_ion, channel, xsstartindex, matrix=sfmatrix)
 
@@ -1931,53 +1958,83 @@ class SpencerFanoSolver:
         epsilon_uppers = np.minimum((self.engrid + ionpot_ev) / 2, self.engrid)
         int_eps_uppers = np.arctan((epsilon_uppers - ionpot_ev) / J)
 
+        def atan_integral(epsilon: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+            # the integral from ionpot_ev to epsilon of atan[(x - ionpot_ev) / J] dx. It is zero for an
+            # epsilon below ionpot_ev, because no secondary has an energy below zero.
+            u = np.maximum(epsilon - ionpot_ev, 0.0) / J
+            return J * (u * np.arctan(u) - 0.5 * np.log1p(u * u))
+
+        atan_integral_uppers = atan_integral(epsilon_uppers)
+
         # for the resulting arrays, use index j - i corresponding to energy endash - en, so each
         # entry depends only on the column j and the offset j - i
-        epsilon_lowers1 = np.maximum(self.engrid - self.engrid[0], ionpot_ev)
-        int_eps_lowers1 = np.arctan((epsilon_lowers1 - ionpot_ev) / J)
+        offsets = np.arange(npts + 1, dtype=np.float64) * deltaen
+        atan_integral_offsets = atan_integral(offsets)
+        atan_mean_offsets = np.diff(atan_integral_offsets) / deltaen
 
-        # each integral is non-empty (epsilon_lower <= epsilon_upper) on a contiguous column
-        # range located below without evaluating per-row masks, so the slice writes touch only
-        # the non-zero part of each row. For the first integral: every written column has
-        # engrid[j] >= ionpot_ev, so the range is non-empty while epsilon_lowers1 sits on its
-        # ionpot_ev plateau, and past the plateau it rises with j at the full grid spacing
-        # against half that for epsilon_uppers, giving at most one non-empty-to-empty switch
-        # per row; raising en only moves that switch right, so a forward-only pointer tracks it
-        # with the same comparisons the mask would make. For the second integral the lower
-        # limit is constant along the row, so the range start is a searchsorted into the
-        # non-decreasing epsilon_uppers. That start is the first column j with
-        # epsilon_uppers[j] >= en + ionpot_ev, which needs engrid[j] >= 2 * en + ionpot_ev.
+        # the first integral of a row is not zero while endash - en < epsilon_upper. The offset
+        # rises with j at the full grid spacing against half that for epsilon_uppers, so the range
+        # has at most one switch per row. A larger en only moves that switch to the right, so a
+        # pointer that only moves forward finds it. The interval of a column is all below the upper
+        # limit while endash - en + deltaen <= epsilon_upper, and a second pointer finds that switch.
+        # For the second integral the lower limit is constant along the row, so each switch is a
+        # searchsorted into the non-decreasing epsilon_uppers.
         epsilon_lowers2 = self.engrid + ionpot_ev
-        int_eps_lowers2 = np.arctan((epsilon_lowers2 - ionpot_ev) / J)
-        jstart2_indices = np.searchsorted(epsilon_uppers, epsilon_lowers2)
+        atan_integral_rows = atan_integral(epsilon_lowers2)
+        atan_mean_rows = (atan_integral(epsilon_lowers2 + deltaen) - atan_integral_rows) / deltaen
+        jstart2_indices = np.searchsorted(epsilon_uppers, epsilon_lowers2, side="right")
+        jstart2_full_indices = np.searchsorted(epsilon_uppers, epsilon_lowers2 + deltaen)
         # -1 marks a row whose second integral has an empty domain
-        second_integral_rows = 2 * self.engrid + ionpot_ev < self.engrid[-1] + deltaen
+        second_integral_rows = jstart2_indices < npts
         jstarts2 = np.where(second_integral_rows, jstart2_indices, -1).tolist()
+        jstarts2_full = jstart2_full_indices.tolist()
 
         # Python lists, because the loop reads one scalar per row, and a numpy scalar index costs
         # more than the comparison itself
-        lowers1 = epsilon_lowers1.tolist()
+        lowers1 = offsets.tolist()
         uppers = epsilon_uppers.tolist()
+        cuts1_full = []
         cuts1 = []
+        cut1_full = 0
         cut1 = 0  # end of the first integral's non-empty column range, clamped to jstart per row
         for i in range(npts):
-            cut1 = max(cut1, i, xsstartindex)
-            while cut1 < npts and lowers1[cut1 - i] <= uppers[cut1]:
+            cut1_full = max(cut1_full, i, xsstartindex)
+            while cut1_full < npts and lowers1[cut1_full - i + 1] <= uppers[cut1_full]:
+                cut1_full += 1
+            cut1 = max(cut1, cut1_full)
+            while cut1 < npts and lowers1[cut1 - i] < uppers[cut1]:
                 cut1 += 1
+            cuts1_full.append(cut1_full)
             cuts1.append(cut1)
 
         # the fill is shared by every later call for the channel, so a write must raise
-        for arr in (unit_prefactors, int_eps_uppers, int_eps_lowers1, int_eps_lowers2):
+        arrays = (
+            unit_prefactors,
+            epsilon_uppers,
+            int_eps_uppers,
+            atan_integral_uppers,
+            atan_integral_offsets,
+            atan_mean_offsets,
+            atan_integral_rows,
+            atan_mean_rows,
+        )
+        for arr in arrays:
             arr.flags.writeable = False
 
         return _ChannelFill(
             unit_prefactors=unit_prefactors,
+            epsilon_uppers=epsilon_uppers,
             int_eps_uppers=int_eps_uppers,
-            int_eps_lowers1=int_eps_lowers1,
-            int_eps_lowers2=int_eps_lowers2,
+            atan_integral_uppers=atan_integral_uppers,
+            atan_integral_offsets=atan_integral_offsets,
+            atan_mean_offsets=atan_mean_offsets,
+            atan_integral_rows=atan_integral_rows,
+            atan_mean_rows=atan_mean_rows,
             xsstartindex=xsstartindex,
+            cuts1_full=cuts1_full,
             cuts1=cuts1,
             jstarts2=jstarts2,
+            jstarts2_full=jstarts2_full,
         )
 
     def _get_auger_electron_rows(self, channel: IonisationChannel) -> tuple[int, float]:
@@ -3194,11 +3251,11 @@ class SpencerFanoSolver:
             msg = f"energy_ev must be at least zero and finite but is {energy_ev}"
             raise ValueError(msg)
         # a Python float, because a numpy float16 energy makes the limits of the sub-grids float16
-        return self._calculate_N_e(float(energy_ev), include_excitation_terms=True)
+        return self._calculate_N_e(float(energy_ev))
 
-    def _calculate_N_e(self, energy_ev: float, include_excitation_terms: bool) -> float:
-        # N(E) of calculate_N_e(). Without include_excitation_terms, N(E) holds only the ionisation
-        # terms. calculate_frac_heating() gets the energy of the excitation terms from the matrix.
+    def _calculate_N_e(self, energy_ev: float) -> float:
+        # N(E) of calculate_N_e(). calculate_frac_heating() does not use it: the energy below E_0 comes
+        # from the terms of the matrix (see _band_energy_below_e0() and _ionisation_energy_below_e0()).
         # N(E) of KF92 equation 11: the rate at which electrons appear at an
         # energy E below the solved grid. Its three terms are electrons that excited an ion
         # from E + epsilon_trans, primaries degraded by an ionisation energy loss (with the
@@ -3235,7 +3292,7 @@ class SpencerFanoSolver:
             N_e_ion = 0.0
             n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
 
-            transitions = self.excitationlists.get((Z, ion_stage), {}) if include_excitation_terms else {}
+            transitions = self.excitationlists.get((Z, ion_stage), {})
             for trans in transitions.values():
                 # Interpolate y and the cross section at energy_ev + epsilon_trans_ev, as the two
                 # ionisation integrals below also do, rather than snapping down to the grid point under
@@ -3254,8 +3311,7 @@ class SpencerFanoSolver:
                     # term above, with the ion population as the level population, and it has no
                     # secondary integrals. The cross section comes from the grid array, as for an
                     # excitation, so the two terms agree to machine precision.
-                    if include_excitation_terms:
-                        N_e_ion += y_times_xs(energy_ev + ionpot_ev, channel.xs_grid)
+                    N_e_ion += y_times_xs(energy_ev + ionpot_ev, channel.xs_grid)
                     continue
 
                 enlambda = min(e_max - energy_ev, energy_ev + ionpot_ev)
@@ -3365,6 +3421,55 @@ class SpencerFanoSolver:
         energy_below_e0_ev = deltaen * weight_total + float(self.engrid[0]) * weight_row0 - epsilon_ev
         return float(np.dot(xs_vec[jstart:jstop] * self.yvec[jstart:jstop], energy_below_e0_ev) * deltaen)
 
+    def _ionisation_energy_below_e0(self, channel: IonisationChannel) -> float:
+        # the energy below E_0 of the electrons of the ionisations of one channel, for a unit population.
+        # The value comes from the terms of the channel in the matrix (see
+        # _add_ionisation_channel_to_matrix()), so the analysis and the matrix agree to rounding.
+        # For an ionisation in column j, the rows times deltaen hold the energy of the secondary above
+        # E_0, and the term E_0 y(E_0) L(E_0) adds E_0 times the weight of the secondary in row 0. The
+        # rest of the energy of the secondary is min(E_s, E_0) less E_0 times that weight.
+        # The primary has the weight 1 in each row from 0 to j before the ionisation, which is the
+        # energy engrid[j] + deltaen with the term at E_0 (see E_init_ev in __init__). It keeps the
+        # weight 1 less its loss term in each row. For a primary that ends at E_f below E_0, the rows and
+        # the term at E_0 keep (1 - w) (deltaen + E_0), where w is its loss term in row 0. The rest
+        # of E_f + deltaen is also energy below E_0.
+        deltaen = self.deltaen
+        E_0 = float(self.engrid[0])
+        ionpot_ev = channel.ionpot_ev
+        J = channel.J_ev
+        epsilon_uppers = np.minimum((self.engrid + ionpot_ev) / 2, self.engrid)
+        atan_uppers = np.arctan((epsilon_uppers - ionpot_ev) / J)
+
+        def atan_integral(epsilon: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+            # the integral from ionpot_ev to epsilon of the atan function, which keeps its value at the
+            # upper limit of epsilon above that limit
+            u = np.maximum(np.minimum(epsilon, epsilon_uppers) - ionpot_ev, 0.0) / J
+            integral = J * (u * np.arctan(u) - 0.5 * np.log1p(u * u))
+            return integral + atan_uppers * np.maximum(epsilon - epsilon_uppers, 0.0)
+
+        valid = (atan_uppers > 0.0) & (channel.xs_grid > 0.0)
+        norm = np.where(valid, atan_uppers, 1.0)
+
+        # the secondary, with the energy E_s = epsilon - ionpot_ev
+        row0_lower = np.full_like(self.engrid, E_0 + ionpot_ev)
+        secondary_below_e0 = E_0 - atan_integral(row0_lower) / norm
+        secondary_weight_row0 = 1.0 - (atan_integral(row0_lower + deltaen) - atan_integral(row0_lower)) / (
+            deltaen * norm
+        )
+        secondary_energy_ev = secondary_below_e0 - E_0 * secondary_weight_row0
+
+        # the primary, with the energy E_f = engrid[j] - epsilon. offsets is the loss that moves it to E_0.
+        offsets = self.engrid - E_0
+        atan_integral_offsets = atan_integral(offsets)
+        primary_loss_row0 = 1.0 - (atan_integral(offsets + deltaen) - atan_integral_offsets) / (deltaen * norm)
+        # the mean of E_0 - E_f over the primaries that end below E_0
+        loss_ends = self.engrid + deltaen
+        primary_depth_below_e0 = (loss_ends - offsets) - (atan_integral(loss_ends) - atan_integral_offsets) / norm
+        primary_energy_ev = (deltaen + E_0) * primary_loss_row0 - primary_depth_below_e0
+
+        energy_below_e0_ev = secondary_energy_ev + primary_energy_ev
+        return float(np.dot(np.where(valid, channel.xs_grid * self.yvec, 0.0), energy_below_e0_ev) * deltaen)
+
     def calculate_frac_heating(self) -> float:
         """Calculate the share of the deposited energy that heats the free thermal electrons (KF92 equation 8).
 
@@ -3400,18 +3505,17 @@ class SpencerFanoSolver:
         # N_e term below E_0 would count the same energy twice. calculate_N_e() itself still
         # gives the secondary-electron rate of the approximate solution.
         if not self.heating_only_approximation:
-            # the ionisation terms of E * N_e(E) are smooth over [0, E_0]. Simpson's rule therefore
-            # gives 5e-5 of the converged value at 9 nodes. The trapezoid rule needs several hundred.
-            arr_en = np.linspace(0.0, E_0, num=NPTS_SUB_E0_INTEGRAL, endpoint=True, dtype=np.float64)
-            arr_en_N_e = np.array(
-                [en_ev * self._calculate_N_e(en_ev, include_excitation_terms=False) for en_ev in arr_en],
-                dtype=np.float64,
-            )
-            integral_e_n_e = integrate_simpson_uniform(arr_en_N_e, arr_en)
+            # the energy below E_0 of the electrons of each ionisation, from the terms of the matrix
+            # (see _ionisation_energy_below_e0())
+            integral_e_n_e = 0.0
+            for (Z, ion_stage), channels in self._ionisation_channels.items():
+                n_ion = self.ionpopdict.get((Z, ion_stage), 0.0)
+                for channel in channels:
+                    if not channel.autoionisation and n_ion > 0.0:
+                        integral_e_n_e += n_ion * self._ionisation_energy_below_e0(channel)
 
-            # the excitation terms of N(E): every transition, and every autoionisation channel. A term is
-            # zero where E + eps is outside the grid, so it can have a step inside [0, E_0]. The rule
-            # of Simpson cannot resolve a step, so the energy comes from the band of the term in the matrix.
+            # the excitation terms of N(E): every transition, and every autoionisation channel. The energy
+            # comes from the band of the term in the matrix (see _band_energy_below_e0()).
             for Z, ion_stage in self._get_all_ions():
                 for trans in self.excitationlists.get((Z, ion_stage), {}).values():
                     integral_e_n_e += trans.levelnumberdensity * self._band_energy_below_e0(
@@ -3630,9 +3734,10 @@ class SpencerFanoSolver:
             print(f"         frac_heating: {frac_heating:.4f}")
             print(f"             frac_sum: {frac_sum:.4f}")
 
-        # every deposited eV must end up in exactly one of the three channels. A warning here means that a
-        # channel is counted two times or not at all, or that the grid is too coarse. A sum inside the tolerance
-        # does not show that the grid is fine enough (see get_frac_sum()). The heating-only approximation makes
+        # every deposited eV must end up in exactly one of the three channels. The terms of the matrix and
+        # of the analysis give a sum of one to rounding on each grid, so a warning here means that a
+        # channel is counted two times or not at all. A sum of one does not show that the grid is fine
+        # enough (see get_frac_sum()). The heating-only approximation makes
         # the sum more than one, so there the conserved quantity is the heating fraction alone, which must be
         # near one.
         if self.heating_only_approximation:
@@ -3645,7 +3750,7 @@ class SpencerFanoSolver:
             _warn(
                 f"the energy fractions sum to {frac_sum:.4f} instead of 1: heating {frac_heating:.4f},"
                 f" ionisation {self._frac_ionisation_tot:.4f}, excitation {self._frac_excitation_tot:.4f}."
-                f" Try a finer energy grid (npts is {len(self.engrid)})."
+                " The solver or a custom channel counts some energy two times or not at all."
             )
 
     def _calculate_ionisation_ratecoeff(self, Z: int, ion_stage: int, n_ejected: int | None = None) -> float:
@@ -3796,10 +3901,10 @@ class SpencerFanoSolver:
     def get_frac_sum(self) -> float:
         """Get the sum of the heating, ionisation, and excitation fractions.
 
-        It is one when the energy grid resolves every ionisation and excitation of the plasma. The
-        solver warns when it is far from one. A sum near one does not show that each fraction has
-        converged: the heating sum and the ionisation fill share an error of the first order in the
-        grid spacing, and the sum cancels it. To check a result, compare it with a finer grid (npts).
+        The matrix and the analysis count each energy loss with the same weights, so the sum is one
+        to rounding on each energy grid. The solver warns when it is far from one. A sum of one does
+        not show that each fraction has converged. To check a result, compare it with a finer grid
+        (npts).
         """
         return self.get_frac_heating() + self.get_frac_excitation_tot() + self.get_frac_ionisation_tot()
 

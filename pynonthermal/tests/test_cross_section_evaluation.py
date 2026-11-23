@@ -1,5 +1,7 @@
 """Check cross sections between the energy grid points."""
 
+import math
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -19,10 +21,12 @@ def test_invalid_cross_section_between_grid_points(invalid_value: float) -> None
     sf.override_n_e(1e7)
     sf.solve(1e8)
 
+    # the heating fraction comes from the terms of the matrix, which hold the cross section at the grid
+    # energies only. N(E) reads the cross section between the grid points.
     with pytest.raises(ValueError, match=r"channel custom.*finite and non-negative.*14\..* eV"):
-        sf.get_frac_heating()
-    assert sf._frac_heating is None
+        sf.calculate_N_e(0.1)
     assert np.isfinite(sf.yvec).all()
+    assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=1e-9)
 
 
 def test_wrong_cross_section_shape_between_grid_points() -> None:

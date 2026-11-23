@@ -105,7 +105,7 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time. To check
   `npts`, compare the fractions with those of a finer grid. The sum of the fractions (`get_frac_sum()`)
-  can be near one on a grid that is too coarse, because the sum cancels most of the error of the grid.
+  is one to rounding on each grid, also on a grid that is too coarse, so it does not show convergence.
 - `verbose`: print the setup, each added ionisation channel, and a per-ion, per-shell breakdown.
 - `use_ar1985`: use the original Arnaud and Rothenflug (1985, A&AS, 60, 425–457) ionisation cross sections
   (see [Cross-section datasets](#cross-section-datasets)).
@@ -199,7 +199,7 @@ Energy fractions, as shares of the deposited energy:
 sf.get_frac_heating()  # to heating of the thermal electrons
 sf.get_frac_ionisation_tot()  # to ionisation, over all ions
 sf.get_frac_excitation_tot()  # to excitation, over all ions
-sf.get_frac_sum()  # the sum; near 1.0 also on a grid that is too coarse (see npts above)
+sf.get_frac_sum()  # the sum; 1.0 to rounding, also on a grid that is too coarse (see npts above)
 sf.get_frac_ionisation_ion(Z, ion_stage)  # one ion's share
 sf.get_frac_excitation_ion(Z, ion_stage)
 ```

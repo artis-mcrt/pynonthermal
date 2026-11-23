@@ -175,7 +175,7 @@ def test_dense_neutral_balance_seed() -> None:
     with pytest.raises(ValueError, match="loss function is not valid"):
         sf.electronlossfunction(0.1)
     sf.solve(1e8)
-    assert math.isclose(sf.get_n_e(), 2.19876e9, rel_tol=1e-4)
+    assert math.isclose(sf.get_n_e(), 2.25765e9, rel_tol=1e-4)
     assert math.isclose(sf.get_n_ion_tot(), 1e20, rel_tol=1e-12)
     check_balance_identity(sf, 1, alphas, tol=2e-4)
 

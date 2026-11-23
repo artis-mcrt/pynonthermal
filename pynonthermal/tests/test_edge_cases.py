@@ -178,16 +178,6 @@ def test_zbar_needs_a_total_density_greater_than_zero() -> None:
             pynonthermal.base.get_Zbar(populations, populations)
 
 
-def test_simpson_needs_an_odd_number_of_at_least_three_points() -> None:
-    # python -O removes an assert. Then an even number of points gave a wrong integral.
-    for npts in (1, 2, 4):
-        x = np.linspace(0.0, 1.0, npts)
-        with pytest.raises(ValueError, match="odd number of at least 3 points"):
-            pynonthermal.spencerfano.integrate_simpson_uniform(x**2, x)
-    x = np.linspace(0.0, 1.0, 5)
-    assert pynonthermal.spencerfano.integrate_simpson_uniform(x**2, x) == pytest.approx(1.0 / 3.0)
-
-
 def test_zero_population_is_registered_by_every_method() -> None:
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
     sf.add_ionisation(8, 1, 0.0)
