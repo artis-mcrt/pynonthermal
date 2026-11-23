@@ -39,7 +39,11 @@ class ExcitationTransition:
     """The population density of the lower level [cm^-3]."""
 
     xs_vec: npt.NDArray[np.float64]
-    """The cross section [cm^2] at every energy of SpencerFanoSolver.engrid."""
+    """The cross section [cm^2] of each column of the solver matrix.
+
+    The value of column j is at the middle of its grid interval, SpencerFanoSolver.engrid_mid[j]. It is zero
+    where that energy is below the transition energy.
+    """
 
     epsilon_trans_ev: float
     """The transition energy [eV]."""
@@ -49,6 +53,9 @@ def get_xs_excitation_vector(
     engrid: npt.NDArray[np.float64], row: dict[str, t.Any], use_collstrengths: bool = True
 ) -> npt.NDArray[np.float64]:
     """Get an array that holds the excitation cross section in cm^2 at every energy of engrid (eV).
+
+    The cross section is zero at each energy below the transition energy. The solver gives
+    SpencerFanoSolver.engrid_mid as engrid.
 
     This is the sigma of the excitation term in the degradation equation (KF92 equation 7). A
     transition with a collision strength gets the cross section of LHD12 equation 11. A permitted

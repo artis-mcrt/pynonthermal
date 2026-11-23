@@ -168,7 +168,7 @@ def test_N_e_excitation_above_grid() -> None:
             26,
             2,
             levelnumberdensity=1e8,
-            xs_vec=np.where(sf.engrid >= epsilon_trans_ev, 1e-16, 0.0),
+            xs_vec=np.where(sf.engrid_mid >= epsilon_trans_ev, 1e-16, 0.0),
             epsilon_trans_ev=epsilon_trans_ev,
         )
         sf.override_n_e(1e8)
@@ -215,8 +215,10 @@ def test_N_e_empty_second_integral_domain() -> None:
     # KF92 eq. 6 has an integral over [2E + I, E_max]. When 2E + I lies beyond the
     # top of the grid that domain is empty, but get_energyindex_lteq clamps to the last bin,
     # which used to add one spurious term. Na XI's single shell (I = 1465 eV) on a 1400-3000 eV
-    # grid makes the domain empty for every E > 767.5 eV.
-    with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=400) as sf:
+    # grid makes the domain empty for every E > 767.5 eV. The spurious term is in proportion to the square
+    # of the grid spacing. With 150 points it is 2.4e-3 of N(E), which is 20 times the quadrature error of
+    # the sub-grid of the solver.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=150) as sf:
         sf.add_ionisation(11, 10, n_ion=1e8)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
@@ -236,17 +238,18 @@ def test_N_e_empty_second_integral_domain() -> None:
         enlambda = min(float(sf.engrid[-1]) - energy_ev, energy_ev + ionpot_ev)
         arr_epsilon: npt.NDArray[np.float64] = np.linspace(ionpot_ev, enlambda, num=20001)
         arr_e_p: npt.NDArray[np.float64] = energy_ev + arr_epsilon
-        arr_y: npt.NDArray[np.float64] = np.interp(arr_e_p, sf.engrid, sf.yvec, left=0.0, right=0.0)
+        arr_y: npt.NDArray[np.float64] = np.interp(arr_e_p, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
         arr_xs = pynonthermal.collion.get_arxs_array_shell(arr_e_p, shell)
         # the closed form of Psecondary, written out so that the reference does not depend on the
         # implementation it is checking
         arr_p = 1.0 / J / np.arctan((arr_e_p - ionpot_ev) / 2 / J) / (1 + ((arr_epsilon - ionpot_ev) / J) ** 2)
         expected = 1e8 * float(np.trapezoid(arr_y * arr_xs * arr_p, arr_epsilon))
 
-        # the tolerance covers the solver's own coarser sub-grids for these integrals, and is tight
-        # enough to notice the empty-domain guard going away (asserted just below)
+        # the tolerance covers the solver's own coarser sub-grids for these integrals (up to 2e-4 for
+        # this integral, which crosses the source region), and is tight enough to notice the empty-domain
+        # guard going away (asserted just below)
         got = sf.calculate_N_e(energy_ev)
-        assert math.isclose(got, expected, rel_tol=1e-4)
+        assert math.isclose(got, expected, rel_tol=5e-4)
 
         # reproduce the term the old clamping added, and check the result would no longer pass
         clamped_index = sf.get_energyindex_lteq(2 * energy_ev + ionpot_ev)
@@ -258,8 +261,33 @@ def test_N_e_empty_second_integral_domain() -> None:
                 e_p=float(sf.engrid[clamped_index]), e_s=energy_ev, ionpot_ev=ionpot_ev, J=J
             )
         )
-        assert spurious > 0.0
-        assert not math.isclose(got + spurious, expected, rel_tol=1e-4)
+        assert spurious > 2e-3 * expected
+        assert not math.isclose(got + spurious, expected, rel_tol=5e-4)
+
+
+def test_N_e_second_integral_ends_at_emax() -> None:
+    # The second integral of KF92 eq. 6 runs over [2E + I, E_max]. It becomes empty at E = (E_max - I) / 2, so
+    # N(E) is continuous there. The solution is at the middle of each grid interval, and the last of these
+    # energies is half an interval above E_max. With that energy as the end of the integral, N(E) had a step
+    # of 1.2 times the term below, which is half an interval at E_max.
+    with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=150) as sf:
+        sf.add_ionisation(11, 10, n_ion=1e8)
+        sf.solve(deposition_ev_per_s_per_cm3=1e8)
+        channel = sf._ionisation_channels[(11, 10)][0]
+        e_max = float(sf.engrid[-1])
+        energy_empty_ev = (e_max - channel.ionpot_ev) / 2
+        half_interval_term = 1e8 * float(
+            0.5
+            * sf.deltaen
+            * sf.yvec[-1]
+            * channel.evaluate_xs(np.array([e_max]))[0]
+            * pynonthermal.collion.Psecondary_vec(
+                e_p=e_max, e_s=energy_empty_ev, ionpot_ev=channel.ionpot_ev, J=channel.J_ev
+            )
+        )
+        assert half_interval_term > 1e-4 * sf.calculate_N_e(energy_empty_ev)
+        step = sf.calculate_N_e(energy_empty_ev - 1e-7) - sf.calculate_N_e(energy_empty_ev + 1e-7)
+        assert abs(step) < 1e-3 * half_interval_term
 
 
 def test_N_e_epsilon_integral_not_keyed_to_the_grid() -> None:
@@ -350,7 +378,7 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
                 narrow_domain_seen |= (enlambda - ionpot_ev) < sf.deltaen
                 arr_epsilon = np.linspace(ionpot_ev, enlambda, num=20001)
                 arr_e_p = arr_epsilon + energy_ev
-                arr_y = np.interp(arr_e_p, sf.engrid, sf.yvec, left=0.0, right=0.0)
+                arr_y = np.interp(arr_e_p, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
                 arr_xs = pynonthermal.collion.get_arxs_array_shell(arr_e_p, shell)
                 arr_p = psecondary(arr_e_p, arr_epsilon - ionpot_ev, ionpot_ev, J)
                 expected += float(np.trapezoid(arr_y * arr_xs * arr_p, arr_epsilon))
@@ -358,7 +386,7 @@ def test_N_e_epsilon_integral_value_on_a_narrow_domain() -> None:
             en_lower2 = 2 * energy_ev + ionpot_ev
             if en_lower2 < emax:
                 arr_e_p2 = np.linspace(en_lower2, emax, num=40001)
-                arr_y2 = np.interp(arr_e_p2, sf.engrid, sf.yvec, left=0.0, right=0.0)
+                arr_y2 = np.interp(arr_e_p2, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
                 arr_xs2 = pynonthermal.collion.get_arxs_array_shell(arr_e_p2, shell)
                 arr_p2 = psecondary(arr_e_p2, energy_ev, ionpot_ev, J)
                 expected += float(np.trapezoid(arr_y2 * arr_xs2 * arr_p2, arr_e_p2))
@@ -464,7 +492,7 @@ def test_excitation_only_ion_counted() -> None:
         sf.set_temperature(3000)
         sf.set_atomic_data(use_collstrengths=False)
         sf.add_ionisation(8, 2, n_ion=1e8)
-        xs_vec = np.where(sf.engrid >= 20.0, 1e-16, 0.0)
+        xs_vec = np.where(sf.engrid_mid >= 20.0, 1e-16, 0.0)
         sf.add_excitation(26, 2, levelnumberdensity=1e8, xs_vec=xs_vec, epsilon_trans_ev=20.0)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
@@ -587,11 +615,12 @@ def test_n_e_nt_relativistic() -> None:
 
         # the classical speed exceeds the relativistic one, so it gives a lower density. Comparing
         # against it pins the physics without restating the implementation.
-        arr_velocity_classical = np.sqrt(2 * sf.engrid * pynonthermal.constants.EV / pynonthermal.constants.ME)
+        # yvec[j] is the solution at the middle of grid interval j
+        arr_velocity_classical = np.sqrt(2 * sf.engrid_mid * pynonthermal.constants.EV / pynonthermal.constants.ME)
         assert n_e_nt > float(np.sum(sf.yvec / arr_velocity_classical) * sf.deltaen)
 
         # and no electron may travel faster than light, which the classical form allows above 511 keV
-        assert (pynonthermal.base.get_betasq(sf.engrid) < 1.0).all()
+        assert (pynonthermal.base.get_betasq(sf.engrid_mid) < 1.0).all()
         assert n_e_nt > float(np.sum(sf.yvec) * sf.deltaen / pynonthermal.constants.CLIGHT)
 
 
@@ -622,9 +651,9 @@ def _reference_excitation_fill(
     deltaen = sf.deltaen
     contribution = np.zeros((npts, npts))
     vec = levelnumberdensity * deltaen * xs_vec
-    # the threshold bin is the first bin whose energy reaches the transition energy, and no bin
+    # the threshold bin is the first bin whose middle energy reaches the transition energy, and no bin
     # below it contributes, also not as the partial bin of a row
-    xsstartindex = sf.get_energyindex_gteq(en_ev=epsilon_trans_ev)
+    xsstartindex = int(np.searchsorted(sf.engrid_mid, epsilon_trans_ev))
     vec[:xsstartindex] = 0.0
     k = int(epsilon_trans_ev / deltaen)
     frac = epsilon_trans_ev / deltaen - k
@@ -661,7 +690,7 @@ def test_excitation_band_fill_matches_rowwise() -> None:
             xs_vec = rng.random(npts) * 1e-16
             sf.add_excitation(8, 2, levelnumberdensity=1e5, xs_vec=xs_vec, epsilon_trans_ev=epsilon_trans_ev)
             stored = sf.excitationlists[(8, 2)][0].xs_vec
-            assert not stored[: sf.get_energyindex_gteq(en_ev=epsilon_trans_ev)].any()
+            assert not stored[: int(np.searchsorted(sf.engrid_mid, epsilon_trans_ev))].any()
             expected = _reference_excitation_fill(sf, 1e5, xs_vec, epsilon_trans_ev)
             assert sf.sfmatrix.tobytes() == expected.tobytes(), f"mismatch for {epsilon_trans_ev=}"
 
@@ -840,7 +869,7 @@ def test_custom_ionisation_channel_matches_the_builtin_path() -> None:
                 ion_stage,
                 n_ion=n_ion,
                 ionpot_ev=float(shell["ionpot_ev"]),
-                xs_vec=pynonthermal.collion.get_arxs_array_shell(sf_custom.engrid, shell),
+                xs_vec=pynonthermal.collion.get_arxs_array_shell(sf_custom.engrid_mid, shell),
             )
 
         assert sf_custom.sfmatrix.tobytes() == sf_builtin.sfmatrix.tobytes()
@@ -861,7 +890,7 @@ def test_custom_ionisation_channel_conserves_energy() -> None:
     # deposited eV into heating, excitation, or ionisation
     ionpot_ev = 35.0
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=2000) as sf:
-        sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=ionpot_ev, xs_vec=_bethe_xs_grid(sf.engrid, ionpot_ev))
+        sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=ionpot_ev, xs_vec=_bethe_xs_grid(sf.engrid_mid, ionpot_ev))
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
 
         assert sf.get_frac_ionisation_tot() > 0.1  # the channel must carry a real share
@@ -891,7 +920,7 @@ def test_custom_ionisation_channel_adds_to_the_builtin_shells() -> None:
             ion_stage,
             n_ion=n_ion,
             ionpot_ev=120.0,
-            xs_vec=_bethe_xs_grid(sf_extra.engrid, 120.0),
+            xs_vec=_bethe_xs_grid(sf_extra.engrid_mid, 120.0),
             channelkey="my inner shell",
         )
 
@@ -906,7 +935,7 @@ def test_custom_ionisation_channel_adds_to_the_builtin_shells() -> None:
 
 def test_custom_ionisation_channel_validation() -> None:
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
-        good = _bethe_xs_grid(sf.engrid, 35.0)
+        good = _bethe_xs_grid(sf.engrid_mid, 35.0)
 
         # the cross section must be non-negative, finite, and on the whole grid
         with pytest.raises(ValueError, match="non-negative"):
@@ -923,7 +952,7 @@ def test_custom_ionisation_channel_validation() -> None:
 
         # the ionisation potential must lie inside the energy grid
         with pytest.raises(ValueError, match="below emin_ev"):
-            sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=0.5, xs_vec=_bethe_xs_grid(sf.engrid, 0.5))
+            sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=0.5, xs_vec=_bethe_xs_grid(sf.engrid_mid, 0.5))
         with pytest.raises(ValueError, match="above the top of the energy grid"):
             sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=5000.0, xs_vec=np.zeros_like(good))
         with pytest.raises(ValueError, match="ionpot_ev must be greater than zero"):
@@ -956,8 +985,8 @@ def test_custom_ionisation_channel_validation() -> None:
 
         # a zero population registers the ion and keeps the checked channel with no matrix entries
         with pytest.raises(ValueError, match="non-negative"):
-            sf.add_ionisation_channel(8, 3, n_ion=0.0, ionpot_ev=55.0, xs_vec=-_bethe_xs_grid(sf.engrid, 55.0))
-        sf.add_ionisation_channel(8, 3, n_ion=0.0, ionpot_ev=55.0, xs_vec=_bethe_xs_grid(sf.engrid, 55.0))
+            sf.add_ionisation_channel(8, 3, n_ion=0.0, ionpot_ev=55.0, xs_vec=-_bethe_xs_grid(sf.engrid_mid, 55.0))
+        sf.add_ionisation_channel(8, 3, n_ion=0.0, ionpot_ev=55.0, xs_vec=_bethe_xs_grid(sf.engrid_mid, 55.0))
         assert sf.ionpopdict[(8, 3)] == 0.0
         assert len(sf._ionisation_channels[(8, 3)]) == 1
         assert not sf.sfmatrix.any()
@@ -969,7 +998,7 @@ def test_custom_ionisation_channel_validation() -> None:
             sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=35.0, xs_vec=good, channelkey=0)
         # the population must agree with the one an earlier call for this ion gave
         with pytest.raises(ValueError, match="different populations"):
-            sf.add_ionisation_channel(8, 2, n_ion=2e8, ionpot_ev=42.0, xs_vec=_bethe_xs_grid(sf.engrid, 42.0))
+            sf.add_ionisation_channel(8, 2, n_ion=2e8, ionpot_ev=42.0, xs_vec=_bethe_xs_grid(sf.engrid_mid, 42.0))
 
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         with pytest.raises(RuntimeError, match="after solving"):
@@ -977,7 +1006,7 @@ def test_custom_ionisation_channel_validation() -> None:
 
     # numpy integers are accepted and stored as Python integers
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
-        good = _bethe_xs_grid(sf.engrid, 35.0)
+        good = _bethe_xs_grid(sf.engrid_mid, 35.0)
         Z_numpy, ion_stage_numpy = np.int64(8), np.int64(2)
         sf.add_ionisation_channel(Z_numpy, ion_stage_numpy, n_ion=1e8, ionpot_ev=35.0, xs_vec=good)  # ty: ignore[invalid-argument-type]
         assert all(type(key) is int for key in next(iter(sf.ionpopdict)))
@@ -994,7 +1023,7 @@ def test_add_ionisation_is_atomic() -> None:
             ion_stage,
             n_ion=1e8,
             ionpot_ev=42.6,
-            xs_vec=_bethe_xs_grid(sf.engrid, 42.6),
+            xs_vec=_bethe_xs_grid(sf.engrid_mid, 42.6),
             channelkey="n 2 l 0",
         )
         matrix_before = sf.sfmatrix.copy()
@@ -1006,7 +1035,7 @@ def test_add_ionisation_is_atomic() -> None:
         assert [channel.key for channel in sf._ionisation_channels[(Z, ion_stage)]] == ["n 2 l 0"]
 
         # the ion is not poisoned: a call with a free key still works
-        sf.add_ionisation_channel(Z, ion_stage, n_ion=1e8, ionpot_ev=35.1, xs_vec=_bethe_xs_grid(sf.engrid, 35.1))
+        sf.add_ionisation_channel(Z, ion_stage, n_ion=1e8, ionpot_ev=35.1, xs_vec=_bethe_xs_grid(sf.engrid_mid, 35.1))
         assert len(sf._ionisation_channels[(Z, ion_stage)]) == 2
 
 
@@ -1014,13 +1043,13 @@ def test_cross_sections_are_copied_from_the_caller() -> None:
     # the solver keeps a read-only copy of every cross section, so a later write by the caller
     # cannot silently change the physics it already recorded
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
-        xs_vec = np.where(sf.engrid >= 20.0, 1e-16, 0.0)
+        xs_vec = np.where(sf.engrid_mid >= 20.0, 1e-16, 0.0)
         sf.add_excitation(8, 2, levelnumberdensity=1e8, xs_vec=xs_vec, epsilon_trans_ev=20.0)
         xs_vec[:] = 0.0
         assert sf.excitationlists[(8, 2)][0].xs_vec.max() > 0.0
         assert not sf.excitationlists[(8, 2)][0].xs_vec.flags.writeable
 
-        ion_xs = _bethe_xs_grid(sf.engrid, 35.0)
+        ion_xs = _bethe_xs_grid(sf.engrid_mid, 35.0)
         sf.add_ionisation_channel(8, 2, n_ion=1e8, ionpot_ev=35.0, xs_vec=ion_xs)
         ion_xs[:] = 0.0
         channel = sf._ionisation_channels[(8, 2)][0]
@@ -1292,7 +1321,7 @@ def test_solver_with_channels_can_be_pickled() -> None:
         sf.set_temperature(6000)
         sf.add_ionisation(8, 2, 1e8)
         sf.add_ion_excitation(8, 2)
-        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid > 60.0, 1e-18, 0.0))
+        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid_mid > 60.0, 1e-18, 0.0))
         sf.solve(deposition_ev_per_s_per_cm3=1e3)
         sf_copy = pickle.loads(pickle.dumps(sf))  # noqa: S301
         assert sf_copy.get_frac_sum() == sf.get_frac_sum()
@@ -1311,7 +1340,7 @@ def test_population_of_a_numpy_float32_is_a_python_float() -> None:
 def test_auger_energy_warning_names_the_line_of_the_caller() -> None:
     # the warning must name this file on every path, whatever the depth of the call in the package
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
-        xs_vec = np.where(sf.engrid > 40.0, 1e-17, 0.0)
+        xs_vec = np.where(sf.engrid_mid > 40.0, 1e-17, 0.0)
         for xs in (xs_vec, lambda en_ev: np.where(en_ev > 40.0, 1e-17, 0.0)):
             with pytest.warns(UserWarning, match="less than the energy that the ion must keep") as record:
                 sf.add_ionisation_channel(8, 1, 1e8, 40.0, xs, n_ejected=2)
@@ -1411,7 +1440,7 @@ def test_float16_energies_give_a_uniform_grid_and_an_exact_band() -> None:
     # the matrix band of a float16 transition energy had float16 weights, and the energy sum was 3e-4 wrong
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         epsilon_trans_ev = np.float16(79.9)
-        xs_vec = np.where(sf.engrid > float(epsilon_trans_ev), 1e-16, 0.0)
+        xs_vec = np.where(sf.engrid_mid > float(epsilon_trans_ev), 1e-16, 0.0)
         sf.add_excitation(8, 1, 1e8, xs_vec, epsilon_trans_ev)  # ty: ignore[invalid-argument-type]
         sf.override_n_e(1e4)
         sf.solve(1e5)
@@ -1524,12 +1553,25 @@ def test_pickle_protocol_4_keeps_the_arrays_read_only() -> None:
     # numpy keeps the read-only flag only with protocol 5, and multiprocessing can use protocol 4
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
         sf.add_element(8, ion_densities={1: 1e5, 2: 1e4})
-        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid > 60.0, 1e-18, 0.0))
+        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid_mid > 60.0, 1e-18, 0.0))
         sf.solve(deposition_ev_per_s_per_cm3=1e3)
         sf_copy = pickle.loads(pickle.dumps(sf, protocol=4))  # noqa: S301
-        for array in (sf_copy.engrid, sf_copy.yvec, sf_copy._ionisation_channels[(8, 2)][0].xs_grid):
+        for array in (
+            sf_copy.engrid,
+            sf_copy.engrid_mid,
+            sf_copy.yvec,
+            sf_copy._ionisation_channels[(8, 2)][0].xs_grid,
+        ):
             with pytest.raises(ValueError, match="read-only"):
                 array[0] = 0.0
+
+        # a state from a release before engrid_mid gets the attribute
+        state = sf.__getstate__()
+        del state["engrid_mid"]
+        sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
+        sf_old.__setstate__(state)
+        assert np.array_equal(sf_old.engrid_mid, sf.engrid_mid)
+        assert not sf_old.engrid_mid.flags.writeable
 
 
 def test_pickle_protocol_4_keeps_the_cached_fills_read_only() -> None:
@@ -1551,9 +1593,9 @@ def test_default_key_does_not_collide_with_a_named_key() -> None:
         sf.add_excitation(8, 2, 1e3, np.full(200, 1e-18), 10.0, transitionkey=1)
         sf.add_excitation(8, 2, 1e3, np.full(200, 1e-18), 12.0)
         assert set(sf.excitationlists[(8, 2)]) == {1, 2}
-        xs = np.where(sf.engrid > 60.0, 1e-18, 0.0)
+        xs = np.where(sf.engrid_mid > 60.0, 1e-18, 0.0)
         sf.add_ionisation_channel(8, 2, 1e4, 60.0, xs, channelkey=1)
-        sf.add_ionisation_channel(8, 2, 1e4, 70.0, np.where(sf.engrid > 70.0, 1e-18, 0.0))
+        sf.add_ionisation_channel(8, 2, 1e4, 70.0, np.where(sf.engrid_mid > 70.0, 1e-18, 0.0))
         assert [channel.key for channel in sf._ionisation_channels[(8, 2)]] == [1, 2]
 
 
@@ -1640,7 +1682,7 @@ def test_ion_results_give_null_for_an_unknown_population() -> None:
         Z=26,
         ion_stage=2,
         levelnumberdensity=1e8,
-        xs_vec=np.where(sf.engrid >= 5.0, 1e-16 * 5.0 / sf.engrid, 0.0),
+        xs_vec=np.where(sf.engrid_mid >= 5.0, 1e-16 * 5.0 / sf.engrid_mid, 0.0),
         epsilon_trans_ev=5.0,
         transitionkey=(0, 1),
     )
@@ -1719,14 +1761,14 @@ def _balanced_oxygen_with_excitation() -> pynonthermal.SpencerFanoSolver:
     # index. Then a fill of the matrix adds the bands together. The last transition has a band of its own.
     sf = _balanced_oxygen()
     sf.add_ionisation(1, 1, 1e5)
-    sf.add_excitation(1, 1, None, np.where(sf.engrid > 120.0, 1e-16, 0.0), 120.0, levelpopfrac=1.0)
+    sf.add_excitation(1, 1, None, np.where(sf.engrid_mid > 120.0, 1e-16, 0.0), 120.0, levelpopfrac=1.0)
     for ion_stage, transitionkey, epsilon_trans_ev in (
         (1, "a", 120.0),
         (1, "b", 120.0),
         (2, "a", 120.0),
         (2, "b", 250.0),
     ):
-        xs_vec = np.where(sf.engrid > epsilon_trans_ev, 1e-16, 0.0)
+        xs_vec = np.where(sf.engrid_mid > epsilon_trans_ev, 1e-16, 0.0)
         sf.add_excitation(8, ion_stage, None, xs_vec, epsilon_trans_ev, transitionkey, levelpopfrac=0.5)
     return sf
 
