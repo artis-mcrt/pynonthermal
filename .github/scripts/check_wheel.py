@@ -18,3 +18,10 @@ assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=1e-3)
 # The chained comparisons also reject nan.
 assert 0.0 < sf.get_ionisation_ratecoeff(8, 2) < math.inf
 assert all(0.0 <= sf.get_excitation_ratecoeff(8, 2, key) < math.inf for key in sf.excitationlists[(8, 2)])
+
+# The wheel contains the Auger data of the built-in channels.
+sf = pynonthermal.SpencerFanoSolver(use_km1993_auger=True)
+sf.add_element(Z=26, ion_densities={2: 1e5})
+sf.solve(deposition_ev_per_s_per_cm3=1e3)
+assert sf.get_ionisation_ratecoeff(26, 2, n_ejected=2) > 0.0
+assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=1e-3)

@@ -114,6 +114,11 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   not sum to one.
 - `lotz_a_cm2_ev2`: the constant of the Lotz formula for the shells without a fitted cross section
   (default `1.33e-14`, the Axelrod value; see [Cross-section datasets](#cross-section-datasets)).
+- `use_km1993_auger`: give the built-in channels the Auger data of Kaastra and Mewe (1993, A&AS, 97,
+  443–482), as ARTIS does (default `False`; see
+  [Auger electrons of the built-in channels](#auger-electrons-of-the-built-in-channels)).
+- `max_auger_electrons`: the largest number of Auger electrons of one ionisation with
+  `use_km1993_auger` (default `2`, the ARTIS value).
 
 ### 2. Set the temperature and the atomic data
 
@@ -452,6 +457,62 @@ The ionisation cross sections of H, He, C, N, O, Ne, Na, Mg, Al, Si, S, Ar, Ca, 
 
 The Lotz formula has one constant, A in sigma = A q ln(E / P) / (E P). The solver takes it as `lotz_a_cm2_ev2` (in cm^2 eV^2). The default of `1.33e-14` is the value of Axelrod (1980). Lotz (1967, Z. Phys., 206, 205–211) gives `4.5e-14` for most shells, available as `pynonthermal.axelrod.LOTZ_A_CM2_EV2_LOTZ1967`. The fits of Arnaud and Rothenflug (1985) agree with the Lotz value at high energy. The default is therefore a factor of about 3 below both. The solver gives a `pynonthermal.LotzApproximationWarning` when it adds a Lotz channel, so that the ions that depend on this constant are visible. Filter on that class to silence the warning.
 
+### Auger electrons of the built-in channels
+
+By default, each built-in channel removes one electron, and the ion keeps all of the potential of the
+subshell. An ionisation of an inner subshell leaves a hole, and the ion then emits Auger electrons.
+`use_km1993_auger=True` includes these electrons with the method of ARTIS
+([Shingles et al. 2020, MNRAS, 492, 2029–2043, doi:10.1093/mnras/stz3412](https://ui.adsabs.harvard.edu/abs/2020MNRAS.492.2029S/abstract)).
+The data come from table 2 of
+[Kaastra and Mewe (1993, A&AS, 97, 443–482)](https://ui.adsabs.harvard.edu/abs/1993A%26AS...97..443K/abstract),
+which holds the K, L, and M shells (to 3p) of the ions from Be to Zn. `pynonthermal.collion.read_auger_data()`
+gives the data of each subshell. The option is off by default, so the results without it do not change.
+
+For each subshell with a fitted cross section and Auger data, the option does these things:
+
+- It adds one electron to the source term for each ionisation (equation 8 of Shingles et al. 2020). The
+  electron has the mean total energy of the Auger electrons of the subshell. That mean does not
+  include the energy that fluorescence photons remove. It is a mean over all ionisations of the
+  subshell, also those that emit no Auger electron.
+- It counts only the energy that the ion keeps as ionisation energy. That energy is the potential of the
+  subshell less the mean Auger energy. The Auger electron returns the remainder to the plasma, so the
+  heating fraction increases.
+- It divides the cross section of the subshell between channels with `n_ejected = 1 + a`, with the
+  probability of `a` Auger electrons. Thus `get_ionisation_ratecoeff(Z, ion_stage, n_ejected=2)` gives
+  the rate coefficient of the ionisations that remove two electrons, and the ionisation balance of
+  `add_element()` sends those ions two stages up. The total cross section of the subshell does not change.
+
+`max_auger_electrons` is the largest `a`. The probabilities of the higher numbers go to it. The default
+of `2` is the `NT_MAX_AUGER_ELECTRONS` of ARTIS. In an ionisation balance, an ionisation that passes the
+top stage of the chain ends in the top stage, as in ARTIS. A shell that uses the Lotz formula has no
+Auger data.
+
+```python
+import pynonthermal
+
+with pynonthermal.SpencerFanoSolver(use_km1993_auger=True) as sf:
+    sf.add_element(Z=26, ion_densities={1: 1e3, 2: 5e4, 3: 4e4})
+    sf.solve(deposition_ev_per_s_per_cm3=1e3)
+    print(f"heating fraction {sf.get_frac_heating():.3f}")
+    for n_ejected in (1, 2, 3):
+        ratecoeff = sf.get_ionisation_ratecoeff(Z=26, ion_stage=2, n_ejected=n_ejected)
+        print(f"Fe II, {n_ejected} electron(s) removed: {ratecoeff:.2e} /s")
+```
+
+The solver has one difference from the ARTIS versions before
+[artis-mcrt/artis#813](https://github.com/artis-mcrt/artis/pull/813). Those versions give the full source
+to each grid energy below the mean Auger energy, so the Auger electron gets the energy of the next grid
+point above it. pynonthermal gives a weight to the last of these grid energies, so the electron gets its
+true energy and the energy fractions sum to one. With the old ARTIS rule, the energy fractions of an
+iron-rich plasma sum to as much as 1.005 on the default grid. ARTIS then sets the heating fraction to one
+minus the other two fractions.
+
+The option applies only to the built-in channels. A channel of `add_ionisation_channel()` keeps its own
+Auger electrons (see [Multiple ionisation](#multiple-ionisation)). Do not add a custom channel for the
+Auger decay of a subshell that has Auger data here. If you do, the solver counts those events two times.
+An [excitation autoionisation](#excitation-autoionisation) is a different process, so it has no overlap
+with the option.
+
 ## Advanced usage: custom cross sections
 
 Give a cross section as a function of an array of energies in eV that returns cross sections in cm^2
@@ -589,7 +650,8 @@ without the channel.
 
 Give exclusive channels. Do not include the events of a multiple-ionisation channel in a
 single-ionisation cross section of the same ion. If you include them, the solver counts those events
-two times. The built-in channels all have `n_ejected=1`.
+two times. The built-in channels all have `n_ejected=1`, unless `use_km1993_auger=True` gives them the
+Auger data of [Auger electrons of the built-in channels](#auger-electrons-of-the-built-in-channels).
 
 The energy of the extra electrons comes from energy conservation, so no Auger data is necessary:
 
@@ -670,6 +732,19 @@ autoionising level. The solver sets the cross section below that energy to zero,
 pynonthermal has no built-in EAI data. The built-in channels use only the direct-ionisation formula of
 each shell (see [Cross-section datasets](#cross-section-datasets)). For an ion with important EAI, add an
 autoionisation channel.
+
+EAI and the option `use_km1993_auger` are for different events, so you can use them together:
+
+- In an EAI, the primary electron moves an inner electron to a bound level. The primary electron
+  loses the excitation energy, and no electron has the Lorentzian distribution.
+- With `use_km1993_auger`, the primary electron removes an inner electron in a direct ionisation.
+  The hole then decays. The data of the option are for a hole, so they do not apply to an
+  autoionising level of an EAI.
+
+The two treatments also give the energy of the Auger electrons differently. An autoionisation channel
+gives each of its `n_ejected` electrons the same share of `auger_electron_energy_ev`, which comes from
+energy conservation by default. A built-in channel with the option has one electron with the mean total
+Auger energy of the table, for each value of `n_ejected`.
 
 A level above the ionisation limit can also decay by the emission of a photon. Then the ion stays in
 the same ion stage. Thus the cross section of the autoionisation channel is the excitation cross
