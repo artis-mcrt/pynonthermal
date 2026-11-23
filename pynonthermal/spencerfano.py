@@ -13,9 +13,11 @@ The comments and the docstrings of this module cite these publications by their 
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 import typing as t
 import warnings
+from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Mapping
 from collections.abc import Sequence
@@ -317,6 +319,34 @@ class _BalancedElement:
     ratecoeffs_per_deposition: dict[int, dict[int, float]] | None = None
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RecordMarks:
+    # the sizes of the records of a solver before an add call (see SpencerFanoSolver._get_record_marks()). An add
+    # call only appends keys and items to the records, and a dict keeps the order of insertion. So the keys after
+    # a size are the keys of the call. The number of keys of a dict is the len() of its dict of sizes.
+    n_ionpopdict: int
+    n_channels: dict[tuple[int, int], int]
+    n_transitions: dict[tuple[int, int], int]
+    n_channel_fills: int
+    stage_matrices: dict[tuple[int, int], npt.NDArray[np.float64]]
+    # per balanced element: the number of templates of each stage, a copy of the unit bands of each stage, and
+    # the rate coefficients of the last solve
+    elements: dict[
+        int,
+        tuple[
+            dict[int, int],
+            dict[int, dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]],
+            dict[int, dict[int, float]] | None,
+        ],
+    ]
+
+
+def _truncate_dict(mapping: dict[t.Any, t.Any], size: int) -> None:
+    # remove the keys after the first size keys, which are the keys that an add call appended
+    for key in list(mapping)[size:]:
+        del mapping[key]
+
+
 # Nodes for the sub-grids that resolve the parts of the KF92 equation 11 integrals that the
 # solver's own energy grid cannot. Both integrands vary on the scale of J = 0.6 * ionpot_ev, so the node
 # count is set from the domain width in units of J, with a floor for the narrow domains that
@@ -487,6 +517,10 @@ class SpencerFanoSolver:
     rhsvec: npt.NDArray[np.float64]
     E_init_ev: float
     sfmatrix: npt.NDArray[np.float64]
+    # True when sfmatrix does not hold the records of the solver (see _rebuild_sfmatrix())
+    _sfmatrix_stale: bool
+    # the number of fills of sfmatrix that have started, so that a failed add call knows if it wrote to the matrix
+    _sfmatrix_writes: int
     adata_polars: pl.DataFrame | None
     yvec: npt.NDArray[np.float64]
     _balanced_elements: dict[int, _BalancedElement]
@@ -635,6 +669,8 @@ class SpencerFanoSolver:
             )
 
         self.sfmatrix = np.zeros((npts, npts))
+        self._sfmatrix_stale = False
+        self._sfmatrix_writes = 0
 
     @t.override
     def __getstate__(self) -> dict[str, t.Any]:
@@ -667,6 +703,12 @@ class SpencerFanoSolver:
         # a state from a release before this attribute
         self.__dict__.setdefault("_custom_adata_polars_dropped", False)
         self.__dict__.setdefault("_stage_matrices", {})
+        self.__dict__.setdefault("_sfmatrix_stale", False)
+        self.__dict__.setdefault("_sfmatrix_writes", 0)
+        # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
+        # gets a writable copy. Else every add method and the ionisation balance raised.
+        if not self.sfmatrix.flags.writeable:
+            self.sfmatrix = np.array(self.sfmatrix)
         arrays = [self.engrid]
         if "yvec" in state:
             arrays.append(self.yvec)
@@ -762,6 +804,108 @@ class SpencerFanoSolver:
         # first (in population registration order), then ions that only have manually-added
         # excitation channels (in the order their first excitation was added)
         return list(dict.fromkeys([*self.ionpopdict, *self.excitationlists]))
+
+    @staticmethod
+    def _add_transaction[**P, R](
+        method: Callable[t.Concatenate[SpencerFanoSolver, P], R],
+    ) -> Callable[t.Concatenate[SpencerFanoSolver, P], R]:
+        # an add method of the solver as one transaction. The method writes its records and then adds to sfmatrix
+        # in place. An error or an interrupt part-way through, for example a KeyboardInterrupt or a MemoryError,
+        # can leave a part of the call in the solver. So the records return to their sizes before the call. If the
+        # call wrote to the matrix, the next solve() or add call fills the matrix again from the records. A
+        # rejected call writes nothing, so it does not cause a new fill.
+        # The marks are sizes, so an add call inside another add call has a transaction of its own. Its failure
+        # removes only its records, and the failure of the outer call removes the records of both calls.
+        # The decorator is in the class, because the wrapper uses the protected members of the class.
+        @functools.wraps(method)
+        def wrapper(self: SpencerFanoSolver, *args: P.args, **kwargs: P.kwargs) -> R:
+            if self._sfmatrix_stale and not self._solved:
+                # a solved solver rejects every add call, and solve() fills the matrix again
+                self._rebuild_sfmatrix()
+            marks = self._get_record_marks()
+            writes_before = self._sfmatrix_writes
+            try:
+                return method(self, *args, **kwargs)
+            except BaseException:
+                self._restore_record_marks(marks)
+                if self._sfmatrix_writes != writes_before:
+                    self._sfmatrix_stale = True
+                raise
+
+        return wrapper
+
+    def _get_record_marks(self) -> _RecordMarks:
+        # the sizes of the records before an add call (see _add_transaction()). A copy of the records for each
+        # call made the storage of n transitions take a time proportional to n^2, so only the sizes are kept. The
+        # unit bands and the unit matrices are small, so they are copied.
+        return _RecordMarks(
+            n_ionpopdict=len(self.ionpopdict),
+            n_channels={ion: len(channels) for ion, channels in self._ionisation_channels.items()},
+            n_transitions={ion: len(transitions) for ion, transitions in self.excitationlists.items()},
+            n_channel_fills=len(self._channel_fills),
+            stage_matrices=dict(self._stage_matrices),
+            elements={
+                Z: (
+                    {ion_stage: len(templates) for ion_stage, templates in element.excitation_templates.items()},
+                    {ion_stage: dict(bands) for ion_stage, bands in element.excitation_unit_bands.items()},
+                    element.ratecoeffs_per_deposition,
+                )
+                for Z, element in self._balanced_elements.items()
+            },
+        )
+
+    def _restore_record_marks(self, marks: _RecordMarks) -> None:
+        # return the records to the sizes of _get_record_marks(). Each marks object has only one restore, so the
+        # restore uses the copies of the marks and makes no new copy.
+        _truncate_dict(self.ionpopdict, marks.n_ionpopdict)
+        _truncate_dict(self._ionisation_channels, len(marks.n_channels))
+        for ion, n_channels in marks.n_channels.items():
+            del self._ionisation_channels[ion][n_channels:]
+        _truncate_dict(self.excitationlists, len(marks.n_transitions))
+        for ion, n_transitions in marks.n_transitions.items():
+            _truncate_dict(self.excitationlists[ion], n_transitions)
+        _truncate_dict(self._channel_fills, marks.n_channel_fills)
+        self._stage_matrices = marks.stage_matrices
+        for Z, (n_templates, unit_bands, ratecoeffs) in marks.elements.items():
+            element = self._balanced_elements[Z]
+            _truncate_dict(element.excitation_templates, len(n_templates))
+            for ion_stage, n_stage_templates in n_templates.items():
+                _truncate_dict(element.excitation_templates[ion_stage], n_stage_templates)
+            element.excitation_unit_bands = unit_bands
+            element.ratecoeffs_per_deposition = ratecoeffs
+        _truncate_dict(self._balanced_elements, len(marks.elements))
+        # _n_e is a cache of the density from the ion charges, so get_n_e() calculates it again
+        self._n_e = None
+
+    def _rebuild_sfmatrix(self) -> None:
+        # fill sfmatrix again from the records: the populations of ionpopdict, the ionisation channels, and the
+        # transitions. A fill that stopped part-way leaves the matrix and the records out of step. A later update
+        # adds only the change of each population, so it cannot correct that.
+        npts = len(self.engrid)
+        self.sfmatrix = np.zeros((npts, npts))
+        bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
+        for (Z, _), transitions in self.excitationlists.items():
+            if Z in self._balanced_elements:
+                # the unit bands of the element below hold these transitions
+                continue
+            for transition in transitions.values():
+                vec, k, frac = self._excitation_band_vectors(
+                    transition.levelnumberdensity, transition.xs_vec, transition.epsilon_trans_ev
+                )
+                self._sum_excitation_bands(bands, vec, k, frac)
+        for element in self._balanced_elements.values():
+            populations = {ion_stage: self.ionpopdict[(element.Z, ion_stage)] for ion_stage in element.ion_stages}
+            self._set_balanced_records(element, populations)
+            for ion_stage, n_ion in populations.items():
+                self._sum_unit_bands(bands, element.excitation_unit_bands.get(ion_stage, {}), n_ion)
+        for k, (bandvec, bandfracvec) in sorted(bands.items()):
+            self._add_excitation_band(bandvec, bandfracvec, k)
+        for (Z, ion_stage), channels in self._ionisation_channels.items():
+            for channel in channels:
+                self._add_ionisation_channel_to_matrix(
+                    self.ionpopdict[(Z, ion_stage)], channel, cache=Z in self._balanced_elements
+                )
+        self._sfmatrix_stale = False
 
     def set_temperature(self, temperature: float) -> None:
         """Set the temperature in K for the LTE populations of the excitation levels.
@@ -985,6 +1129,7 @@ class SpencerFanoSolver:
             # solve() must calculate them again.
             element.ratecoeffs_per_deposition = None
 
+    @_add_transaction
     def add_excitation(
         self,
         Z: int,
@@ -1162,6 +1307,21 @@ class SpencerFanoSolver:
         vec *= frac
         bandfracvec += vec
 
+    @staticmethod
+    def _sum_unit_bands(
+        bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+        unit_bands: Mapping[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+        scale: float,
+    ) -> None:
+        # add scale times the unit bands of one balanced stage to the sums of each band width k. The sums are new
+        # arrays, so a change of a sum does not change the unit bands.
+        for k, (unitvec, unitfracvec) in unit_bands.items():
+            if k in bands:
+                bands[k][0][:] += scale * unitvec
+                bands[k][1][:] += scale * unitfracvec
+            else:
+                bands[k] = (scale * unitvec, scale * unitfracvec)
+
     def _add_excitation_band(
         self,
         vec: npt.NDArray[np.float64],
@@ -1187,6 +1347,7 @@ class SpencerFanoSolver:
         # matrix is sfmatrix, or the unit matrix of one balanced stage (see _get_stage_matrix())
         if matrix is None:
             matrix = self.sfmatrix
+            self._sfmatrix_writes += 1
         flat = matrix.reshape(-1, copy=False)
         if 0 < k < npts:
             # rows of this view are the band segments sfmatrix[i, i:i+k] for i in [0, bandstop)
@@ -1197,6 +1358,7 @@ class SpencerFanoSolver:
         for i in range(bandstop, npts):
             matrix[i, i:] += vec[i:]
 
+    @_add_transaction
     def add_ion_excitation(self, Z: int, ion_stage: int, n_ion: float | None = None) -> None:
         """Add bound-bound excitations of one ion, with level populations from the solver's population model.
 
@@ -1620,9 +1782,10 @@ class SpencerFanoSolver:
             self._sum_excitation_bands(new_bands, vec, k, frac)
 
         for k, (bandvec, bandfracvec) in sorted(new_bands.items()):
+            # new arrays and not a change in place, so that a failed add call can return to the arrays before it
+            # (see _get_record_marks())
             if k in unit_bands:
-                unit_bands[k][0][:] += bandvec
-                unit_bands[k][1][:] += bandfracvec
+                unit_bands[k] = (unit_bands[k][0] + bandvec, unit_bands[k][1] + bandfracvec)
             else:
                 unit_bands[k] = (bandvec, bandfracvec)
             self._add_excitation_band(n_ion * bandvec, n_ion * bandfracvec, k)
@@ -1648,6 +1811,8 @@ class SpencerFanoSolver:
             # registration and the channel data that the analysis reads. A zero population adds
             # nothing, and a balanced element builds the fill when its population changes.
             return
+        if matrix is None:
+            self._sfmatrix_writes += 1
         if channel.autoionisation:
             # the band of an excitation with the transition energy ionpot_ev. The band vectors cost
             # less to make than to write, so the channel has no cached fill. The cross section is
@@ -1835,6 +2000,7 @@ class SpencerFanoSolver:
         # the grid spacing has rounding errors, so the weight is clipped to one
         return rowstop, min(1.0, (en_auger_ev - float(self.engrid[rowstop - 1])) / self.deltaen)
 
+    @_add_transaction
     def add_ionisation(self, Z: int, ion_stage: int, n_ion: float | None) -> None:
         """Add collisional ionisation of one ion, contributing every shell with cross-section data.
 
@@ -1885,6 +2051,7 @@ class SpencerFanoSolver:
 
         self._apply_ion_channels(Z, ion_stage, n_ion, channels)
 
+    @_add_transaction
     def add_ionisation_channel(
         self,
         Z: int,
@@ -2087,6 +2254,7 @@ class SpencerFanoSolver:
         self._store_ionisation_channel(Z, ion_stage, channel)
         self._add_ionisation_channel_to_matrix(n_ion, channel, cache=Z in self._balanced_elements)
 
+    @_add_transaction
     def add_element(
         self,
         Z: int,
@@ -2344,35 +2512,52 @@ class SpencerFanoSolver:
         # fixed contributions plus the current ionpopdict contributions of the balanced ions, with
         # no copy of the matrix. The rounding residue is of the order of the machine precision
         # times the largest population that was applied.
+        if self._sfmatrix_stale:
+            # an earlier fill stopped part-way, so the matrix does not hold the records (see _rebuild_sfmatrix()).
+            # Only the records change, and the next fill of the whole matrix adds the new populations.
+            self._set_balanced_records(element, populations)
+            return
         Z = element.Z
+        deltas = {
+            ion_stage: populations[ion_stage] - self.ionpopdict[(Z, ion_stage)] for ion_stage in element.ion_stages
+        }
         # the stages of an element share their band widths, and a band write sweeps a strip of the
         # whole matrix, so the changes of every stage are summed per band width and written once
         bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
-        for ion_stage in element.ion_stages:
-            n_new = populations[ion_stage]
-            delta = n_new - self.ionpopdict[(Z, ion_stage)]
-            self.ionpopdict[(Z, ion_stage)] = n_new
-            if delta != 0.0:
+        try:
+            for ion_stage, delta in deltas.items():
+                if delta == 0.0:
+                    continue
                 stage_matrix = self._get_stage_matrix(Z, ion_stage)
                 if stage_matrix is not None:
                     _add_scaled_upper_triangle(self.sfmatrix, delta, stage_matrix)
                 else:
                     for channel in self._ionisation_channels.get((Z, ion_stage), []):
                         self._add_ionisation_channel_to_matrix(delta, channel, cache=True)
-                for k, (unitvec, unitfracvec) in element.excitation_unit_bands.get(ion_stage, {}).items():
-                    if k in bands:
-                        bands[k][0][:] += delta * unitvec
-                        bands[k][1][:] += delta * unitfracvec
-                    else:
-                        bands[k] = (delta * unitvec, delta * unitfracvec)
+                self._sum_unit_bands(bands, element.excitation_unit_bands.get(ion_stage, {}), delta)
+
+            for k, (bandvec, bandfracvec) in sorted(bands.items()):
+                self._add_excitation_band(bandvec, bandfracvec, k)
+            # the populations change after the matrix, so the records stay as they were if a fill fails
+            self._set_balanced_records(element, populations)
+        except BaseException:
+            # an error or an interrupt part-way through leaves a part of the change in the matrix. The next
+            # update adds only the change of each population, so the next solve() fills the matrix again.
+            self._sfmatrix_stale = True
+            raise
+
+    def _set_balanced_records(self, element: _BalancedElement, populations: Mapping[int, float]) -> None:
+        # set the populations of a balanced element and the level populations of its excitations, with no change
+        # to the matrix
+        Z = element.Z
+        for ion_stage in element.ion_stages:
+            n_new = populations[ion_stage]
+            self.ionpopdict[(Z, ion_stage)] = n_new
             templates = element.excitation_templates.get(ion_stage, {})
             if templates:
                 self.excitationlists[(Z, ion_stage)] = {
                     transitionkey: template.at_population(n_new) for transitionkey, template in templates.items()
                 }
-
-        for k, (bandvec, bandfracvec) in sorted(bands.items()):
-            self._add_excitation_band(bandvec, bandfracvec, k)
         self._n_e = None
 
     def calculate_free_electron_density(self) -> float:
@@ -2399,8 +2584,10 @@ class SpencerFanoSolver:
         each cut with multiple ionisation), still holds.
 
         The value stays until another call changes it, and None restores the density from the ion
-        charges. A call that changes the density after solve() discards the solution, because the
-        solution used the previous density, so call solve() again.
+        charges. A call after solve() that changes the density discards the solution. The solution
+        used the previous density, so call solve() again. A call with the density that the solver
+        already uses keeps the solution. With a balanced element, a change between a given density
+        and charge neutrality also discards the solution, because the rule of the balance changes.
 
         n_e:
             the free electron density in cm^-3, or None to take it from the ion charges again
@@ -2416,10 +2603,22 @@ class SpencerFanoSolver:
         # a call that gives the density it already has changes nothing, so it keeps the solution
         if n_e_new == self._n_e_override:
             return
+        # the density of the last solution. An override with the density from the ion charges keeps it.
+        n_e_before = self.get_n_e() if self._solved else None
+        override_before = self._n_e_override
         self._n_e_override = n_e_new
         self._n_e = None
-        # the last solution used the previous density, so it is no longer a solution of this plasma
-        if self._solved:
+        if not self._solved:
+            return
+        if self._balanced_elements and (n_e_new is None) != (override_before is None):
+            # the balance finds the populations at a given density or at charge neutrality, so the last
+            # solution is not a solution of the new rule, also at the same density
+            rule = "charge neutrality" if n_e_new is None else "a given density"
+            self._solution_discarded_by = (
+                f"override_n_e(), which changed the free electron density of the ionisation balance to {rule},"
+            )
+        elif self.get_n_e() != n_e_before:
+            # the last solution used the previous density, so it is no longer a solution of this plasma
             self._solution_discarded_by = "override_n_e(), which changed the free electron density,"
 
     def get_n_e(self) -> float:
@@ -2560,6 +2759,9 @@ class SpencerFanoSolver:
             self._solved = False
             self._solution_discarded_by = None
             self.reset_solution_analysis()
+            if self._sfmatrix_stale:
+                # an earlier fill stopped part-way (see _rebuild_sfmatrix())
+                self._rebuild_sfmatrix()
 
             # a Python float, because a numpy float16 or float32 makes the rate coefficients per unit
             # deposition lose precision, or overflow
@@ -2571,20 +2773,25 @@ class SpencerFanoSolver:
             else:
                 self.balance_iterations = 0
                 self._solve_matrix()
-        except Exception:
+
+            # the output is in the guard too. An interrupt of the output, for example a KeyboardInterrupt or a
+            # BrokenPipeError, then keeps the last solution.
+            if self.verbose:
+                n_e = self.get_n_e()
+                n_ion_tot = self.get_n_ion_tot()
+                x_e = n_e / n_ion_tot if n_ion_tot > 0.0 else math.inf
+                print(f" n_ion_tot: {n_ion_tot:.2e} [/cm3]        (total ion density)")
+                print(f"       n_e: {n_e:.2e} [/cm3]        (free electron density)")
+                print(f"       x_e: {x_e:.2e}               (electrons per nucleus)")
+                print(f"deposition: {self.deposition_ev_per_s_per_cm3:7.2f}  [eV/s/cm3]")
+
+            # the last statement of the guard, so that _solved is False when the restore runs
+            self._solved = True
+        except BaseException:
+            # also a KeyboardInterrupt, for example from an interrupt of the kernel in Jupyter. Else the last
+            # solution was lost, and the add methods were open for the solved plasma.
             self._restore_solve_state(state_before)
             raise
-
-        if self.verbose:
-            n_e = self.get_n_e()
-            n_ion_tot = self.get_n_ion_tot()
-            x_e = n_e / n_ion_tot if n_ion_tot > 0.0 else math.inf
-            print(f" n_ion_tot: {n_ion_tot:.2e} [/cm3]        (total ion density)")
-            print(f"       n_e: {n_e:.2e} [/cm3]        (free electron density)")
-            print(f"       x_e: {x_e:.2e}               (electrons per nucleus)")
-            print(f"deposition: {self.deposition_ev_per_s_per_cm3:7.2f}  [eV/s/cm3]")
-
-        self._solved = True
 
     def _get_solve_state(self) -> dict[str, t.Any]:
         # the state that solve() changes, so that a solve() that raises can return to it. The analysis
@@ -2605,7 +2812,8 @@ class SpencerFanoSolver:
         attributes = state["attributes"]
         if attributes["_solved"]:
             # return to the last solution. _solved is False here, so the matrix fill is open, and the
-            # populations and the matrix return together.
+            # populations and the matrix return together. If a fill stopped part-way, only the populations
+            # return (see _set_balanced_populations()), and the next solve() fills the matrix again.
             for element in self._balanced_elements.values():
                 self._set_balanced_populations(element, state["populations"][element.Z])
                 element.ratecoeffs_per_deposition = state["ratecoeffs"][element.Z]
