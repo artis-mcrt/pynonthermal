@@ -61,11 +61,9 @@ def auger_source_term(
     en_electron_ev = channel.auger_electron_energy_ev / channel.n_auger_electrons
     row_weights = np.clip((en_electron_ev - sf.engrid) / sf.deltaen, 0.0, 1.0)
     assert 0.0 < row_weights[row_weights < 1.0].max() < 1.0
-    column_values = np.where(
-        sf.engrid >= channel.ionpot_ev,
-        -n_ion * channel.xs_grid * sf.deltaen * channel.n_auger_electrons,
-        0.0,
-    )
+    # each column with a cross section has the source. The cross section of a column is at the middle of
+    # its grid interval, so the first column of an autoionisation channel can start below ionpot_ev.
+    column_values = -n_ion * channel.xs_grid * sf.deltaen * channel.n_auger_electrons
     return np.outer(row_weights, column_values)
 
 
@@ -516,7 +514,7 @@ def test_autoionisation_with_two_electrons() -> None:
     sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
     sf_exc.add_excitation(10, 1, n_ion, xs, epsilon_trans_ev=ionpot_ev)
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=400)
-    sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs(sf.engrid), n_ejected=2, autoionisation=True)
+    sf.add_ionisation_channel(10, 1, n_ion, ionpot_ev, xs(sf.engrid_mid), n_ejected=2, autoionisation=True)
     channel = sf._ionisation_channels[(10, 1)][0]
     assert channel.n_auger_electrons == 2
     assert math.isclose(channel.auger_electron_energy_ev, auger_ev, rel_tol=1e-12)
@@ -648,21 +646,24 @@ def test_autoionisation_validation() -> None:
 
 def test_autoionisation_cross_section_at_the_threshold() -> None:
     # An excitation-autoionisation cross section is often a step at the threshold. add_excitation()
-    # keeps the value at a grid point on the threshold and zeroes the points below. An autoionisation
-    # channel follows the same rule, for a function and for an array, so the matrix is that of the
-    # excitation.
+    # keeps the value of a column whose middle energy is on the threshold and zeroes the columns below. An
+    # autoionisation channel follows the same rule, for a function and for an array, so the matrix is that
+    # of the excitation.
     def step(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return np.where(np.asarray(en_ev) >= 30.0, 1e-17, 0.0)
 
-    # 30 eV is on this grid (deltaen = 1 eV)
-    sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3001, npts=3001)
+    # 30 eV is the middle of a grid interval (deltaen = 1 eV), and column 29 starts at 29.5 eV
+    sf_exc = pynonthermal.SpencerFanoSolver(emin_ev=0.5, emax_ev=3000.5, npts=3001)
+    assert sf_exc.engrid_mid[29] == 30.0
     sf_exc.add_excitation(10, 1, 1e8, step, epsilon_trans_ev=30.0)
-    assert sf_exc.excitationlists[(10, 1)][0].xs_vec[sf_exc.get_energyindex_gteq(30.0)] == 1e-17
-    for xs_vec in (step, step(sf_exc.engrid)):
-        sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3001, npts=3001)
+    assert sf_exc.excitationlists[(10, 1)][0].xs_vec[29] == 1e-17
+    assert not sf_exc.excitationlists[(10, 1)][0].xs_vec[:29].any()
+    for xs_vec in (step, step(sf_exc.engrid_mid)):
+        sf = pynonthermal.SpencerFanoSolver(emin_ev=0.5, emax_ev=3000.5, npts=3001)
         sf.add_ionisation_channel(10, 1, 1e8, 30.0, xs_vec, autoionisation=True, auger_electron_energy_ev=0.0)
         channel = sf._ionisation_channels[(10, 1)][0]
-        assert channel.xs_grid[sf.get_energyindex_gteq(30.0)] == 1e-17
+        assert channel.xs_grid[29] == 1e-17
+        assert not channel.xs_grid[:29].any()
         assert np.allclose(sf.sfmatrix, sf_exc.sfmatrix, rtol=1e-12, atol=0.0)
     # a direct channel keeps the rule that the cross section is zero at the threshold
     with pytest.raises(ValueError, match="must be zero at and below"):
@@ -688,7 +689,7 @@ def test_deprecated_extra_electron_energy_argument() -> None:
             )
         for from_xs, xs_arg in (
             (pynonthermal.IonisationChannel.from_xs, xs),
-            (pynonthermal.IonisationChannel.from_xs_grid, xs(sf.engrid)),
+            (pynonthermal.IonisationChannel.from_xs_grid, xs(sf.engrid_mid)),
         ):
             with pytest.warns(DeprecationWarning, match="auger_electron_energy_ev"):
                 same = from_xs(sf.engrid, 8, 1, 100.0, xs_arg, "old", n_ejected=2, extra_electron_energy_ev=30.0)  # ty: ignore[invalid-argument-type]

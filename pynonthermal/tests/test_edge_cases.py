@@ -264,7 +264,7 @@ def test_inputs_with_a_bad_type_fail_with_a_named_message() -> None:
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
     with pytest.raises(TypeError, match="Call collect"):
         sf.set_atomic_data(adata_polars=_oxygen_level_table().lazy())  # ty: ignore[invalid-argument-type]
-    xs = np.where(sf.engrid > 40.0, 1e-18, 0.0)
+    xs = np.where(sf.engrid_mid > 40.0, 1e-18, 0.0)
     with pytest.raises(TypeError, match="channelkey must be hashable"):
         sf.add_ionisation_channel(8, 2, 1e6, 40.0, xs, [1])
     with pytest.raises(TypeError, match="transitionkey must be hashable"):

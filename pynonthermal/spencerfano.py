@@ -426,7 +426,9 @@ class SpencerFanoSolver:
     of electrons. This solver follows the supernova application of KF92, as ARTIS uses it (S20).
     The solver puts the integral form of the degradation equation (KF92 equation 7, and also
     LHD12 equation 2) on a uniform energy grid. The result is an upper-triangular matrix equation
-    for y at each grid energy.
+    for y in each grid interval. Row i is the equation at the energy engrid[i]. Column j holds the
+    electrons from engrid[j] to engrid[j] + deltaen. The loss function and each cross section of
+    column j are at the middle of that interval, engrid_mid[j], and yvec[j] is y at that energy.
 
     Each part of KF92 equation 7 maps onto the code as follows:
 
@@ -496,6 +498,7 @@ class SpencerFanoSolver:
     _n_e_override_before_solve: float | _Omitted | None
     _solution_discarded_by: str | None
     engrid: npt.NDArray[np.float64]
+    engrid_mid: npt.NDArray[np.float64]
     deltaen: float
     dfcollion: pl.DataFrame
     rhsvec: npt.NDArray[np.float64]
@@ -604,6 +607,13 @@ class SpencerFanoSolver:
         self.engrid.flags.writeable = False
         # Python floats, so that the results that use the grid spacing are Python floats
         self.deltaen = float(self.engrid[1] - self.engrid[0])
+        # The energy at the middle of each grid interval. Column j of the matrix holds the electrons of the
+        # interval from engrid[j] to engrid[j] + deltaen. The solver takes the loss function and each cross
+        # section of column j at engrid_mid[j], and yvec[j] is the solution at that energy. The rows, the
+        # source, and the energy of each matrix term use engrid. With the inputs at engrid[j], the left end
+        # of the interval, the grid error of the results was 2 to 8 times larger on the default grid.
+        self.engrid_mid = self.engrid + 0.5 * self.deltaen
+        self.engrid_mid.flags.writeable = False
 
         self.dfcollion = pynonthermal.collion.read_colliondata(
             collionfilename=("collion-AR1985.txt" if _check_bool(use_ar1985, "use_ar1985") else "collion.txt")
@@ -689,11 +699,15 @@ class SpencerFanoSolver:
         self.__dict__.setdefault("_stage_matrices", {})
         self.__dict__.setdefault("_sfmatrix_stale", False)
         self.__dict__.setdefault("_sfmatrix_writes", 0)
+        # a state from a release before this attribute. Its cross sections are at engrid, and the loss function
+        # is now at engrid_mid, so add the ions to a new solver for the full accuracy.
+        if "engrid_mid" not in state:
+            self.engrid_mid = self.engrid + 0.5 * self.deltaen
         # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
         # gets a writable copy. Else every add method and the ionisation balance raised.
         if not self.sfmatrix.flags.writeable:
             self.sfmatrix = np.array(self.sfmatrix)
-        arrays = [self.engrid]
+        arrays = [self.engrid, self.engrid_mid]
         if "yvec" in state:
             arrays.append(self.yvec)
         for channels in self._ionisation_channels.values():
@@ -1145,8 +1159,10 @@ class SpencerFanoSolver:
             levelnumberdensity=None
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
-            array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
-            read-only copy, so a later write to your own array cannot change it.
+            array at every energy of the SpencerFanoSolver.engrid_mid array (the middle of each grid
+            interval). The solver keeps a read-only copy, so a later write to your own array cannot
+            change it. The solver sets the cross section to zero at each energy of engrid_mid below
+            epsilon_trans_ev.
         epsilon_trans_ev:
             the transition energy in eV
         transitionkey:
@@ -1235,15 +1251,15 @@ class SpencerFanoSolver:
     def _get_excitation_xs_on_grid(
         self, xs_vec: npt.NDArray[np.float64] | CrossSectionFunc, epsilon_trans_ev: float
     ) -> npt.NDArray[np.float64]:
-        # the checked, read-only cross section of one transition on the grid, with zero below the
-        # threshold. An electron below the threshold cannot drive the transition. The analysis
-        # integrates the whole array, so a value there would add to the excitation fraction with
-        # no loss term in the matrix. The built-in path applies the same cut in
-        # excitation.get_xs_excitation_vector().
-        xs_grid = get_xs_on_grid(xs_vec, self.engrid, "xs_vec")
+        # the checked, read-only cross section of one transition at the middle of each grid interval, with
+        # zero where that energy is below the threshold. An electron below the threshold cannot drive the
+        # transition. The built-in path applies the same cut in excitation.get_xs_excitation_vector(), and
+        # an autoionisation channel in IonisationChannel.from_xs(). This array alone gives the first column
+        # of the transition to the matrix band and to the analysis, so the two always agree.
+        xs_grid = get_xs_on_grid(xs_vec, self.engrid_mid, "xs_vec")
         # the array is a fresh copy, so it can be made writable for the cut
         xs_grid.flags.writeable = True
-        xs_grid[: self.get_energyindex_gteq(en_ev=epsilon_trans_ev)] = 0.0
+        xs_grid[self.engrid_mid < epsilon_trans_ev] = 0.0
         xs_grid.flags.writeable = False
         return xs_grid
 
@@ -1264,11 +1280,10 @@ class SpencerFanoSolver:
     def _excitation_band_vectors(
         self, levelnumberdensity: float, xs_vec: npt.NDArray[np.float64], epsilon_trans_ev: float
     ) -> tuple[npt.NDArray[np.float64], int, float]:
-        # describe the matrix band of one transition: the values vec[j] (zeroed below the threshold
-        # index, where no grid electron can drive the transition), the band width k in whole bins,
-        # and the weight frac of the partial final bin. vec is linear in levelnumberdensity.
+        # describe the matrix band of one transition: the values vec[j], the band width k in whole bins,
+        # and the weight frac of the partial final bin. vec is linear in levelnumberdensity. xs_vec is zero
+        # in each column whose middle energy is below the threshold (see _get_excitation_xs_on_grid()).
         vec = levelnumberdensity * self.deltaen * xs_vec  # cross section times level density times bin width
-        vec[: self.get_energyindex_gteq(en_ev=epsilon_trans_ev)] = 0.0
         k = int(epsilon_trans_ev / self.deltaen)
         frac = epsilon_trans_ev / self.deltaen - k
         return vec, k, frac
@@ -1701,9 +1716,9 @@ class SpencerFanoSolver:
             # and the array that ExcitationTransition later holds cannot change
             xs_vec = get_xs_on_grid(
                 pynonthermal.excitation.get_xs_excitation_vector(
-                    self.engrid, transition, use_collstrengths=use_collstrengths
+                    self.engrid_mid, transition, use_collstrengths=use_collstrengths
                 ),
-                self.engrid,
+                self.engrid_mid,
                 f"The cross section of transition {transitionkey} of Z={Z} ion_stage {ion_stage}",
             )
             if not xs_vec.any():
@@ -1806,9 +1821,9 @@ class SpencerFanoSolver:
             # rejects a threshold above the grid, as _check_epsilon_trans() does for an excitation.
             vec, k, frac = self._excitation_band_vectors(n_ion, channel.xs_grid, channel.ionpot_ev)
             self._add_excitation_band(vec, vec * frac, k, matrix=matrix)
-            ionpot_ev = channel.ionpot_ev
-            xsstartindex = 0 if ionpot_ev <= self.engrid[0] else self.get_energyindex_gteq(en_ev=ionpot_ev)
-            self._subtract_auger_electrons(n_ion, channel, xsstartindex, matrix=matrix)
+            # the first column with a cross section, from the array, as for the band. The middle of that
+            # column is at or above ionpot_ev, so the column is not below a row of an Auger electron.
+            self._subtract_auger_electrons(n_ion, channel, int(np.argmax(channel.xs_grid > 0.0)), matrix=matrix)
             return
         fill = self._channel_fills.get(channel)
         if fill is None:
@@ -2143,11 +2158,13 @@ class SpencerFanoSolver:
             value at that energy.
         xs_vec:
             the cross sections in cm^2, either as a function of an array of energies [eV] or as an
-            array at every energy of the SpencerFanoSolver.engrid array. The solver keeps a
-            read-only copy of an array, so a later write to your own array cannot change it.
-            calculate_N_e() needs the cross section between the grid points just above the
-            ionisation potential: it calls a function there, and interpolates an array. An
-            autoionisation channel uses only the values on the grid, as add_excitation() does.
+            array at every energy of the SpencerFanoSolver.engrid_mid array (the middle of each grid
+            interval). The solver keeps a read-only copy of an array, so a later write to your own
+            array cannot change it. calculate_N_e() needs the cross section between these energies
+            just above the ionisation potential: it calls a function there, and interpolates an array.
+            An autoionisation channel uses only the values of the array, as add_excitation() does. A
+            direct ionisation starts at the first point of engrid above ionpot_ev, so the grid interval
+            that contains ionpot_ev has no ionisation.
         channelkey:
             any hashable key to identify the channel in the ion. The default is the number of
             channels that the ion already has, or the next integer that no channel uses.
@@ -2261,6 +2278,7 @@ class SpencerFanoSolver:
         # (an autoionisation channel uses only the grid values).
         channel = (
             IonisationChannel.from_xs(
+                # the channel takes the cross section at the middle of each interval of this grid
                 arr_enev=self.engrid,
                 Z=Z,
                 ion_stage=ion_stage,
@@ -2897,7 +2915,12 @@ class SpencerFanoSolver:
 
         # the free-electron loss term is diagonal-only, so it is passed to the solver as a 1D
         # vector rather than copying the whole npts x npts matrix just to modify its diagonal
-        lossvec = _get_lossvec(self.engrid, n_e)
+        # the lowest grid interval holds the electrons down to engrid[0], so the loss function must be valid at
+        # that energy. The call raises a ValueError if it is not.
+        electronlossfunction(float(self.engrid[0]), n_e)
+        # the loss function of row i is at the middle of the grid interval above the row energy, as are the
+        # cross sections of column i (see engrid_mid)
+        lossvec = _get_lossvec(self.engrid_mid, n_e)
 
         # each matrix row is the integral form of the degradation equation (KF92 equation 7, and
         # LHD12 equation 2) at one grid energy. rhsvec holds the integrated source term. Every
@@ -3403,16 +3426,13 @@ class SpencerFanoSolver:
         deltaen = self.deltaen
         k = int(epsilon_ev / deltaen)
         frac = epsilon_ev / deltaen - k
-        # the band has no cross section below this column (see _excitation_band_vectors())
-        jstart = self.get_energyindex_gteq(en_ev=epsilon_ev)
+        # xs_vec is zero in the columns where the band has no cross section (see _get_excitation_xs_on_grid())
         jstop = min(k, len(self.engrid) - 1) + 1
-        if jstart >= jstop:
-            return 0.0
-        j = np.arange(jstart, jstop)
+        j = np.arange(jstop)
         weight_total = np.minimum(j + 1, k) + np.where(j >= k, frac, 0.0)
         weight_row0 = np.where(j < k, 1.0, frac)
         energy_below_e0_ev = deltaen * weight_total + float(self.engrid[0]) * weight_row0 - epsilon_ev
-        return float(np.dot(xs_vec[jstart:jstop] * self.yvec[jstart:jstop], energy_below_e0_ev) * deltaen)
+        return float(np.dot(xs_vec[:jstop] * self.yvec[:jstop], energy_below_e0_ev) * deltaen)
 
     def _ionisation_energy_below_e0(self, channel: IonisationChannel) -> float:
         # the energy below E_0 of the electrons of the ionisations of one channel, for a unit population.
@@ -3484,13 +3504,12 @@ class SpencerFanoSolver:
         n_e = self.get_n_e()
 
         deltaen = self.deltaen
-        frac_heating += (
-            deltaen / self.deposition_ev_per_s_per_cm3 * float(np.dot(_get_lossvec(self.engrid, n_e), self.yvec))
-        )
+        # the loss function at the energies of the matrix diagonal (see _solve_matrix())
+        lossvec = _get_lossvec(self.engrid_mid, n_e)
+        frac_heating += deltaen / self.deposition_ev_per_s_per_cm3 * float(np.dot(lossvec, self.yvec))
 
-        frac_heating_E_0_part = (
-            E_0 * float(self.yvec[0]) * electronlossfunction(E_0, n_e) / self.deposition_ev_per_s_per_cm3
-        )
+        # the term of row 0 of the matrix, so that the sum of the fractions is one to rounding
+        frac_heating_E_0_part = E_0 * float(self.yvec[0]) * float(lossvec[0]) / self.deposition_ev_per_s_per_cm3
 
         frac_heating += frac_heating_E_0_part
 

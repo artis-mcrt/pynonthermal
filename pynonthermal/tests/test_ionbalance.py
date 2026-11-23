@@ -681,9 +681,9 @@ def test_balanced_element_input_validation() -> None:
         with pytest.raises(ValueError, match="come from the ionisation balance"):
             sf.add_ionisation(2, 1, n_ion=1e8)
         with pytest.raises(ValueError, match="come from the ionisation balance"):
-            sf.add_ionisation_channel(2, 1, 1e8, 24.6, np.where(sf.engrid > 24.6, 1e-17, 0.0))
+            sf.add_ionisation_channel(2, 1, 1e8, 24.6, np.where(sf.engrid_mid > 24.6, 1e-17, 0.0))
         with pytest.raises(ValueError, match="come from the ionisation balance"):
-            sf.add_excitation(2, 1, 1e8, np.where(sf.engrid > 21.0, 1e-17, 0.0), 21.0)
+            sf.add_excitation(2, 1, 1e8, np.where(sf.engrid_mid > 21.0, 1e-17, 0.0), 21.0)
         with pytest.raises(ValueError, match="come from the ionisation balance"):
             sf.add_ion_excitation(2, 1, n_ion=1e8)
 
@@ -815,10 +815,10 @@ def test_custom_channels_of_a_balanced_ion() -> None:
     # converged solver matches a fixed solver with the same channels at the converged populations
     def custom_channel_xs(sf: pynonthermal.SpencerFanoSolver) -> npt.NDArray[np.float64]:
         # a made-up He II channel: zero below the potential and constant above it
-        return np.where(sf.engrid > 60.0, 2e-17, 0.0)
+        return np.where(sf.engrid_mid > 60.0, 2e-17, 0.0)
 
     def custom_excitation_xs(sf: pynonthermal.SpencerFanoSolver) -> npt.NDArray[np.float64]:
-        return np.where(sf.engrid > 21.0, 1e-17, 0.0)
+        return np.where(sf.engrid_mid > 21.0, 1e-17, 0.0)
 
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         sf.set_temperature(5000)
@@ -851,7 +851,7 @@ def test_custom_channels_of_a_balanced_ion() -> None:
         assert not sf._ionisation_channels
         sf.add_ionisation_channel(2, 2, 0.5e8, 60.0, custom_channel_xs(sf))
         with pytest.raises(ValueError, match="different populations"):
-            sf.add_ionisation_channel(2, 1, 0.4e8, 25.0, np.where(sf.engrid > 25.0, 1e-17, 0.0))
+            sf.add_ionisation_channel(2, 1, 0.4e8, 25.0, np.where(sf.engrid_mid > 25.0, 1e-17, 0.0))
 
 
 def test_balance_stage_without_channels_is_rejected() -> None:
@@ -872,11 +872,11 @@ def test_balance_stage_without_channels_is_rejected() -> None:
         with pytest.raises(ValueError, match="n_ion is required"):
             sf.add_ionisation(8, 2, None)
         with pytest.raises(ValueError, match="n_ion is required"):
-            sf.add_ionisation_channel(8, 2, None, 35.1, np.where(sf.engrid > 35.1, 1e-17, 0.0))
+            sf.add_ionisation_channel(8, 2, None, 35.1, np.where(sf.engrid_mid > 35.1, 1e-17, 0.0))
         with pytest.raises(ValueError, match="levelnumberdensity is required"):
-            sf.add_excitation(8, 2, None, np.where(sf.engrid > 20.0, 1e-17, 0.0), 20.0, levelpopfrac=0.5)
+            sf.add_excitation(8, 2, None, np.where(sf.engrid_mid > 20.0, 1e-17, 0.0), 20.0, levelpopfrac=0.5)
         sf.add_element(2, 1e8, recomb_ratecoeffs=HELIUM_ALPHAS)
-        xs_vec = np.where(sf.engrid > 21.0, 1e-17, 0.0)
+        xs_vec = np.where(sf.engrid_mid > 21.0, 1e-17, 0.0)
         with pytest.raises(ValueError, match="levelpopfrac must be between 0 and 1"):
             sf.add_excitation(2, 1, None, xs_vec, 21.0)
         with pytest.raises(ValueError, match="levelpopfrac must be between 0 and 1"):
