@@ -285,7 +285,7 @@ def test_iron() -> None:
 def test_grid_error_of_the_default_grid() -> None:
     # Fe I at an electron fraction of 0.25 on the default grid of 4096 points, against the limit of a fine
     # grid. The limit is the Richardson extrapolation of order 1 from 16384 and 32768 points. The rule with the
-    # inputs at the left end of each interval and the rule with them at the middle give the same limit to 1e-4.
+    # inputs at the left end of each interval and the rule with them at the middle give the same limit to 2e-4.
     # With the loss function and the cross sections at the left end of each grid interval, the errors of this
     # grid were +1.24% (heating), -0.66% (ionisation), -2.16% (excitation), and -1.02% (rate coefficient).
     # With them at the middle, the errors are +0.01%, -0.19%, +0.32%, and -0.26%. For 41 grids from 3600 to
@@ -313,14 +313,11 @@ def test_inputs_are_at_the_middle_of_each_grid_interval() -> None:
         u = np.maximum(np.asarray(en_ev, dtype=np.float64) / 30.0, 1.0)
         return 1e-17 * np.log(u) / u
 
-    def excitation_xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return 1e-16 * 12.0 / np.asarray(en_ev, dtype=np.float64)
-
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300) as sf:
         assert not sf.engrid_mid.flags.writeable
         assert np.array_equal(sf.engrid_mid, sf.engrid + 0.5 * sf.deltaen)
         sf.add_ionisation_channel(10, 1, 1e8, 30.0, bethe_like_xs, "direct")
-        sf.add_excitation(10, 1, 1e8, excitation_xs, 12.0, "line")
+        sf.add_excitation(10, 1, 1e8, lambda en_ev: 1.2e-15 / en_ev, 12.0, "line")
         sf.override_n_e(1e7)
         xs_grid = sf._ionisation_channels[(10, 1)][0].xs_grid
         above = sf.engrid > 30.0
@@ -328,7 +325,7 @@ def test_inputs_are_at_the_middle_of_each_grid_interval() -> None:
         assert not xs_grid[~above].any()
         xs_vec = sf.excitationlists[(10, 1)]["line"].xs_vec
         at_or_above = sf.engrid_mid >= 12.0
-        assert np.array_equal(xs_vec[at_or_above], excitation_xs(sf.engrid_mid[at_or_above]))
+        assert np.array_equal(xs_vec[at_or_above], 1.2e-15 / sf.engrid_mid[at_or_above])
         assert not xs_vec[~at_or_above].any()
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         # the heating integral over the grid, with the loss function at the middle of each interval
@@ -368,40 +365,39 @@ def test_fractions_sum_to_one_at_the_start_of_an_ionisation(ionpot_ev: float, fi
 
 
 @pytest.mark.parametrize(
-    ("threshold_ev", "first_column"),
+    ("threshold_ev", "first_column", "autoionisation"),
     [
         # the grid points are at 1, 2, 3, ... eV, and the middle of the interval of column j is at j + 1.5 eV
-        (30.5, 29),  # the threshold at the middle of the interval of column 29: the column keeps its value
-        (30.25, 29),  # the threshold below that middle, and above the grid point of the column
-        (30.75, 30),  # the threshold above that middle: the band starts at the next column
-        (0.6 + 1.0, 1),  # a threshold of less than two grid intervals
+        (30.5, 29, False),  # the threshold at the middle of the interval of column 29: the column keeps its value
+        (30.5, 29, True),
+        (30.25, 29, False),  # the threshold below that middle, and above the grid point of the column
+        (30.25, 29, True),
+        (30.75, 30, False),  # the threshold above that middle: the band starts at the next column
+        (30.75, 30, True),
+        (1.6, 1, False),  # a threshold of less than two grid intervals
     ],
 )
-@pytest.mark.parametrize("autoionisation", [False, True])
 def test_fractions_sum_to_one_at_the_start_of_an_excitation(
     threshold_ev: float, first_column: int, autoionisation: bool
 ) -> None:
     # an excitation, and an autoionisation channel with its Auger electron, start at the first column whose
     # middle energy is at or above the threshold. That column can start below the threshold. The band, the
     # source rows of the Auger electron, and the analysis all take the first column from the stored array.
-    def xs(en_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return 1e-16 * threshold_ev / np.asarray(en_ev, dtype=np.float64)
-
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3001, npts=3001) as sf:
         assert sf.deltaen == 1.0
         if autoionisation:
-            if threshold_ev < 25.0:
-                pytest.skip("the threshold of an autoionisation is above the ionisation potential")
-            sf.add_ionisation_channel(10, 1, 1e8, threshold_ev, xs, "auto", autoionisation=True)
+            sf.add_ionisation_channel(
+                10, 1, 1e8, threshold_ev, lambda en_ev: 1e-16 * threshold_ev / en_ev, "auto", autoionisation=True
+            )
             channel = sf._ionisation_channels[(10, 1)][0]
             assert channel.auger_electron_energy_ev > 8.0
             xs_stored = channel.xs_grid
         else:
-            sf.add_excitation(10, 1, 1e8, xs, threshold_ev, "line")
+            sf.add_excitation(10, 1, 1e8, lambda en_ev: 1e-16 * threshold_ev / en_ev, threshold_ev, "line")
             xs_stored = sf.excitationlists[(10, 1)]["line"].xs_vec
         sf.override_n_e(1e6)
         assert not xs_stored[:first_column].any()
-        assert xs_stored[first_column] == xs(sf.engrid_mid[first_column : first_column + 1])[0]
+        assert xs_stored[first_column] == 1e-16 * threshold_ev / sf.engrid_mid[first_column]
         assert sf.engrid_mid[first_column - 1] < threshold_ev <= sf.engrid_mid[first_column]
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
         fraction = sf.get_frac_ionisation_tot() if autoionisation else sf.get_frac_excitation_tot()
