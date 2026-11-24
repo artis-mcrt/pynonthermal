@@ -11,11 +11,11 @@ pynonthermal is a Python solver for the Spencer-Fano equation. The equation desc
 - collisional ionisation;
 - collisional excitation of bound states.
 
-Given a set of ions with number densities and an energy deposition rate, pynonthermal computes:
+The solver uses the ion number densities and the deposition rate to calculate the following quantities.
 
-- the **degradation spectrum** y(E) of the non-thermal electron population;
-- the **fraction of the deposited energy** that goes to heating, ionisation, and excitation, per channel and per ion;
-- the **non-thermal ionisation rate coefficients** of each ion and the **excitation rate coefficients** of bound-bound transitions, for plasma models that are not in local thermodynamic equilibrium (non-LTE).
+- The **degradation spectrum** y(E) of the non-thermal electrons.
+- The **energy fractions** for heating, ionisation, and excitation, with the contribution of each ion to ionisation and excitation.
+- The **non-thermal rate coefficients** for ionisation of each ion and excitation of each bound-bound transition. Plasma models use these coefficients outside local thermodynamic equilibrium (non-LTE).
 
 These quantities are important in models of the late-time spectra and light curves of Type Ia and core-collapse supernovae, where non-thermal ionisation can dominate over photoionisation. The solver follows the method of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract) (see [Method background](#method-background) for details and further references). It includes the atomic data that it needs: ionisation cross sections for a wide range of ions, and level and transition data for bound-bound excitation.
 
@@ -35,27 +35,25 @@ These quantities are important in models of the late-time spectra and light curv
 
 ## Installation
 
-Released package (recommended for most users):
+The package requires Python 3.13 or later. Install the release with pip.
 
 ```sh
-pip install pynonthermal
+python -m pip install pynonthermal
 ```
 
-Development install with [uv](https://docs.astral.sh/uv/):
+For development, install the project with [uv](https://docs.astral.sh/uv/).
 
 ```sh
 git clone https://github.com/artis-mcrt/pynonthermal.git
 cd pynonthermal
 uv sync --frozen
-source ./.venv/bin/activate
-uv pip install --editable .
-prek install
+uv run --frozen prek install
 ```
 
-Run the test suite with:
+Run the tests from the project directory.
 
 ```sh
-uv run -- python3 -m pytest
+uv run --frozen pytest
 ```
 
 ## Quick start
@@ -91,18 +89,23 @@ The [quickstart notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/q
 
 ### 1. Make the solver
 
+<!-- test -->
 ```python
+import pynonthermal
+
 sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 ```
 
-- `emin_ev`, `emax_ev`: the bounds of the uniform energy grid in eV (defaults `0.1` and `16000.0`). An
-  electron that degrades below `emin_ev` is taken to have thermalised, so its energy counts as heating.
-  Every ionisation potential must lie above `emin_ev`, and a `ValueError` says which lower `emin_ev` to
-  use. The default `emax_ev` is 16 keV. The built-in channels of Fe I to Fe XIV hold only their n=3 and
-  n=4 shells. If the inner shells of iron are important, add them with `add_ionisation_channel()`. Lower `emax_ev` to 3000 eV
-  to match [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract). `emin_ev` also sets the highest free electron density that the
-  solver accepts, because the Coulomb logarithm of the loss function must stay positive at the bottom
-  of the grid: about `7e16` cm^-3 at `emin_ev=0.1`, and about `7e19` cm^-3 at `emin_ev=1`.
+- `emin_ev` and `emax_ev` set the first and last points of `sf.engrid` in electronvolts (eV).
+  The defaults are 0.1 eV and 16 keV. An electron that falls below `emin_ev` gives its remaining energy to heating.
+  Each ionisation potential must be at least `emin_ev`.
+  The [oxygen example](#complete-example-pure-oxygen-plasma) uses an upper limit of 3000 eV.
+
+  The Coulomb logarithm must stay positive at `emin_ev`. This limits the free electron density
+  to about `7e16` cm^-3 at 0.1 eV and `7e19` cm^-3 at 1 eV.
+
+  The built-in channels of Fe I to Fe XIV hold only their n=3 and n=4 shells.
+  If the inner shells of iron are important, add them with `add_ionisation_channel()`.
 - `npts`: the number of energy grid points (default `4096`). More points cost memory and time. To check
   `npts`, compare the fractions with those of a finer grid. The sum of the fractions (`get_frac_sum()`)
   is one to rounding on each grid, also on a grid that is too coarse, so it does not show convergence.
@@ -124,6 +127,7 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
 
 ### 2. Set the temperature and the atomic data
 
+<!-- test: continue -->
 ```python
 sf.set_temperature(temperature=6000)  # K, for the LTE populations of the excitation levels
 sf.set_atomic_data(use_collstrengths=True, maxnlevelslower=5, maxnlevelsupper=250)
@@ -145,6 +149,7 @@ Excluded transitions have no key in `excitationlists`.
 
 ### 3. Add the elements
 
+<!-- test: continue -->
 ```python
 sf.add_element(Z=8, n_elem=1.0e10, ion_fractions={1: 0.99, 2: 0.01}, excitation=True)
 sf.add_element(Z=26, n_elem=1.0e9, recomb_ratecoeffs={2: 1.0e-11, 3: 1.5e-11, 4: 3.0e-11, 5: 6.0e-11})
@@ -169,25 +174,29 @@ populations. Both take `n_ion=None` for an ion whose population the solver alrea
 
 ### 4. Solve
 
-The free electron density comes from the ion charges of `ionpopdict`, so it counts only the electrons
-of the ions that the solver holds. Give it yourself with `sf.override_n_e(n_e)` before `solve()`, for
-example when species that are not in the solver also give electrons:
+By default, the solver calculates the free electron density from the charges and populations of its ions.
+If other elements also supply electrons, give the total free electron density before `solve()`.
+The example below includes electrons from outside the oxygen and iron populations.
 
+<!-- test: continue -->
 ```python
-sf.override_n_e(n_e=2.0e8)  # cm^-3; None takes it from the ion charges again
+sf.override_n_e(n_e=2.0e9)  # Total free electron density in cm^-3
 ```
 
-It works with every population rule. With `recomb_ratecoeffs` it replaces charge neutrality. `solve()`
-then finds the populations at your density, and they do not have to be neutral with it. The value holds
-until another call changes it. A call after `solve()` that changes the density discards the solution,
-so `solve()` must run again. A call with the density that the solver already uses keeps the solution.
-With `recomb_ratecoeffs`, a change between a given density and charge neutrality also discards the
-solution. The `override_n_e` argument of `solve()` is deprecated. The
+The specified density applies to every population rule. With `recomb_ratecoeffs`, `solve()` finds the
+populations at this density. The solver keeps the specified density until you change it.
+Call `sf.override_n_e(None)` to use the ion charges again.
+
+If you change the density after a solve, call `solve()` again.
+With fixed ion populations, a call with the same density keeps the solution.
+With `recomb_ratecoeffs`, a change between a specified density and charge neutrality also requires a new solve.
+The `override_n_e` argument of `solve()` is deprecated. The
 [iron notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionbalance_sn1a.ipynb) shows
 what a given density does to a balance.
 
-Then solve:
+Call `solve()` with the energy deposition rate per unit volume.
 
+<!-- test: continue -->
 ```python
 sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
 ```
@@ -200,9 +209,11 @@ sf.solve(deposition_ev_per_s_per_cm3=1.0e8)
 
 ### 5. Read the results
 
-Energy fractions, as shares of the deposited energy:
+The solver gives the total heating fraction. For ionisation and excitation, it also gives the share of each ion.
 
+<!-- test: continue -->
 ```python
+Z, ion_stage = 8, 2  # O II
 sf.get_frac_heating()  # to heating of the thermal electrons
 sf.get_frac_ionisation_tot()  # to ionisation, over all ions
 sf.get_frac_excitation_tot()  # to excitation, over all ions
@@ -211,8 +222,9 @@ sf.get_frac_ionisation_ion(Z, ion_stage)  # one ion's share
 sf.get_frac_excitation_ion(Z, ion_stage)
 ```
 
-Populations, densities, and rates:
+Use the same ion to read its population and rate coefficients.
 
+<!-- test: continue -->
 ```python
 sf.get_ion_fractions(Z)  # {ion_stage: fraction of the element}
 sf.ionpopdict  # {(Z, ion_stage): number density [cm^-3]}
@@ -222,6 +234,7 @@ sf.get_n_ion_tot()  # total nuclei [cm^-3]
 sf.balance_iterations  # iterations that a recomb_ratecoeffs balance took
 
 sf.get_ionisation_ratecoeff(Z, ion_stage)  # [s^-1]
+transitionkey = (0, 8)  # From the ground level to the eighth excited level of O II
 sf.get_excitation_ratecoeff(Z, ion_stage, transitionkey)  # [s^-1]
 sf.excitationlists[(Z, ion_stage)]  # the transitions of that ion, keyed by transition key
 sf.get_eff_ionpot(Z, ion_stage)  # effective ionisation potential [eV]
@@ -247,6 +260,7 @@ solver prints the per-ion and per-shell breakdown as it analyses the solution.
 For a plot of your own, three arrays on `sf.engrid_mid` give the share of the deposited energy per unit
 electron energy, in eV^-1:
 
+<!-- test: continue -->
 ```python
 sf.get_d_etaheating_by_d_en_vec()  # to heating, without the energy that thermalises below emin_ev
 sf.get_d_etaion_by_d_en_vec()  # to ionisation
@@ -258,6 +272,7 @@ true for excitation. `plot_channels()` draws each array times the energy.
 
 ### 6. Plot the solution
 
+<!-- test: continue -->
 ```python
 sf.plot_yspectrum()  # degradation spectrum y(E)
 sf.plot_channels(xscalelog=True)  # energy going to each channel vs electron energy
@@ -385,9 +400,11 @@ The [iron notebook](https://github.com/artis-mcrt/pynonthermal/blob/main/fe_ionb
 
 ## Complete example: pure-oxygen plasma
 
-This reproduces Figure 2 of [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract): a pure-oxygen plasma with the electron fraction
-x_e = 0.01, with both ionisation and excitation channels. With `verbose=True` the solver prints its
-setup and a per-ion, per-shell breakdown as it runs.
+This example compares the energy channels in a pure-oxygen plasma with the lower panel of Figure 2.
+The authors label that panel `dη/dE`.
+The example uses the same electron fraction (0.01) and upper energy limit (3 keV) with the atomic data in pynonthermal.
+The authors define `E₀` as the lowest excitation or ionisation energy. This example sets the lower grid limit to 1 eV.
+[C. Kozma and C. Fransson (1992), “Gamma-Ray Deposition and Nonthermal Excitation in Supernovae”, *The Astrophysical Journal*, 390, 602–621, DOI 10.1086/171311](https://doi.org/10.1086/171311)
 
 <!-- test -->
 ```python
@@ -397,22 +414,22 @@ n_e = 1e8  # free electron density [cm^-3]
 x_e = 1e-2  # ionisation fraction n_OII / (n_OI + n_OII)
 n_oxygen = n_e / x_e
 
-# the grid is theirs rather than the default: emin_ev=1 is their low-energy cutoff E_0,
-# and emax_ev=3000 is the top of their energy range.
 with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=4096, verbose=True) as sf:
-    sf.set_temperature(temperature=6000)  # K, for the LTE level populations
+    sf.set_temperature(temperature=6000)  # Level populations in local thermodynamic equilibrium at 6000 K
     sf.add_element(Z=8, n_elem=n_oxygen, ion_fractions={1: 1 - x_e, 2: x_e}, excitation=True)
 
-    # with fixed ion densities, any positive deposition rate works here: the energy fractions
-    # are independent of it (with recomb_ratecoeffs they would not be).
+    # With fixed ion densities, the deposition rate sets the scale of the rates. The energy fractions stay constant.
     sf.solve(deposition_ev_per_s_per_cm3=2950.49 * n_oxygen)
 
     sf.plot_channels(xscalelog=True)
 ```
 
-The plot shows the contribution of each channel per logarithmic energy interval, `E dη/dE`. One scale applies to all the curves and sets the largest peak to one. Thus the area under a curve does not give an energy fraction. The heating curve also excludes the energy that thermalises below `emin_ev`. Get the energy fractions from `get_frac_heating()`, `get_frac_ionisation_tot()`, and `get_frac_excitation_tot()`.
+The plot shows `E dη/dE`, the contribution of each channel per logarithmic energy interval.
+The solver uses one scale for all curves and sets the largest peak to one.
+The heating curve shows the contribution above `emin_ev`. The total heating fraction also includes energy that thermalises below this limit.
+Read the energy fractions with `get_frac_heating()`, `get_frac_ionisation_tot()`, and `get_frac_excitation_tot()`.
 
-![Energy deposition channels for a pure oxygen plasma](https://raw.githubusercontent.com/artis-mcrt/pynonthermal/main/docs/oxygen_channels.svg)
+![Normalised energy deposition per logarithmic energy interval for a pure-oxygen plasma](https://raw.githubusercontent.com/artis-mcrt/pynonthermal/main/docs/oxygen_channels.svg)
 
 ## Units and conventions
 
@@ -490,6 +507,7 @@ of `2` is the `NT_MAX_AUGER_ELECTRONS` of ARTIS. In an ionisation balance, an io
 top stage of the chain ends in the top stage, as in ARTIS. A shell that uses the Lotz formula has no
 Auger data.
 
+<!-- test -->
 ```python
 import pynonthermal
 
@@ -588,8 +606,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
   level population then follows the ion population, whether it is fixed or comes from a balance.
 - `epsilon_trans_ev`: the transition energy in eV. It must be positive and no greater than `emax_ev`,
   since no electron the solver represents could otherwise drive the transition. Transitions below
-  `emin_ev` are allowed here, but `add_element(excitation=True)` drops them. [Kozma and Fransson (1992, ApJ, 390, 602–621, doi:10.1086/171311)](https://ui.adsabs.harvard.edu/abs/1992ApJ...390..602K/abstract)
-  take every electron below `emin_ev` to have thermalised, so that energy counts as heating instead.
+  `emin_ev` are allowed here. For excitations from the level table, `add_element(excitation=True)` excludes
+  transitions below `emin_ev`. The solver counts the energy of electrons that thermalise below this limit as heating.
 - `xs_vec`, and `transitionkey`: the key to pass to `get_excitation_ratecoeff()`.
 
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
