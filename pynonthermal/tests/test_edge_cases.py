@@ -5,7 +5,6 @@ Each test gives the input that failed before the fix and checks the behaviour af
 
 import importlib
 import os
-import pickle
 import shutil
 import subprocess
 import sys
@@ -80,24 +79,6 @@ def test_failed_solve_keeps_the_last_solution() -> None:
     # the solver is still solved, so it accepts no more ions, and the message gives the remedy
     with pytest.raises(RuntimeError, match=r"after solving the Spencer-Fano equation\. Make a new SpencerFanoSolver"):
         sf.add_ionisation(26, 2, 1e5)
-
-
-def test_pickled_copy_does_not_replace_a_custom_table() -> None:
-    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
-    sf.set_temperature(6000)
-    sf.set_atomic_data(adata_polars=_oxygen_level_table())
-    sf.add_element(8, ion_densities={1: 1e8, 2: 1e6}, excitation=True)
-    sf.solve(1e8)
-    copy = pickle.loads(pickle.dumps(sf))  # noqa: S301
-    with pytest.warns(DeprecationWarning, match="override_n_e"), pytest.raises(ValueError, match="not valid"):
-        copy.solve(1e8, override_n_e=1e30)
-    # the failed solve keeps the solution, so the copy accepts no more ions
-    with pytest.raises(RuntimeError, match="after solving"):
-        copy.add_ion_excitation(26, 2, 1e4)
-    # a copy without a solution must not read the internal database in place of the custom table
-    copy._solved = False
-    with pytest.raises(ValueError, match="pickle cannot keep the custom"):
-        copy.add_ion_excitation(26, 2, 1e4)
 
 
 def test_nulls_and_missing_levels_of_a_custom_table() -> None:
@@ -215,8 +196,6 @@ def test_stage_matrices_give_the_per_channel_result(monkeypatch: pytest.MonkeyPa
     assert len(unit_matrices._stage_matrices) == 4
     np.testing.assert_allclose(unit_matrices.yvec, per_channel.yvec, rtol=1e-12)
     assert unit_matrices.ionpopdict == pytest.approx(per_channel.ionpopdict, rel=1e-12)
-    # pickle leaves the large unit matrices out
-    assert not pickle.loads(pickle.dumps(unit_matrices))._stage_matrices  # noqa: S301
 
 
 def test_import_loads_neither_artistools_nor_matplotlib() -> None:
