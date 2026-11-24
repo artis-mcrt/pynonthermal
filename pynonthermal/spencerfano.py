@@ -8,6 +8,7 @@ The comments and the docstrings of this module cite these publications by their 
 - M72: Mewe 1972, A&A, 20, 215-221, ADS 1972A&A....20..215M (the journal gave no DOI)
 - VR62: van Regemorter 1962, ApJ, 136, 906-915, doi:10.1086/147445
 - S20: Shingles et al. 2020, MNRAS, 492, 2029-2043, doi:10.1093/mnras/stz3412
+- KM93: Kaastra & Mewe 1993, A&AS, 97, 443-482, ADS 1993A&AS...97..443K (the journal gave no DOI)
 """
 
 from __future__ import annotations
@@ -460,6 +461,9 @@ class SpencerFanoSolver:
     metastable level (level_energy_ev). It can be an excitation autoionisation (autoionisation=True),
     which emits its electrons as Auger electrons at one energy.
 
+    The built-in channels have no Auger electrons by default. With use_km1993_auger=True, they use
+    the Auger data of KM93 in the method of ARTIS (S20): see __init__().
+
     If heating_only_approximation is True, the solver removes the excitation and ionisation
     loss terms from the matrix and keeps only the heating loss. The solver still stores the
     excitation transitions and the ionisation cross sections, and it calculates the channel
@@ -522,6 +526,8 @@ class SpencerFanoSolver:
         use_ar1985: bool = False,
         heating_only_approximation: bool = False,
         lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2,
+        use_km1993_auger: bool = False,
+        max_auger_electrons: int = 2,
     ) -> None:
         """Make a solver with a uniform linear energy grid and the given options.
 
@@ -546,6 +552,22 @@ class SpencerFanoSolver:
         warns with a LotzApproximationWarning when it adds a Lotz channel. The estimate of the
         work function in the verbose output also uses the constant, for every shell.
 
+        If use_km1993_auger is True, the built-in channels use the Auger data of KM93, in the method
+        of ARTIS (S20). The default is False, and the built-in channels then have no Auger electrons.
+        With the data, an ionisation of an inner subshell does these things:
+
+        - It adds one electron to the source term, with the mean total energy of the Auger electrons
+          of the subshell. Thus the ion keeps the potential of the subshell less that energy, and
+          the ionisation fraction counts only the energy that the ion keeps.
+        - It removes 1 + a electrons with the probability of a Auger electrons. The subshell has
+          one channel for each a, so get_ionisation_ratecoeff(n_ejected=1 + a) gives its rate
+          coefficient, and the ionisation balance of add_element() sends the ions to that stage.
+
+        max_auger_electrons is the largest a, and the probabilities of the higher numbers go to it.
+        The default of 2 is the NT_MAX_AUGER_ELECTRONS of ARTIS. A stage of a balanced element also
+        cannot go above the top stage of its chain. The option has no effect on a channel of
+        add_ionisation_channel().
+
         Every method takes Z and ion_stage as integers, with ion_stage from 1 to Z + 1.
         """
         # a float gave a bare TypeError from numpy below, and a string one from the comparison
@@ -568,6 +590,11 @@ class SpencerFanoSolver:
             raise ValueError(msg)
         # read-only after this point, because the built-in channels hold the value
         self._lotz_a_cm2_ev2 = float(lotz_a_cm2_ev2)
+        self._use_km1993_auger = _check_bool(use_km1993_auger, "use_km1993_auger")
+        if not _is_integer(max_auger_electrons) or max_auger_electrons < 0:
+            msg = f"max_auger_electrons must be an integer of at least 0 but is {max_auger_electrons!r}"
+            raise ValueError(msg)
+        self._max_auger_electrons = int(max_auger_electrons)
 
         self._solved = False
         self._n_e = None
@@ -1018,13 +1045,29 @@ class SpencerFanoSolver:
                 raise ValueError(msg)
             seen.add(key)
 
-    def _build_builtin_channels(self, Z: int, ion_stage: int, warn_lotz: bool = True) -> list[IonisationChannel]:
+    def _build_builtin_channels(
+        self, Z: int, ion_stage: int, warn_lotz: bool = True, top_ion_stage: int | None = None
+    ) -> list[IonisationChannel]:
         # the checked built-in ionisation channels of one stage. Nothing here writes to the solver,
         # so a caller can build the channels of every stage before it stores the first one. An ion
         # without a row in the cross-section table raises, so an element skips its bare nucleus
         # before it calls this method.
+        max_auger_electrons = self._max_auger_electrons
+        element = self._balanced_elements.get(Z) if top_ion_stage is None else None
+        if element is not None:
+            top_ion_stage = element.ion_stages[-1]
+        if top_ion_stage is not None and ion_stage < top_ion_stage:
+            # the balance has no stage above the top of the chain, so an ionisation that passes the
+            # top stage ends in the top stage, as in ARTIS
+            max_auger_electrons = min(max_auger_electrons, top_ion_stage - ion_stage - 1)
         channels = pynonthermal.collion.get_ion_ionisation_channels(
-            self.dfcollion, Z, ion_stage, self.engrid, lotz_a_cm2_ev2=self._lotz_a_cm2_ev2
+            self.dfcollion,
+            Z,
+            ion_stage,
+            self.engrid,
+            lotz_a_cm2_ev2=self._lotz_a_cm2_ev2,
+            use_km1993_auger=self._use_km1993_auger,
+            max_auger_electrons=max_auger_electrons,
         )
         self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
         self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
@@ -1821,7 +1864,8 @@ class SpencerFanoSolver:
         # electrons of an autoionisation. The fill subtracts them like the second integral. They
         # appear at one energy below the ionisation potential. Thus they are an extra source at
         # every grid energy below their energy. This is the source term of the Auger electrons in
-        # equation 8 of S20.
+        # equation 8 of S20. A channel with mean_auger_electron has one electron in the source term,
+        # with the mean total energy of the Auger electrons of its subshell, as in ARTIS.
         # Each row is below the energy of an Auger electron, and that energy is below ionpot_ev, so
         # each row starts at xsstartindex.
         auger_rowstop, auger_lastrow_weight = self._get_auger_electron_rows(channel)
@@ -2148,6 +2192,12 @@ class SpencerFanoSolver:
         auger_electron_energy_ev / n_auger_electrons, or goes to heating at or below emin_ev. The
         ionisation fraction counts ionpot_ev - auger_electron_energy_ev per ionisation. The Auger
         electrons return the rest to the electrons of the plasma.
+
+        The option use_km1993_auger of the solver has no effect on a channel of this method. With
+        that option, a built-in subshell with Auger data already holds its Auger decay. Do not add a
+        channel here for the Auger decay of the same subshell. If you do, the solver counts those
+        events two times. An autoionisation channel is a different event (an excitation of an inner
+        electron, not its removal), so it has no overlap with the option.
         """
         self._require_not_solved("add ionisation")
         auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
@@ -2433,7 +2483,7 @@ class SpencerFanoSolver:
             ion_stage: (
                 []
                 if ion_stage == Z + 1 or not builtin_channels
-                else self._build_builtin_channels(Z, ion_stage, warn_lotz=False)
+                else self._build_builtin_channels(Z, ion_stage, warn_lotz=False, top_ion_stage=element.ion_stages[-1])
             )
             for ion_stage in element.ion_stages
         }

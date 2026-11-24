@@ -6,8 +6,11 @@ The comments and the docstrings of this module cite these publications by their 
 - OPB71: Opal, Peterson & Beaty 1971, J. Chem. Phys., 55, 4100-4106, doi:10.1063/1.1676707
 - AR85: Arnaud & Rothenflug 1985, A&AS, 60, 425-457, ADS 1985A&AS...60..425A (the journal gave no DOI)
 - Y81: Younger 1981, J. Quant. Spectrosc. Radiat. Transfer, 26, 329-337, doi:10.1016/0022-4073(81)90127-8
+- KM93: Kaastra & Mewe 1993, A&AS, 97, 443-482, ADS 1993A&AS...97..443K (the journal gave no DOI)
+- S20: Shingles et al. 2020, MNRAS, 492, 2029-2043, doi:10.1093/mnras/stz3412
 """
 
+import dataclasses
 import math
 import os
 import typing as t
@@ -200,6 +203,80 @@ def _read_colliondata_cached(collionfilename: str) -> pl.DataFrame:
     )
 
 
+# The X-ray shells K, L1, L2, L3, M1, M2, and M3 of KM93 table 2, as (n, l, g). The statistical
+# weight g = 2j + 1 gives the weights of the mean of two X-ray shells with the same n and l.
+_KM93_SHELLS: tuple[tuple[int, int, int], ...] = (
+    (1, 0, 2),
+    (2, 0, 2),
+    (2, 1, 2),
+    (2, 1, 4),
+    (3, 0, 2),
+    (3, 1, 2),
+    (3, 1, 4),
+)
+
+# the largest number of Auger electrons after one inner-shell ionisation in KM93 table 2
+KM93_MAX_AUGER_ELECTRONS: int = 9
+
+
+def read_auger_data() -> dict[tuple[int, int, int, int], tuple[float, tuple[float, ...]]]:
+    """Get the Auger data of KM93 table 2 for each subshell, as ARTIS (S20) reads it.
+
+    The key is (Z, ion_stage, n, l), with the ion stage before the ionisation. The value is
+    (auger_energy_ev, probabilities):
+
+    - auger_energy_ev is the mean total kinetic energy [eV] of the Auger electrons after one
+      ionisation of the subshell. It is the E_A of the table with the correction of KM93 equation 7.
+      The mean includes the ionisations that emit no Auger electron. A negative value becomes zero.
+    - probabilities[a] is the probability that the ionisation emits a Auger electrons, for a from 0
+      to KM93_MAX_AUGER_ELECTRONS.
+
+    The table gives the X-ray shells L2 and L3, and M2 and M3, in different rows. Each pair is one
+    subshell here, with the mean of the two rows, and the statistical weights as the weights.
+
+    Each call gives a new copy of the cached table.
+    """
+    return dict(_read_auger_data_cached())
+
+
+@lru_cache
+def _read_auger_data_cached() -> Mapping[tuple[int, int, int, int], tuple[float, tuple[float, ...]]]:
+    # the table that the package reads. It is read-only, because every caller shares it.
+    # g_sum holds the statistical weight that each subshell has accumulated
+    g_sum: dict[tuple[int, int, int, int], int] = {}
+    energies_ev: dict[tuple[int, int, int, int], float] = {}
+    probabilities: dict[tuple[int, int, int, int], npt.NDArray[np.float64]] = {}
+    with Path(pynonthermal.DATADIR, "auger-km1993-table2.txt").open(encoding="utf-8") as augerfile:
+        for line in augerfile:
+            if not line.strip() or line.startswith("#"):
+                continue
+            # The columns have a fixed width. An ionisation potential of five digits touches the shell
+            # number, and two probabilities can touch.
+            Z = int(line[0:2])
+            ion_stage = int(line[2:5])
+            n, l, g = _KM93_SHELLS[int(line[5:7]) - 1]  # noqa: E741
+            ionpot_ev = float(line[7:14])
+            en_auger_nocorrection_ev = float(line[14:21])
+            epsilon_e3 = int(line[21:25])
+            # The table gives the probability of 1 to 10 ejected electrons. That count includes the
+            # electron of the ionisation itself, so column a is the probability of a Auger electrons.
+            row_probabilities = np.array(
+                [int(line[26 + 5 * a : 31 + 5 * a]) / 1.0e4 for a in range(KM93_MAX_AUGER_ELECTRONS + 1)]
+            )
+            # KM93 equation 7, with the ionisation potential of the table
+            en_auger_ev = max(0.0, en_auger_nocorrection_ev - epsilon_e3 / 1000.0 * ionpot_ev)
+
+            key = (Z, ion_stage, n, l)
+            g_old = g_sum.get(key, 0)
+            g_sum[key] = g_old + g
+            energies_ev[key] = (g_old * energies_ev.get(key, 0.0) + g * en_auger_ev) / (g_old + g)
+            probabilities[key] = (g_old * probabilities.get(key, 0.0) + g * row_probabilities) / (g_old + g)
+
+    return MappingProxyType(
+        {key: (energies_ev[key], tuple(float(p) for p in probabilities[key])) for key in energies_ev}
+    )
+
+
 def Psecondary_vec(
     e_p: npt.NDArray[np.float64] | float, e_s: npt.NDArray[np.float64] | float, ionpot_ev: float, J: float
 ) -> npt.NDArray[np.float64]:
@@ -376,7 +453,8 @@ class IonisationChannel:
     An Auger electron appears at one energy, auger_electron_energy_ev / n_auger_electrons, and
     not with the Lorentzian distribution. The energy is zero for a direct single ionisation. The
     ion keeps ionpot_ev - auger_electron_energy_ev as ionisation energy, and the ionisation
-    fraction counts only that energy.
+    fraction counts only that energy. With mean_auger_electron, one electron holds all of this
+    energy, for every value of n_ejected.
     """
 
     autoionisation: bool = False
@@ -387,13 +465,25 @@ class IonisationChannel:
     energy auger_electron_energy_ev / n_ejected.
     """
 
+    mean_auger_electron: bool = False
+    """True for a built-in channel with the Auger data of KM93, in the method of ARTIS (S20).
+
+    The source term then holds one electron for each ionisation, with the energy
+    auger_electron_energy_ev. That energy is the mean total energy of the Auger electrons of the
+    subshell, for every value of n_ejected. SpencerFanoSolver(use_km1993_auger=True) makes these
+    channels.
+    """
+
     @property
     def n_auger_electrons(self) -> int:
-        """The number of Auger electrons of one ionisation.
+        """The number of Auger electrons in the source term of one ionisation.
 
         An autoionisation channel has no Lorentzian electron, so all of its n_ejected electrons
-        are Auger electrons. A direct ionisation has n_ejected - 1 of them.
+        are Auger electrons. A direct ionisation has n_ejected - 1 of them. A channel with
+        mean_auger_electron has one electron in the source term, which holds the mean total energy.
         """
+        if self.mean_auger_electron:
+            return 1
         return self.n_ejected if self.autoionisation else self.n_ejected - 1
 
     def evaluate_xs(self, energies_ev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -770,12 +860,16 @@ class _ShellXs:
     # the row. Else a write to the row changes xs and not xs_grid of the channel.
     shell: Mapping[str, t.Any]
     lotz_a_cm2_ev2: float
+    # the fraction of the ionisations of the shell that the channel holds
+    scale: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shell", MappingProxyType(dict(self.shell)))
 
     def __call__(self, arr_enev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return get_arxs_array_shell(arr_enev, self.shell, lotz_a_cm2_ev2=self.lotz_a_cm2_ev2)
+        xs = get_arxs_array_shell(arr_enev, self.shell, lotz_a_cm2_ev2=self.lotz_a_cm2_ev2)
+        # a scale of one gives the array of the shell itself, so the default results do not change
+        return xs if self.scale == 1.0 else self.scale * xs
 
 
 def get_ion_ionisation_channels(
@@ -784,34 +878,96 @@ def get_ion_ionisation_channels(
     ion_stage: int,
     arr_enev: npt.NDArray[np.float64],
     lotz_a_cm2_ev2: float = LOTZ_A_CM2_EV2,
+    *,
+    use_km1993_auger: bool = False,
+    max_auger_electrons: int = KM93_MAX_AUGER_ELECTRONS,
 ) -> list[IonisationChannel]:
-    """Get one ionisation channel for every subshell of an ion in the fit table dfcollion.
+    """Get the ionisation channels of every subshell of an ion in the fit table dfcollion.
 
     arr_enev:
         the energy grid [eV] of the solver (SpencerFanoSolver.engrid). Each cross section is evaluated and
         checked at the middle of each grid interval.
     lotz_a_cm2_ev2:
         the constant A [cm^2 eV^2] of the Lotz formula for the shells without fit data
+    use_km1993_auger:
+        False (the default) gives one channel with n_ejected=1 for each subshell. True uses the
+        Auger data of KM93 (read_auger_data()) in the method of ARTIS (S20). A subshell with
+        Auger data then gives one channel for each possible number of Auger electrons a. That
+        channel has n_ejected = 1 + a, and its cross section is the cross section of the subshell
+        times the probability of a. Each of these channels has mean_auger_electron=True and the
+        mean Auger energy of the subshell. A Lotz shell has no Auger data.
+    max_auger_electrons:
+        the largest number of Auger electrons of one ionisation. The probabilities of the higher
+        numbers go to this number. The number of electrons of the ion is also a limit.
     """
     shells = dfcollion.filter((pl.col("Z") == Z) & (pl.col("ion_stage") == ion_stage)).to_dicts()
     if not shells:
         msg = f"No ionisation cross-section data for Z={Z} ion_stage {ion_stage}"
         raise ValueError(msg)
 
-    return [
-        IonisationChannel.from_xs(
-            arr_enev=arr_enev,
-            Z=Z,
-            ion_stage=ion_stage,
-            ionpot_ev=float(shell["ionpot_ev"]),
-            xs=_ShellXs(shell, lotz_a_cm2_ev2),
-            # the key names the subshell, so the verbose output needs no separate label
-            key=(
-                f"Lotz shell {SUBSHELLNAMES[-int(shell['l'])]}"
-                if int(shell["n"]) < 0
-                else f"n {int(shell['n'])} l {int(shell['l'])}"
-            ),
-            lotz=int(shell["n"]) < 0,
+    auger_data = _read_auger_data_cached() if use_km1993_auger else {}
+    # a negative limit made the slice of the probabilities count from the end, so -1 gave the limit 9.
+    # The error type is that of SpencerFanoSolver for the same option.
+    is_integer = isinstance(max_auger_electrons, (int, np.integer)) and not isinstance(max_auger_electrons, bool)
+    if not is_integer or max_auger_electrons < 0:
+        msg = f"max_auger_electrons must be an integer of at least 0 but is {max_auger_electrons!r}"
+        raise ValueError(msg)
+    # an ion cannot lose more electrons than it has
+    max_auger_electrons = min(int(max_auger_electrons), Z - ion_stage)
+    channels: list[IonisationChannel] = []
+    for shell in shells:
+        ionpot_ev = float(shell["ionpot_ev"])
+        lotz = int(shell["n"]) < 0
+        # the key names the subshell, so the verbose output needs no separate label
+        shellkey = (
+            f"Lotz shell {SUBSHELLNAMES[-int(shell['l'])]}" if lotz else f"n {int(shell['n'])} l {int(shell['l'])}"
         )
-        for shell in shells
-    ]
+        auger = None if lotz else auger_data.get((Z, ion_stage, int(shell["n"]), int(shell["l"])))
+        if auger is None:
+            channels.append(
+                IonisationChannel.from_xs(
+                    arr_enev=arr_enev,
+                    Z=Z,
+                    ion_stage=ion_stage,
+                    ionpot_ev=ionpot_ev,
+                    xs=_ShellXs(shell, lotz_a_cm2_ev2),
+                    key=shellkey,
+                    lotz=lotz,
+                )
+            )
+            continue
+
+        en_auger_ev, probabilities = auger
+        if not en_auger_ev < ionpot_ev:
+            msg = (
+                f"the mean Auger energy ({en_auger_ev} eV) of Z={Z} ion_stage {ion_stage} {shellkey} must be"
+                f" less than the ionisation potential of the subshell ({ionpot_ev} eV)"
+            )
+            raise ValueError(msg)
+        # the probabilities of the numbers above the limit go to the limit, as in ARTIS. The table
+        # gives four decimals, so the sum can differ from one by 1e-4. The division keeps the total
+        # cross section of the subshell.
+        folded = [*probabilities[:max_auger_electrons], sum(probabilities[max_auger_electrons:])]
+        for n_auger, probability in enumerate(folded):
+            if probability <= 0.0:
+                continue
+            # from_xs() makes a checked channel of a single ionisation, which has no Auger electrons.
+            # The Auger data then replaces three of its fields. The checks of from_xs() for a multiple
+            # ionisation compare the threshold with the NIST potentials. Some subshells of KM93 fail
+            # that check, and ARTIS uses their data as given.
+            channels.append(
+                dataclasses.replace(
+                    IonisationChannel.from_xs(
+                        arr_enev=arr_enev,
+                        Z=Z,
+                        ion_stage=ion_stage,
+                        ionpot_ev=ionpot_ev,
+                        xs=_ShellXs(shell, lotz_a_cm2_ev2, scale=probability / sum(folded)),
+                        key=f"{shellkey}, n_ejected {1 + n_auger}",
+                    ),
+                    n_ejected=1 + n_auger,
+                    auger_electron_energy_ev=en_auger_ev,
+                    mean_auger_electron=True,
+                )
+            )
+    return channels
