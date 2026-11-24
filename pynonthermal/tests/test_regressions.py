@@ -879,13 +879,12 @@ def test_custom_ionisation_channel_matches_the_builtin_path() -> None:
         assert math.isclose(
             sf_custom.get_frac_ionisation_ion(Z, ion_stage), sf_builtin.get_frac_ionisation_ion(Z, ion_stage)
         )
-        # frac_heating differs only through calculate_N_e, which needs the cross section between
-        # the grid points and interpolates the array there instead of using the exact formula
-        assert math.isclose(sf_custom.get_frac_heating(), sf_builtin.get_frac_heating(), rel_tol=1e-5)
+        # frac_heating reads the cross section only at the energies of the matrix, so the two values are equal
+        assert math.isclose(sf_custom.get_frac_heating(), sf_builtin.get_frac_heating())
 
 
 def test_custom_ionisation_channel_conserves_energy() -> None:
-    # the whole custom path, from the matrix fill to calculate_N_e, must still put every
+    # the whole custom path, from the matrix fill to the heating fraction, must still put every
     # deposited eV into heating, excitation, or ionisation
     ionpot_ev = 35.0
     with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=2000) as sf:

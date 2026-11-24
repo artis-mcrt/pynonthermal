@@ -356,8 +356,8 @@ def _truncate_dict(mapping: dict[t.Any, t.Any], size: int) -> None:
 
 # Nodes for the sub-grids that resolve the parts of the KF92 equation 11 integrals that the
 # solver's own energy grid cannot. Both integrands vary on the scale of J = 0.6 * ionpot_ev, so the node
-# count is set from the domain width in units of J, with a floor for the narrow domains that
-# calculate_frac_heating produces and a cap for the wide ones a direct calculate_N_e call can ask for.
+# count is set from the domain width in units of J. The count has a floor for the narrow domains of an
+# energy below emin_ev. It has a cap for the wide domains that an energy above emin_ev can give.
 NPTS_SUBGRID_MIN: int = 65
 NPTS_SUBGRID_MAX: int = 1025
 NPTS_SUBGRID_PER_J: int = 32
@@ -3183,6 +3183,10 @@ class SpencerFanoSolver:
         N(E) does not include the Auger electrons (the extra electrons of a
         multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
         the energy of those electrons at or below emin_ev in a different term.
+
+        calculate_frac_heating() does not call this method. It adds an energy for the electrons that
+        appear below emin_ev, and that energy is not the integral of E N(E) from zero to emin_ev. The
+        energy also has a part from the electrons that appear in the first grid interval above emin_ev.
         """
         # both this method and calculate_frac_heating() read yvec, which exists only after solve()
         self._require_solved()
@@ -3195,13 +3199,12 @@ class SpencerFanoSolver:
 
     def _calculate_N_e(self, energy_ev: float) -> float:
         # N(E) of calculate_N_e(). calculate_frac_heating() does not use it: the energy below E_0 comes
-        # from the terms of the matrix (see _band_energy_below_e0() and _ionisation_energy_below_e0()).
+        # from the terms of the matrix (see the derivation in calculate_frac_heating()).
         # N(E) of KF92 equation 11: the rate at which electrons appear at an
         # energy E below the solved grid. Its three terms are electrons that excited an ion
         # from E + epsilon_trans, primaries degraded by an ionisation energy loss (with the
         # equation's lambda limit computed as enlambda below), and the secondaries of
-        # ionisations by primaries above 2E + I. calculate_frac_heating() integrates
-        # E * N(E) over [0, E_0] for the energy that thermalises below the grid.
+        # ionisations by primaries above 2E + I.
         # not valid for energy > E_0
         if energy_ev == 0.0:
             return 0.0
@@ -3425,14 +3428,91 @@ class SpencerFanoSolver:
 
         The method also stores the value, and get_frac_heating() then gives it without a new
         calculation. The value includes the energy of the electrons that thermalise below emin_ev.
+
+        The method does not integrate calculate_N_e() for that energy. It calculates the energy from
+        the terms of the matrix. The comment in the source code of the method gives the derivation.
         """
-        # The four parts below are each divided by the deposition rate density:
-        # - the loss-function integral over the solved grid;
-        # - the boundary term E_0 y(E_0) L(E_0) for the electrons that flow through the bottom of
-        #   the grid;
-        # - the energy of the electrons that first appear below E_0 (N(E) of KF92 equation 11);
-        # - the energy below E_0 of the Auger electrons (the extra
-        #   electrons of a multiple ionisation, and the electrons of an autoionisation).
+        # KF92 equation 8 gives the heating. E_0 is emin_ev, and D is the deposition rate density
+        # (deposition_ev_per_s_per_cm3):
+        #
+        #   D * frac_heating = integral from E_0 to E_max of y(E) L_e(E) dE    (first term)
+        #                      + E_0 y(E_0) L_e(E_0)                           (second term)
+        #                      + integral from 0 to E_0 of E N(E) dE           (third term)
+        #
+        # The first term is the Coulomb loss of the electrons on the grid. The second term is the energy
+        # of the electrons that the Coulomb loss moves through the bottom of the grid. The third term is
+        # the energy of the electrons that a collision puts below the grid. N(E) is the rate at which
+        # these electrons appear at the energy E (KF92 equation 11):
+        #
+        #   N(E) = sum over the transitions of n y(E + eps_trans) sigma_exc(E + eps_trans)        (excitation)
+        #        + sum over the shells of
+        #          n integral from I to lambda of y(E + eps) sigma_ic(E + eps, eps) d eps         (primary)
+        #        + sum over the shells of
+        #          n integral from 2E + I to E_max of y(E') sigma_ic(E', E + I) dE'               (secondary)
+        #
+        # The first term of equation 8 is a sum over the grid intervals. The loss function of each grid
+        # interval is at engrid_mid, as in the matrix. The second term uses the values of the first grid
+        # interval.
+        #
+        # The third term without a quadrature of N(E)
+        # -------------------------------------------
+        # This method does not call calculate_N_e(), and it has no quadrature over E from 0 to E_0. Each
+        # term of N(E) is an integral over y(E'), so the third term is a double integral over E and E'.
+        # This method calculates the two integrals in the opposite order:
+        #
+        #   integral from 0 to E_0 of E N(E) dE = integral from E_0 to E_max of y(E') K(E') dE'
+        #
+        # K(E') is the energy that one electron at E' puts below E_0 for each unit of its path length.
+        # It is a sum over the collisions of n sigma(E') times the mean energy below E_0 of the
+        # electrons that leave the collision:
+        # - an excitation leaves one electron at E' - eps_trans (the excitation term of N);
+        # - an ionisation with the energy transfer eps leaves the primary electron at E' - eps (the
+        #   primary term of N);
+        # - the same ionisation ejects the secondary electron at eps - I (the secondary term of N).
+        # For an ionisation, the mean is over eps with the distribution P of KF92 equation 4. That mean
+        # has a closed form, as the terms of the ionisation in the matrix have.
+        #
+        # The integral over E' is a sum over the columns of the matrix. Two methods calculate it:
+        # - _band_energy_below_e0() for one transition, or for the primary electron of one autoionisation
+        #   channel;
+        # - _ionisation_energy_below_e0() for the primary and the secondary electrons of one ionisation
+        #   channel.
+        # KF92 equation 11 does not have the Auger electrons (S20). The last block of this method adds
+        # their energy below E_0.
+        #
+        # This form has two advantages. First, it counts each collision with the weights of the matrix.
+        # The energy fractions then sum to one on each grid, and the difference is rounding. Second, it
+        # reads y and each cross section only at engrid_mid, where the solver has them. A quadrature of
+        # N(E) must interpolate them between these energies. Such an interpolation gave a large error of
+        # the heating where a cross section starts between two energies of the grid.
+        #
+        # The first grid interval
+        # -----------------------
+        # On the grid, the energy "below E_0" of an electron is the energy that the rows of the matrix do
+        # not hold. The solver counts the electron of column j at engrid[j] + deltaen (see E_init_ev in
+        # __init__). Row i holds the energy deltaen of each electron at or above engrid[i] + deltaen. The
+        # second term adds E_0 for each electron in row 0.
+        #
+        # The first grid interval is from E_0 to E_0 + deltaen. An electron that appears at an energy E in
+        # that grid interval has only a part of the weight of row 0. That part is (E - E_0) / deltaen. Row 0
+        # and the second term then hold only that part of deltaen + E_0, and the third term holds the
+        # remaining part of E. The energy in the third term for one electron at E is:
+        #
+        #   E                                   for E < E_0
+        #   E_0 * (1 - (E - E_0) / deltaen)     for E from E_0 to E_0 + deltaen
+        #   0                                   for E above E_0 + deltaen
+        #
+        # The third term of this method is thus the integral of N(E) times that energy, from 0 to
+        # E_0 + deltaen, plus the Auger part. Without the Auger part, it is the third term of KF92
+        # equation 8 only if deltaen is much smaller than E_0.
+        #
+        # Thus the integral of E calculate_N_e(E) from 0 to E_0 does not give the third term of this
+        # method. On the default grid (E_0 = 0.1 eV, deltaen = 3.9 eV), that integral is about 3 % of the
+        # third term. This value is for an O II plasma and for a plasma of Fe I to Fe IV. With E_0 = 1 eV
+        # and deltaen = 0.05 eV, the integral is 95 % of the third term for the O II plasma.
+        # calculate_N_e() also interpolates y between the energies of engrid_mid. Thus the integral of
+        # calculate_N_e(E) times the energy of the three cases above agrees with the third term only approximately.
+        #
         # it reads yvec, which exists only after solve(), and it caches its result in _frac_heating
         self._require_solved()
         frac_heating = 0.0

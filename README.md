@@ -533,8 +533,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
 
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
 one bin of the grid. A cross section given as a function is called there; an array can only be interpolated, so
-resolve that region with `npts` if it matters for your ion. The term it feeds is the energy that
-thermalises below `emin_ev`, which is a small part of the heating fraction. An
+resolve that region with `npts` if it matters for your ion. `get_frac_heating()` does not call
+`calculate_N_e()`, so the heating fraction needs no value between the grid points. An
 [autoionisation channel](#excitation-autoionisation) uses only the values on the grid, as
 `add_excitation()` does.
 
