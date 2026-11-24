@@ -506,8 +506,6 @@ class SpencerFanoSolver:
     sfmatrix: npt.NDArray[np.float64]
     # True when sfmatrix does not hold the records of the solver (see _rebuild_sfmatrix())
     _sfmatrix_stale: bool
-    # True when the solver holds cross sections at engrid, from a state of a release before engrid_mid
-    _xs_at_engrid: bool
     # the number of fills of sfmatrix that have started, so that a failed add call knows if it wrote to the matrix
     _sfmatrix_writes: int
     adata_polars: pl.DataFrame | None
@@ -667,7 +665,6 @@ class SpencerFanoSolver:
         self.sfmatrix = np.zeros((npts, npts))
         self._sfmatrix_stale = False
         self._sfmatrix_writes = 0
-        self._xs_at_engrid = False
 
     @t.override
     def __getstate__(self) -> dict[str, t.Any]:
@@ -695,36 +692,17 @@ class SpencerFanoSolver:
         numpy keeps the read-only flag of an array only with pickle protocol 5, and multiprocessing can
         use protocol 4. So this method makes the shared arrays read-only again. A write must raise at
         the mutation site, as in a solver that pickle did not copy.
+
+        A state from a release before engrid_mid raises a ValueError. That release has other matrix terms,
+        and its cross sections and its solution are at engrid, so this release cannot use its data.
         """
-        self.__dict__.update(state)
-        # a state from a release before this attribute
-        self.__dict__.setdefault("_custom_adata_polars_dropped", False)
-        self.__dict__.setdefault("_stage_matrices", {})
-        self.__dict__.setdefault("_sfmatrix_stale", False)
-        self.__dict__.setdefault("_sfmatrix_writes", 0)
-        self.__dict__.setdefault("_xs_at_engrid", False)
-        # a state from a release before this attribute
         if "engrid_mid" not in state:
-            self.engrid_mid = self.engrid + 0.5 * self.deltaen
-            # The cross sections of that state are at engrid, and the solver now takes them as values at
-            # engrid_mid. An array holds no function to calculate it again, and a threshold in an array has
-            # the old start rule. So the cross sections stay, and solve() gives a warning about the larger
-            # grid error.
-            self._xs_at_engrid = bool(self._ionisation_channels or self.excitationlists or self._balanced_elements)
-            # The cached fills of that release have other attributes. pickle restores a fill by the position of
-            # each attribute, so the values are in the wrong attributes, and the last attributes have no value.
-            # The matrix of that release also has other ionisation terms, and a later update adds only the change
-            # of each population. So the cache starts empty, and the next solve() or add call fills the matrix
-            # again from the records.
-            self._channel_fills = {}
-            self._sfmatrix_stale = True
-            # The solution of that release is at engrid, with the loss function at engrid. The analysis now takes
-            # the solution at engrid_mid and has another energy count below the grid, so its fractions for that
-            # solution do not sum to one. The getters thus ask for a new solve().
-            if self._solved and self._solution_discarded_by is None:
-                self._solution_discarded_by = (
-                    "__setstate__(), which restored a state from an earlier release with other matrix terms,"
-                )
+            msg = (
+                "An earlier release of pynonthermal made this state, and this release cannot use its matrix"
+                " and its cross sections. Make a new SpencerFanoSolver and add the ions again."
+            )
+            raise ValueError(msg)
+        self.__dict__.update(state)
         # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
         # gets a writable copy. Else every add method and the ionisation balance raised.
         if not self.sfmatrix.flags.writeable:
@@ -2822,15 +2800,6 @@ class SpencerFanoSolver:
                 "the override_n_e argument of solve() is deprecated. Call the override_n_e() method before"
                 " solve() instead.",
                 DeprecationWarning,
-                stacklevel=2,
-            )
-
-        if self._xs_at_engrid:
-            warnings.warn(
-                "This solver comes from a state of a release before engrid_mid. Its cross sections are at engrid"
-                " and not at engrid_mid, so the grid error of the results is larger than that of a new solver."
-                " Add the ions to a new SpencerFanoSolver for the full accuracy.",
-                UserWarning,
                 stacklevel=2,
             )
 

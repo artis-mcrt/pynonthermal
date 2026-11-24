@@ -1565,13 +1565,14 @@ def test_pickle_protocol_4_keeps_the_arrays_read_only() -> None:
             with pytest.raises(ValueError, match="read-only"):
                 array[0] = 0.0
 
-        # a state from a release before engrid_mid gets the attribute
+        # A state from a release before engrid_mid has other matrix terms, and its cross sections are at engrid.
+        # The solver cannot use these data, so it refuses the state.
         state = sf.__getstate__()
         del state["engrid_mid"]
         sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
-        sf_old.__setstate__(state)
-        assert np.array_equal(sf_old.engrid_mid, sf.engrid_mid)
-        assert not sf_old.engrid_mid.flags.writeable
+        with pytest.raises(ValueError, match="An earlier release of pynonthermal made this state"):
+            sf_old.__setstate__(state)
+        assert not sf_old.__dict__
 
 
 def test_pickle_protocol_4_keeps_the_cached_fills_read_only() -> None:
@@ -1586,67 +1587,6 @@ def test_pickle_protocol_4_keeps_the_cached_fills_read_only() -> None:
     for fill in sf_copy._channel_fills.values():
         for array in (fill.unit_prefactors, fill.atan_mean_offsets, fill.partial_rows, fill.partial_unit_terms):
             assert not array.flags.writeable
-
-
-def test_state_before_engrid_mid_drops_the_cached_fills() -> None:
-    # A cached fill of the release before engrid_mid has seven other attributes, and pickle restores a fill by
-    # the position of each attribute. __setstate__ of the solver then raised an AttributeError for the last
-    # attributes. The matrix of that release also has other ionisation terms.
-    sf = _balanced_oxygen()
-    with pytest.warns(UserWarning, match="top stage"):
-        sf.solve(deposition_ev_per_s_per_cm3=1e3)
-    # a copy of the state through pickle, so that the two solvers do not share their records
-    state = pickle.loads(pickle.dumps(sf.__getstate__()))  # noqa: S301
-    del state["engrid_mid"]
-    old_fills = {}
-    for channel, fill in state["_channel_fills"].items():
-        old_fill = object.__new__(type(fill))
-        # unit_prefactors, int_eps_uppers, int_eps_lowers1, int_eps_lowers2, xsstartindex, cuts1, jstarts2
-        old_fill.__setstate__(
-            [
-                fill.unit_prefactors,
-                fill.int_eps_uppers,
-                fill.int_eps_uppers,
-                fill.int_eps_uppers,
-                fill.xsstartindex,
-                [0],
-                [-1],
-            ]
-        )
-        assert not hasattr(old_fill, "partial_rows")
-        old_fills[channel] = old_fill
-    state["_channel_fills"] = old_fills
-    # a matrix that does not agree with the records, as a matrix with the terms of that release
-    state["sfmatrix"] = 2.0 * sf.sfmatrix
-    assert state["ionpopdict"] is not sf.ionpopdict
-    sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
-    sf_old.__setstate__(state)
-    assert not sf_old._channel_fills
-    # the solution of that release is not a solution of the new terms, so each getter asks for a new solve()
-    assert "solution discarded" in repr(sf_old)
-    with pytest.raises(RuntimeError, match=r"a state from an earlier release .* call solve\(\) again"):
-        sf_old.get_frac_heating()
-
-    # the copy fills the matrix again from the records, so it gives the result of the solver that made the state
-    with pytest.warns(UserWarning, match="top stage"):
-        sf.solve(deposition_ev_per_s_per_cm3=2e3)
-    # In a real state of that release, the cross sections are at engrid, so solve() gives a warning. In this
-    # test, they are at engrid_mid, so the two results agree.
-    with (
-        pytest.warns(UserWarning, match="top stage"),
-        pytest.warns(UserWarning, match="Its cross sections are at engrid and not at engrid_mid"),
-    ):
-        sf_old.solve(deposition_ev_per_s_per_cm3=2e3)
-    # a copy of the restored solver keeps the warning
-    sf_old_copy = pickle.loads(pickle.dumps(sf_old))  # noqa: S301
-    with (
-        pytest.warns(UserWarning, match="top stage"),
-        pytest.warns(UserWarning, match="Its cross sections are at engrid and not at engrid_mid"),
-    ):
-        sf_old_copy.solve(deposition_ev_per_s_per_cm3=2e3)
-    for ionkey, population in sf.ionpopdict.items():
-        assert sf_old.ionpopdict[ionkey] == pytest.approx(population, rel=1e-9)
-    assert sf_old.get_frac_ionisation_tot() == pytest.approx(sf.get_frac_ionisation_tot(), rel=1e-9)
 
 
 def test_cross_section_function_cannot_write_to_the_grid_of_a_channel() -> None:
