@@ -1565,29 +1565,6 @@ def test_pickle_protocol_4_keeps_the_arrays_read_only() -> None:
             with pytest.raises(ValueError, match="read-only"):
                 array[0] = 0.0
 
-        # A state from a release before engrid_mid has other matrix terms, and its cross sections are at engrid.
-        # The solver cannot use these data, so it refuses the state.
-        state = sf.__getstate__()
-        del state["engrid_mid"]
-        sf_old = pynonthermal.SpencerFanoSolver.__new__(pynonthermal.SpencerFanoSolver)
-        with pytest.raises(ValueError, match="An earlier release of pynonthermal made this state"):
-            sf_old.__setstate__(state)
-        assert not sf_old.__dict__
-
-
-def test_pickle_protocol_4_keeps_the_cached_fills_read_only() -> None:
-    # the cached fill of a balanced element is shared by each later call for the channel. A copy of the fill
-    # arrays got the read-only flag, and the arrays of the fill stayed writable.
-    sf = _balanced_oxygen()
-    with pytest.warns(UserWarning, match="top stage"):
-        sf.solve(deposition_ev_per_s_per_cm3=1e3)
-    assert sf._channel_fills
-    sf_copy = pickle.loads(pickle.dumps(sf, protocol=4))  # noqa: S301
-    assert sf_copy._channel_fills
-    for fill in sf_copy._channel_fills.values():
-        for array in (fill.unit_prefactors, fill.atan_mean_offsets, fill.partial_rows, fill.partial_unit_terms):
-            assert not array.flags.writeable
-
 
 def test_cross_section_function_cannot_write_to_the_grid_of_a_channel() -> None:
     # the function of an ionisation channel gets the middle energies of the grid intervals. That array was

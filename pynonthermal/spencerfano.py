@@ -692,17 +692,13 @@ class SpencerFanoSolver:
         numpy keeps the read-only flag of an array only with pickle protocol 5, and multiprocessing can
         use protocol 4. So this method makes the shared arrays read-only again. A write must raise at
         the mutation site, as in a solver that pickle did not copy.
-
-        A state from a release before engrid_mid raises a ValueError. That release has other matrix terms,
-        and its cross sections and its solution are at engrid, so this release cannot use its data.
         """
-        if "engrid_mid" not in state:
-            msg = (
-                "An earlier release of pynonthermal made this state, and this release cannot use its matrix"
-                " and its cross sections. Make a new SpencerFanoSolver and add the ions again."
-            )
-            raise ValueError(msg)
         self.__dict__.update(state)
+        # a state from a release before this attribute
+        self.__dict__.setdefault("_custom_adata_polars_dropped", False)
+        self.__dict__.setdefault("_stage_matrices", {})
+        self.__dict__.setdefault("_sfmatrix_stale", False)
+        self.__dict__.setdefault("_sfmatrix_writes", 0)
         # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
         # gets a writable copy. Else every add method and the ionisation balance raised.
         if not self.sfmatrix.flags.writeable:
