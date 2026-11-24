@@ -44,7 +44,6 @@ from pynonthermal.base import get_betasq
 from pynonthermal.base import get_xs_on_grid
 from pynonthermal.base import get_Zbar
 from pynonthermal.collion import _get_nist_ionisation_energies_ev_cached
-from pynonthermal.collion import _GridXs
 from pynonthermal.collion import _resolve_auger_electron_energy_ev
 from pynonthermal.collion import IonisationChannel
 from pynonthermal.constants import CLIGHT
@@ -650,9 +649,6 @@ class SpencerFanoSolver:
         self.adata_polars = None
         # True when adata_polars holds the internal database, which the solver can read again
         self._adata_polars_is_internal = False
-        # True in a copy that pickle made after solve() of a solver with a custom table. Pickle cannot
-        # keep the table, so the copy must not read the internal database in its place.
-        self._custom_adata_polars_dropped = False
         # the options of set_atomic_data() for the excitations from the level data
         self._use_collstrengths = True
         self._maxnlevelslower: int | None = 5
@@ -671,61 +667,6 @@ class SpencerFanoSolver:
         self.sfmatrix = np.zeros((npts, npts))
         self._sfmatrix_stale = False
         self._sfmatrix_writes = 0
-
-    @t.override
-    def __getstate__(self) -> dict[str, t.Any]:
-        """Get the state that pickle serialises.
-
-        A level table has polars Object columns, which pickle cannot serialise. The state leaves out
-        the internal level database, because the solver reads it again when it needs it. It also
-        leaves out a table from set_atomic_data() after solve(). The copy then raises a ValueError if a
-        later call needs the table, and it does not read the internal database in its place. Before
-        solve(), such a table stays in the state, and pickle fails if the table has Object columns.
-        """
-        state = self.__dict__.copy()
-        # the unit matrices of the balanced stages are large, and the balance makes them again
-        state["_stage_matrices"] = dict[tuple[int, int], npt.NDArray[np.float64]]()
-        if self._adata_polars_is_internal or self._solved:
-            if self.adata_polars is not None and not self._adata_polars_is_internal:
-                state["_custom_adata_polars_dropped"] = True
-            state["adata_polars"] = None
-            state["_adata_polars_is_internal"] = False
-        return state
-
-    def __setstate__(self, state: dict[str, t.Any]) -> None:
-        """Restore the state that pickle serialised.
-
-        numpy keeps the read-only flag of an array only with pickle protocol 5, and multiprocessing can
-        use protocol 4. So this method makes the shared arrays read-only again. A write must raise at
-        the mutation site, as in a solver that pickle did not copy.
-        """
-        self.__dict__.update(state)
-        # a state from a release before this attribute
-        self.__dict__.setdefault("_custom_adata_polars_dropped", False)
-        self.__dict__.setdefault("_stage_matrices", {})
-        self.__dict__.setdefault("_sfmatrix_stale", False)
-        self.__dict__.setdefault("_sfmatrix_writes", 0)
-        # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
-        # gets a writable copy. Else every add method and the ionisation balance raised.
-        if not self.sfmatrix.flags.writeable:
-            self.sfmatrix = np.array(self.sfmatrix)
-        arrays = [self.engrid]
-        if "yvec" in state:
-            arrays.append(self.yvec)
-        for channels in self._ionisation_channels.values():
-            for channel in channels:
-                arrays.append(channel.xs_grid)
-                if isinstance(channel.xs, _GridXs):
-                    arrays.extend((channel.xs.arr_enev, channel.xs.xs_grid))
-        for transitions in self.excitationlists.values():
-            arrays.extend(transition.xs_vec for transition in transitions.values())
-        for element in self._balanced_elements.values():
-            for templates in element.excitation_templates.values():
-                arrays.extend(template.xs_vec for template in templates.values())
-        for fill in self._channel_fills.values():
-            arrays.extend((fill.unit_prefactors, fill.int_eps_uppers, fill.int_eps_lowers1, fill.int_eps_lowers2))
-        for array in arrays:
-            array.flags.writeable = False
 
     @property
     def lotz_a_cm2_ev2(self) -> float:
@@ -989,7 +930,6 @@ class SpencerFanoSolver:
         if adata_polars is not None:
             self.adata_polars = adata_polars
             self._adata_polars_is_internal = False
-            self._custom_adata_polars_dropped = False
         if not isinstance(use_collstrengths, _Omitted):
             self._use_collstrengths = use_collstrengths
         if not isinstance(maxnlevelslower, _Omitted):
@@ -1471,7 +1411,6 @@ class SpencerFanoSolver:
             self.temperature,
             self.adata_polars,
             self._adata_polars_is_internal,
-            self._custom_adata_polars_dropped,
             self._use_collstrengths,
             self._maxnlevelslower,
             self._maxnlevelsupper,
@@ -1495,7 +1434,6 @@ class SpencerFanoSolver:
                 self.temperature,
                 self.adata_polars,
                 self._adata_polars_is_internal,
-                self._custom_adata_polars_dropped,
                 self._use_collstrengths,
                 self._maxnlevelslower,
                 self._maxnlevelsupper,
@@ -1560,14 +1498,6 @@ class SpencerFanoSolver:
     def _get_adata_polars(self) -> pl.DataFrame:
         # the levels/transitions table: the one from set_atomic_data(), else the internal database
         if self.adata_polars is None:
-            if self._custom_adata_polars_dropped:
-                # a later solve() that raises reopens the add methods of the copy. The internal database
-                # in place of the custom table gave transitions from a different atomic data set.
-                msg = (
-                    "this solver is a copy that pickle made after solve(), and pickle cannot keep the custom"
-                    " level/transition table of set_atomic_data(). Give the table again with set_atomic_data()."
-                )
-                raise ValueError(msg)
             # use ARTIS atomic data read by the artistools package to get the levels
             import artistools as at  # noqa: PLC0415
 
