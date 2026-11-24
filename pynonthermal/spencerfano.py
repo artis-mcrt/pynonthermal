@@ -732,8 +732,6 @@ class SpencerFanoSolver:
         self.__dict__.setdefault("_stage_matrices", {})
         self.__dict__.setdefault("_sfmatrix_stale", False)
         self.__dict__.setdefault("_sfmatrix_writes", 0)
-        self.__dict__.setdefault("_use_km1993_auger", False)
-        self.__dict__.setdefault("_max_auger_electrons", 2)
         # joblib can give the matrix as a read-only memory map. The solver writes to the matrix in place, so it
         # gets a writable copy. Else every add method and the ionisation balance raised.
         if not self.sfmatrix.flags.writeable:

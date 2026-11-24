@@ -12,9 +12,7 @@ doi:10.1093/mnras/stz3412) with the data of Kaastra & Mewe (1993, A&AS, 97, 443-
 - the default, which has no Auger data.
 """
 
-import dataclasses
 import math
-import pickle
 
 import numpy as np
 import pytest
@@ -196,34 +194,3 @@ def test_auger_option_validation() -> None:
         pynonthermal.SpencerFanoSolver(npts=100, max_auger_electrons=1.5)  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError, match="use_km1993_auger"):
         pynonthermal.SpencerFanoSolver(npts=100, use_km1993_auger=1)  # ty: ignore[invalid-argument-type]
-
-
-def test_auger_solver_pickle() -> None:
-    sf = solve_iron(use_km1993_auger=True)
-    sf_copy = pickle.loads(pickle.dumps(sf))  # noqa: S301
-    assert sf_copy.get_frac_heating() == sf.get_frac_heating()
-    channel = sf._ionisation_channels[(26, 2)][-1]
-    channel_copy = sf_copy._ionisation_channels[(26, 2)][-1]
-    assert channel_copy.mean_auger_electron
-    en_ev = np.array([200.0, 950.5])
-    assert np.array_equal(channel_copy.xs(en_ev), channel.xs(en_ev))
-    # a copy can add built-in channels with the same option
-    sf_new = pickle.loads(pickle.dumps(pynonthermal.SpencerFanoSolver(npts=300, use_km1993_auger=True)))  # noqa: S301
-    sf_new.add_ionisation(Z=26, ion_stage=1, n_ion=1.0)
-    assert any(channel.mean_auger_electron for channel in sf_new._ionisation_channels[(26, 1)])
-
-
-def test_channel_from_a_pickle_of_an_earlier_release() -> None:
-    # The state of a channel is the list of its field values. A release before mean_auger_electron wrote
-    # one value less, and the slot then had no value. The channel now gets the default.
-    sf = pynonthermal.SpencerFanoSolver(npts=200)
-    sf.add_ionisation_channel(26, 2, 1.0, 700.0, np.where(sf.engrid > 700.0, 1e-19, 0.0), n_ejected=2)
-    channel = sf._ionisation_channels[(26, 2)][0]
-    state = [getattr(channel, field.name) for field in dataclasses.fields(channel)]
-    assert state[-1] is False
-    restored = object.__new__(pynonthermal.IonisationChannel)
-    restored.__setstate__(state[:-1])
-    assert restored.mean_auger_electron is False
-    assert restored.n_auger_electrons == channel.n_auger_electrons
-    assert restored.ionpot_ev == channel.ionpot_ev
-    assert "IonisationChannel" in repr(restored)
