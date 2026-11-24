@@ -419,7 +419,13 @@ class IonisationChannel:
     """
 
     xs_grid: npt.NDArray[np.float64]
-    """The cross section [cm^2] at every energy of SpencerFanoSolver.engrid."""
+    """The cross section [cm^2] of each column of the solver matrix.
+
+    The value of column j is at the middle of its grid interval, SpencerFanoSolver.engrid_mid[j]. A direct
+    ionisation has zero in each interval that starts at or below ionpot_ev, because the matrix fill starts
+    at the first grid point above ionpot_ev. An autoionisation channel has zero where the middle of the
+    interval is below ionpot_ev, as an excitation has.
+    """
 
     J_ev: float
     """The width of the secondary-electron distribution [eV], from get_J().
@@ -521,29 +527,33 @@ class IonisationChannel:
         autoionisation: bool | np.bool_ = False,
         extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
-        """Make a channel from cross sections [cm^2] at every energy of the grid arr_enev [eV].
+        """Make a channel from cross sections [cm^2] at the middle of each interval of the grid arr_enev [eV].
 
-        The keywords are those of from_xs().
+        arr_enev is the energy grid of the solver (SpencerFanoSolver.engrid). The value xs_vec[j] is the cross
+        section at arr_enev[j] plus half of the grid spacing (SpencerFanoSolver.engrid_mid[j]). The keywords are
+        those of from_xs().
         """
         auger_electron_energy_ev = _resolve_auger_electron_energy_ev(auger_electron_energy_ev, extra_electron_energy_ev)
         name = f"The cross section of ionisation channel {key}"
-        xs_grid = get_xs_on_grid(xs_vec, arr_enev, name)
-        # check the array of the caller here. The interpolation below holds the cross section at
-        # zero up to the threshold, so from_xs() would find nothing left to reject. An
-        # autoionisation channel keeps its value at the threshold, as an excitation does.
-        if not autoionisation:
-            _check_zero_below_ionpot(arr_enev, xs_grid, float(ionpot_ev), name)
         # a read-only copy of the grid, as of the cross section. With the array of the caller, a later
         # write to it changed xs() between the grid points, and xs_grid stayed as checked.
         enev_grid = np.array(arr_enev, dtype=np.float64)
         enev_grid.flags.writeable = False
+        enev_mid_grid = enev_grid + 0.5 * (enev_grid[1] - enev_grid[0])
+        enev_mid_grid.flags.writeable = False
+        xs_grid = get_xs_on_grid(xs_vec, enev_mid_grid, name)
+        # check the array of the caller here. The interpolation below holds the cross section at
+        # zero up to the threshold, so from_xs() would find nothing left to reject. An
+        # autoionisation channel keeps its value at the threshold, as an excitation does.
+        if not autoionisation:
+            _check_zero_below_ionpot(enev_mid_grid, xs_grid, float(ionpot_ev), name)
 
         return cls.from_xs(
             arr_enev=enev_grid,
             Z=Z,
             ion_stage=ion_stage,
             ionpot_ev=ionpot_ev,
-            xs=_GridXs(enev_grid, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
+            xs=_GridXs(enev_mid_grid, xs_grid, float(ionpot_ev), keep_threshold=bool(autoionisation)),
             key=key,
             n_ejected=n_ejected,
             level_energy_ev=level_energy_ev,
@@ -568,7 +578,10 @@ class IonisationChannel:
         autoionisation: bool | np.bool_ = False,
         extra_electron_energy_ev: float | None = None,
     ) -> t.Self:
-        """Make a channel, and check the cross section that xs gives on the energy grid arr_enev [eV].
+        """Make a channel, and check the cross section that xs gives for the energy grid arr_enev [eV].
+
+        arr_enev is the energy grid of the solver (SpencerFanoSolver.engrid). The channel holds the cross
+        section at the middle of each grid interval, arr_enev[j] plus half of the grid spacing (see xs_grid).
 
         get_J() gives the width of the secondary-electron distribution from Z, ion_stage, and
         ionpot_ev, so the channel is always consistent with its ionisation potential.
@@ -656,17 +669,29 @@ class IonisationChannel:
             )
             raise ValueError(msg)
 
-        xs_grid = get_xs_on_grid(xs, arr_enev, name)
+        # the solver takes the cross section of column j at the middle of the grid interval that starts at
+        # arr_enev[j] (SpencerFanoSolver.engrid_mid)
+        arr_enev_mid = arr_enev + 0.5 * (arr_enev[1] - arr_enev[0])
+        # a cross section function that writes to its argument must fail at that write, as with the read-only
+        # grid of the solver. Else the checks below use energies that the function changed.
+        arr_enev_mid.flags.writeable = False
+        xs_grid = get_xs_on_grid(xs, arr_enev_mid, name)
 
+        # the array is a fresh copy, so the writes below are safe
+        xs_grid.flags.writeable = True
         if autoionisation:
             # no electron below the threshold can excite the level, so the cross section there is
             # zero, and the value at the threshold stays. This is the rule of
-            # SpencerFanoSolver.add_excitation(). The array is a fresh copy, so the write is safe.
-            xs_grid.flags.writeable = True
-            xs_grid[arr_enev < ionpot_ev] = 0.0
-            xs_grid.flags.writeable = False
+            # SpencerFanoSolver.add_excitation().
+            xs_grid[arr_enev_mid < ionpot_ev] = 0.0
         else:
-            _check_zero_below_ionpot(arr_enev, xs_grid, ionpot_ev, name)
+            _check_zero_below_ionpot(arr_enev_mid, xs_grid, ionpot_ev, name)
+            # The matrix fill of the solver starts at the first grid point above the ionisation potential,
+            # because the secondary-electron distribution of a column uses the energy arr_enev[j]. The
+            # analysis integrates the whole array. So the interval that contains the potential, or that
+            # starts at it, has no cross section, also where its middle is above the potential.
+            xs_grid[arr_enev <= ionpot_ev] = 0.0
+        xs_grid.flags.writeable = False
 
         # calculate_N_e() evaluates the cross section between the points of the energy grid, so a
         # function that ignores its argument fails there. The probe finds that at the call site,
@@ -860,7 +885,8 @@ def get_ion_ionisation_channels(
     """Get the ionisation channels of every subshell of an ion in the fit table dfcollion.
 
     arr_enev:
-        the energy grid [eV] on which to evaluate and check each cross section
+        the energy grid [eV] of the solver (SpencerFanoSolver.engrid). Each cross section is evaluated and
+        checked at the middle of each grid interval.
     lotz_a_cm2_ev2:
         the constant A [cm^2 eV^2] of the Lotz formula for the shells without fit data
     use_km1993_auger:
