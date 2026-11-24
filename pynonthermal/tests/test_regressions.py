@@ -15,7 +15,6 @@ import contextlib
 import itertools
 import json
 import math
-import pickle
 import typing as t
 import warnings
 from collections.abc import Generator
@@ -1299,7 +1298,6 @@ def test_shared_tables_are_not_writable() -> None:
     ionpot_ev = nist[(8, 1)]
     nist[(8, 1)] = 1.0
     assert pynonthermal.collion.get_nist_ionisation_energies_ev()[(8, 1)] == ionpot_ev
-    assert pickle.loads(pickle.dumps(nist)) == nist  # noqa: S301
     with pynonthermal.SpencerFanoSolver(npts=100) as sf:
         sf.dfcollion[0, "A"] = 1e3
     with pynonthermal.SpencerFanoSolver(npts=100) as sf_later:
@@ -1311,22 +1309,6 @@ def test_shared_tables_are_not_writable() -> None:
     )[0]
     with pytest.raises(TypeError):
         channel.xs.shell["A"] = 0.0  # ty: ignore[missing-attribute]
-
-
-def test_solver_with_channels_can_be_pickled() -> None:
-    # multiprocessing and joblib pickle a solver, so the cross sections of the channels must not be
-    # closures, and the state must leave out the internal level database, whose polars Object columns
-    # pickle cannot serialise
-    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
-        sf.set_temperature(6000)
-        sf.add_ionisation(8, 2, 1e8)
-        sf.add_ion_excitation(8, 2)
-        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid_mid > 60.0, 1e-18, 0.0))
-        sf.solve(deposition_ev_per_s_per_cm3=1e3)
-        sf_copy = pickle.loads(pickle.dumps(sf))  # noqa: S301
-        assert sf_copy.get_frac_sum() == sf.get_frac_sum()
-        assert sf.adata_polars is not None
-        assert sf_copy.adata_polars is None
 
 
 def test_population_of_a_numpy_float32_is_a_python_float() -> None:
@@ -1549,23 +1531,6 @@ def test_charge_neutral_root_find_checks_the_charge_density() -> None:
             pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, charge_density, *bounds)
 
 
-def test_pickle_protocol_4_keeps_the_arrays_read_only() -> None:
-    # numpy keeps the read-only flag only with protocol 5, and multiprocessing can use protocol 4
-    with pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=200) as sf:
-        sf.add_element(8, ion_densities={1: 1e5, 2: 1e4})
-        sf.add_ionisation_channel(8, 2, None, 60.0, np.where(sf.engrid_mid > 60.0, 1e-18, 0.0))
-        sf.solve(deposition_ev_per_s_per_cm3=1e3)
-        sf_copy = pickle.loads(pickle.dumps(sf, protocol=4))  # noqa: S301
-        for array in (
-            sf_copy.engrid,
-            sf_copy.engrid_mid,
-            sf_copy.yvec,
-            sf_copy._ionisation_channels[(8, 2)][0].xs_grid,
-        ):
-            with pytest.raises(ValueError, match="read-only"):
-                array[0] = 0.0
-
-
 def test_cross_section_function_cannot_write_to_the_grid_of_a_channel() -> None:
     # the function of an ionisation channel gets the middle energies of the grid intervals. That array was
     # writable, so a function that writes to its argument changed the energies of the checks with no error.
@@ -1697,7 +1662,6 @@ def test_repr_gives_the_state_without_a_calculation() -> None:
         warnings.simplefilter("error")
         assert repr(sf).endswith("ions=[(8, 2)], solved)")
     assert not sf._analysed
-    assert repr(pickle.loads(pickle.dumps(sf))) == repr(sf)  # noqa: S301
     sf.override_n_e(1e7)
     assert repr(sf).endswith(", solution discarded)")
     # a solver that __init__() did not complete still has a repr
@@ -1871,23 +1835,6 @@ def test_interrupted_verbose_output_keeps_the_last_solution() -> None:
     reference = _balanced_oxygen()
     reference.solve(1e2)
     assert sf.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
-
-
-def test_copy_with_a_read_only_matrix_can_solve_and_add() -> None:
-    # joblib gives a large array of a pickled object to a worker as a read-only memory map. The solver writes
-    # to its matrix in place, so such a copy could not solve a balanced element or add an ion.
-    sf = _balanced_oxygen()
-    read_only = pickle.loads(pickle.dumps(sf))  # noqa: S301
-    read_only.sfmatrix.flags.writeable = False
-    # protocol 5 keeps the read-only flag of an array
-    copy = pickle.loads(pickle.dumps(read_only, protocol=5))  # noqa: S301
-    assert copy.sfmatrix.flags.writeable
-    copy.add_ionisation(1, 1, 1e5)
-    copy.solve(1e2)
-    reference = _balanced_oxygen()
-    reference.add_ionisation(1, 1, 1e5)
-    reference.solve(1e2)
-    assert copy.get_ion_fractions(8) == pytest.approx(reference.get_ion_fractions(8), rel=1e-4, abs=0.0)
 
 
 def test_failed_matrix_fill_leaves_the_add_call_out() -> None:

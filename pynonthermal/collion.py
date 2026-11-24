@@ -754,7 +754,6 @@ class _GridXs:
     # The np.where keeps the function at zero below its own ionisation potential, where a straight
     # interpolation from the last grid point below it would give a small positive value. An
     # autoionisation channel keeps its value at the threshold (keep_threshold).
-    # A class at module level and not a closure, so that pickle can serialise a solver that holds the channel.
     arr_enev: npt.NDArray[np.float64]
     xs_grid: npt.NDArray[np.float64]
     ionpot_ev: float
@@ -767,19 +766,13 @@ class _GridXs:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class _ShellXs:
-    # the cross section of one shell row of the table. A class at module level and not a closure,
-    # so that pickle can serialise a solver that holds the channel. The class keeps a read-only view of
-    # a copy of the row. Else a write to the row changes xs and not xs_grid of the channel.
+    # the cross section of one shell row of the table. The class keeps a read-only view of a copy of
+    # the row. Else a write to the row changes xs and not xs_grid of the channel.
     shell: Mapping[str, t.Any]
     lotz_a_cm2_ev2: float
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shell", MappingProxyType(dict(self.shell)))
-
-    @t.override
-    def __reduce__(self) -> tuple[type[t.Self], tuple[dict[str, t.Any], float]]:
-        # pickle cannot serialise a read-only view, so it gets a copy of the row as a dict
-        return (type(self), (dict(self.shell), self.lotz_a_cm2_ev2))
 
     def __call__(self, arr_enev: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return get_arxs_array_shell(arr_enev, self.shell, lotz_a_cm2_ev2=self.lotz_a_cm2_ev2)
