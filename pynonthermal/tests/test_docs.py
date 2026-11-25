@@ -1,9 +1,8 @@
-"""Run the examples of the README and the notebooks, so that the text and the code agree.
+"""Run the examples in the README and the notebooks.
 
-The README test runs each fenced python block that follows the HTML comment "<!-- test -->". A block
-that follows "<!-- test: continue -->" runs in the namespace of the block before it, because the text
-continues that example. GitHub and PyPI do not show the comments. The fragments of the usage guide have
-no comment, because each one needs the solver of the fragments before it.
+The README test starts an example at each "<!-- test -->" comment.
+The "<!-- test: continue -->" comment runs the next block in the same namespace.
+The notebook test compares selected results with the saved output at the precision that the notebook shows.
 """
 
 import json
@@ -20,7 +19,10 @@ REPOSITORY_DIR = Path(__file__).parents[2]
 
 README_BLOCK = re.compile(r"<!-- test(?P<continue>: continue)? -->\n```python\n(?P<source>.*?)```", re.DOTALL)
 
-NOTEBOOKS = ("quickstart.ipynb", "fe_ionbalance_sn1a.ipynb")
+NOTEBOOK_RESULT_LABELS = {
+    "quickstart.ipynb": ("heating:", "ionisation:", "excitation:", "sum:"),
+    "fe_ionbalance_sn1a.ipynb": ("iron number density:", "cobalt number density:", "deposition rate density:"),
+}
 
 
 def get_readme_examples() -> list[list[str]]:
@@ -55,16 +57,17 @@ README_EXAMPLES = get_readme_examples()
 
 def test_readme_has_test_blocks() -> None:
     # a regular expression that matches no block would let every README test pass with no test
-    assert len(README_EXAMPLES) >= 5
+    assert len(README_EXAMPLES) >= 8
 
 
 @pytest.mark.parametrize("blocks", README_EXAMPLES, ids=[f"example{i}" for i in range(len(README_EXAMPLES))])
-def test_readme_example(blocks: list[str]) -> None:
+def test_readme_example(blocks: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
     run_sources(blocks, filename="README.md")
 
 
-@pytest.mark.parametrize("notebook", NOTEBOOKS)
-def test_notebook(notebook: str) -> None:
+@pytest.mark.parametrize("notebook", NOTEBOOK_RESULT_LABELS)
+def test_notebook(notebook: str, capsys: pytest.CaptureFixture[str]) -> None:
     cells = json.loads((REPOSITORY_DIR / notebook).read_text(encoding="utf-8"))["cells"]
     # an IPython magic line is not Python, so the test leaves it out
     sources = [
@@ -73,3 +76,14 @@ def test_notebook(notebook: str) -> None:
         if cell["cell_type"] == "code"
     ]
     run_sources(sources, filename=notebook)
+    calculated_lines = capsys.readouterr().out.splitlines()
+    saved_lines = "".join(
+        "".join(output["text"])
+        for cell in cells
+        for output in cell.get("outputs", [])
+        if output.get("name") == "stdout"
+    ).splitlines()
+    for label in NOTEBOOK_RESULT_LABELS[notebook]:
+        saved = [line for line in saved_lines if line.startswith(label)]
+        assert len(saved) == 1, f"{notebook} must show one result for {label}"
+        assert [line for line in calculated_lines if line.startswith(label)] == saved
