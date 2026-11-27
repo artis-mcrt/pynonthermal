@@ -356,3 +356,23 @@ def test_half_precision_potential_gives_the_same_lotz_cross_section() -> None:
     )
     assert xs_float.max() > 0.0
     assert np.allclose(xs_half, xs_float, rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.parametrize("ionpot_ev", [0.0, -15.0, float("nan"), float("inf"), True, np.True_])
+def test_work_function_rejects_an_invalid_potential(ionpot_ev: object) -> None:
+    with pytest.raises(ValueError, match="ionpot_ev must be greater than zero and finite"):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, ionpot_ev, 20.0)  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("Zbar", [0.0, -20.0, float("nan"), float("inf"), True])
+def test_work_function_rejects_an_invalid_mean_atomic_number(Zbar: object) -> None:
+    with pytest.raises(ValueError, match="Zbar must be greater than zero and finite"):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, Zbar)  # ty: ignore[invalid-argument-type]
+
+
+def test_work_function_rejects_a_text_potential() -> None:
+    # float() parses "15", so without the check the text gave a result with no error
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, "15", 20.0)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, "20")  # ty: ignore[invalid-argument-type]

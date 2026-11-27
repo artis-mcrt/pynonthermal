@@ -17,6 +17,7 @@ import numpy.typing as npt
 
 import pynonthermal
 from pynonthermal.base import _check_ion
+from pynonthermal.base import _is_bool
 from pynonthermal.base import get_betasq
 from pynonthermal.constants import CLIGHT
 from pynonthermal.constants import EV
@@ -161,6 +162,10 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
     get_workfn_ev() uses the sum.
     """
     # LJS: translated from artis nonthermal.cc
+    # the chained comparison also rejects nan, and it raises TypeError for a str, which float() accepts
+    if _is_bool(ionpot_ev) or not 0.0 < ionpot_ev < math.inf:
+        msg = f"ionpot_ev must be greater than zero and finite but is {ionpot_ev!r}"
+        raise ValueError(msg)
     electron_binding = get_binding_energies()
     q = get_shell_occupancies(atomic_number, ion_stage)
 
@@ -196,6 +201,9 @@ def get_workfn_ev(
     potential. Zbar is the mean atomic number of the plasma (see pynonthermal.base.get_Zbar()), and
     lotz_a_cm2_ev2 [cm^2 eV^2] is the constant of the Lotz formula.
     """
+    if _is_bool(Zbar) or not 0.0 < Zbar < math.inf:
+        msg = f"Zbar must be greater than zero and finite but is {Zbar!r}"
+        raise ValueError(msg)
     # the approximation reduces to the sum of the shell occupancies over the binding energies
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
     # Python floats, because the quotient by a float16 Zbar underflows to zero in half precision
