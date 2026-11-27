@@ -390,3 +390,15 @@ def test_lotz_cross_section_rejects_a_text_potential() -> None:
     shell = {"Z": 26, "ion_stage": 2, "l": -3, "ionpot_ev": "15"}
     with pytest.raises(TypeError):
         pynonthermal.axelrod.get_lotz_xs_ionisation_vec(shell, np.linspace(1.0, 3000.0, 300))  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("lotz_a_cm2_ev2", [0.0, -1.33e-14, float("nan"), float("inf"), True])
+def test_work_function_rejects_an_invalid_lotz_constant(lotz_a_cm2_ev2: object) -> None:
+    with pytest.raises(ValueError, match="lotz_a_cm2_ev2 must be greater than zero and finite"):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0, lotz_a_cm2_ev2=lotz_a_cm2_ev2)  # ty: ignore[invalid-argument-type]
+
+
+def test_work_function_rejects_a_text_lotz_constant() -> None:
+    # float() parses "1.33e-14", so without the check the text gave a result with no error
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0, lotz_a_cm2_ev2="1.33e-14")  # ty: ignore[invalid-argument-type]

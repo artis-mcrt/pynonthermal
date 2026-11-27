@@ -204,6 +204,9 @@ def get_workfn_ev(
     if _is_bool(Zbar) or not 0.0 < Zbar < math.inf:
         msg = f"Zbar must be greater than zero and finite but is {Zbar!r}"
         raise ValueError(msg)
+    if _is_bool(lotz_a_cm2_ev2) or not 0.0 < lotz_a_cm2_ev2 < math.inf:
+        msg = f"lotz_a_cm2_ev2 must be greater than zero and finite but is {lotz_a_cm2_ev2!r}"
+        raise ValueError(msg)
     # the approximation reduces to the sum of the shell occupancies over the binding energies
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
     # Python floats, because the quotient by a float16 Zbar underflows to zero in half precision
