@@ -230,8 +230,13 @@ def get_lotz_xs_ionisation_vec(
 
     atomic_number = int(shell["Z"])
     ion_stage = int(shell["ion_stage"])
+    ionpot_ev = shell["ionpot_ev"]
+    # the chained comparison also rejects nan, and it raises TypeError for a str, which float() accepts
+    if _is_bool(ionpot_ev) or not 0.0 < ionpot_ev < math.inf:
+        msg = f"the ionpot_ev of a shell must be greater than zero and finite but is {ionpot_ev!r}"
+        raise ValueError(msg)
     # a Python float, because the conversion of a float16 potential to erg underflows to zero
-    ionpot_ev = float(shell["ionpot_ev"])
+    ionpot_ev = float(ionpot_ev)
     shellindex = -int(shell["l"])
 
     electronsinshell = get_shell_occupancies(atomic_number, ion_stage)[shellindex]

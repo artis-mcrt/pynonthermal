@@ -376,3 +376,17 @@ def test_work_function_rejects_a_text_potential() -> None:
         pynonthermal.axelrod.get_workfn_ev(26, 2, "15", 20.0)  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError):
         pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, "20")  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("ionpot_ev", [0.0, -15.0, float("nan"), float("inf"), True, np.True_])
+def test_lotz_cross_section_rejects_an_invalid_potential(ionpot_ev: object) -> None:
+    shell = {"Z": 26, "ion_stage": 2, "l": -3, "ionpot_ev": ionpot_ev}
+    with pytest.raises(ValueError, match="the ionpot_ev of a shell must be greater than zero and finite"):
+        pynonthermal.axelrod.get_lotz_xs_ionisation_vec(shell, np.linspace(1.0, 3000.0, 300))  # ty: ignore[invalid-argument-type]
+
+
+def test_lotz_cross_section_rejects_a_text_potential() -> None:
+    # float() parses "15", so without the check the text gave a cross section with no error
+    shell = {"Z": 26, "ion_stage": 2, "l": -3, "ionpot_ev": "15"}
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_lotz_xs_ionisation_vec(shell, np.linspace(1.0, 3000.0, 300))  # ty: ignore[invalid-argument-type]
