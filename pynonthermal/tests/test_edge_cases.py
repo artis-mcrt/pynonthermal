@@ -310,3 +310,29 @@ def test_verbose_output_has_no_count_for_bound_levels(capsys: pytest.CaptureFixt
     sf.set_temperature(10000.0)
     sf.add_ion_excitation(Z=8, ion_stage=2, n_ion=1e8)
     assert "go to levels above the ionisation potential" not in capsys.readouterr().out
+
+
+def test_half_precision_densities_sum_in_double_precision() -> None:
+    # the sum of the two populations (80000 cm^-3) is above the largest float16 value
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+    sf.add_element(8, ion_densities={1: np.float16(40000), 2: np.float16(40000)})  # ty: ignore[invalid-argument-type]
+    assert np.isclose(sum(sf.ionpopdict.values()), 80000.0)
+
+
+def test_half_precision_fractions_sum_in_double_precision() -> None:
+    # the stored values sum to 1.00048828125, which is outside the tolerance of 1e-6
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+    with pytest.raises(ValueError, match=r"must sum to one but sum to 1\.00048828125"):
+        sf.add_element(
+            8,
+            1e10,
+            ion_fractions={1: np.float16(0.5), 2: np.float16(0.5003)},  # ty: ignore[invalid-argument-type]
+        )
+
+
+def test_half_precision_ionisation_potential_gives_the_same_work_function() -> None:
+    # the conversion of a float16 potential to erg underflows to zero
+    workfn_float = pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0)
+    workfn_half = pynonthermal.axelrod.get_workfn_ev(26, 2, np.float16(15), 20.0)  # ty: ignore[invalid-argument-type]
+    assert np.isclose(workfn_half, workfn_float, rtol=1e-12)
+    assert np.isclose(workfn_float, 327.27, rtol=1e-4)

@@ -169,7 +169,8 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
         electronsinshell = q[electron_loop]
         if (electronsinshell) > 0:
             enbinding = electron_binding[atomic_number - 1][electron_loop]
-            ionpot = ionpot_ev * EV
+            # a Python float, because the product underflows in half precision
+            ionpot = float(ionpot_ev) * EV
             if enbinding <= 0:
                 # fall back to the next shell in, which a negative index would silently
                 # turn into the outermost shell instead
