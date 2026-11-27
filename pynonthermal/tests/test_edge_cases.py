@@ -336,3 +336,23 @@ def test_half_precision_ionisation_potential_gives_the_same_work_function() -> N
     workfn_half = pynonthermal.axelrod.get_workfn_ev(26, 2, np.float16(15), 20.0)  # ty: ignore[invalid-argument-type]
     assert np.isclose(workfn_half, workfn_float, rtol=1e-12)
     assert np.isclose(workfn_float, 327.27, rtol=1e-4)
+
+
+def test_half_precision_mean_atomic_number_gives_the_same_work_function() -> None:
+    # the quotient by a float16 Zbar underflows to zero, so the work was nan
+    workfn_float = pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0)
+    workfn_half = pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, np.float16(20))  # ty: ignore[invalid-argument-type]
+    assert np.isclose(workfn_half, workfn_float, rtol=1e-12)
+
+
+def test_half_precision_potential_gives_the_same_lotz_cross_section() -> None:
+    # the conversion of a float16 potential to erg underflows to zero, so every cross section was infinite
+    arr_en_ev = np.linspace(1.0, 3000.0, 300)
+    shell = {"Z": 26, "ion_stage": 2, "l": -3}
+    xs_float = pynonthermal.axelrod.get_lotz_xs_ionisation_vec({**shell, "ionpot_ev": 15.0}, arr_en_ev)
+    xs_half = pynonthermal.axelrod.get_lotz_xs_ionisation_vec(
+        {**shell, "ionpot_ev": np.float16(15)},  # ty: ignore[invalid-argument-type]
+        arr_en_ev,
+    )
+    assert xs_float.max() > 0.0
+    assert np.allclose(xs_half, xs_float, rtol=1e-12, atol=0.0)

@@ -198,7 +198,8 @@ def get_workfn_ev(
     """
     # the approximation reduces to the sum of the shell occupancies over the binding energies
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
-    oneoverW = lotz_a_cm2_ev2 * EV * EV * binding / Zbar / (2 * math.pi * pow(QE, 4))
+    # Python floats, because the quotient by a float16 Zbar underflows to zero in half precision
+    oneoverW = float(lotz_a_cm2_ev2) * EV * EV * binding / float(Zbar) / (2 * math.pi * pow(QE, 4))
 
     return (1 / oneoverW) / EV
 
@@ -221,7 +222,8 @@ def get_lotz_xs_ionisation_vec(
 
     atomic_number = int(shell["Z"])
     ion_stage = int(shell["ion_stage"])
-    ionpot_ev = shell["ionpot_ev"]
+    # a Python float, because the conversion of a float16 potential to erg underflows to zero
+    ionpot_ev = float(shell["ionpot_ev"])
     shellindex = -int(shell["l"])
 
     electronsinshell = get_shell_occupancies(atomic_number, ion_stage)[shellindex]
