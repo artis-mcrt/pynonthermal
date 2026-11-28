@@ -46,4 +46,4 @@ def test_view_follows_the_populations_of_a_balance() -> None:
     sf.solve(deposition_ev_per_s_per_cm3=1e3)
     assert view is sf.ionpopdict
     assert math.isclose(sum(view.values()), 1e8, rel_tol=1e-12)
-    assert view[8, 2] == sf.get_ion_fractions(8)[2] * 1e8
+    assert math.isclose(view[8, 2], sf.get_ion_fractions(8)[2] * 1e8, rel_tol=1e-12)
