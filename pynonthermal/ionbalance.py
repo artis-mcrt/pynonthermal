@@ -30,6 +30,7 @@ populations that the solver finds.
 
 import math
 import numbers
+import sys
 from collections.abc import Callable
 from collections.abc import Mapping
 from collections.abc import Sequence
@@ -281,18 +282,26 @@ def solve_charge_neutral_n_e(
         if residual(n_e_lower) <= 0.0:
             return n_e_lower
     else:
-        # no exact positive lower bound. As n_e falls, the charge density tends to a positive constant
+        # no exact positive lower bound. The residual is at most zero at the upper bracket, and zero there
+        # means that the upper bracket is the solution. No lower bracket is necessary then.
+        if residual(n_e_upper) >= 0.0:
+            return n_e_upper
+        # As n_e falls, the charge density tends to a positive constant
         # (every population that can be ionised is), so the residual turns positive at a small enough
-        # n_e unless the charge density is zero everywhere.
-        n_e_lower = n_e_upper * _N_E_LOWER_BRACKET_FRACTION
+        # n_e unless the charge density is zero everywhere. For a very small n_e_upper the product
+        # underflows to zero, so the first trial is then the smallest normal double. The subnormal
+        # doubles below it have less precision, and the bisection in ln(n_e) cannot select one of
+        # them. Thus a root below the smallest normal double still raises the error below.
+        n_e_lower = max(n_e_upper * _N_E_LOWER_BRACKET_FRACTION, sys.float_info.min)
         while True:
-            # the check runs before the charge density, which needs a positive n_e. The first
-            # bracket can already underflow for a very small n_e_upper.
+            # the check runs before the charge density, which needs a positive n_e. A later trial
+            # can underflow for a very small n_e_upper.
             if n_e_lower == 0.0:
                 msg = "the charge-neutral free electron density is below the range of a double precision number"
                 raise ValueError(msg)
             charge_density_lower = checked_charge_density(n_e_lower)
-            if charge_density_lower > n_e_lower:
+            # equality means that the trial is the root, and the bisection then ends at the trial
+            if charge_density_lower >= n_e_lower:
                 break
             if charge_density_lower <= 0.0:
                 msg = "the charge density is zero and no fixed ion is ionised, so the free electron density is zero"
