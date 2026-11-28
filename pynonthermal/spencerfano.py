@@ -1353,12 +1353,11 @@ class SpencerFanoSolver:
         follow the ion population that solve() finds. add_element() with excitation=True calls this
         method for every stage of the element that has level data.
 
-        Transitions whose energy lies outside the solver's energy grid are dropped: above emax_ev no
-        electron the solver represents can drive them, and below emin_ev KF92 take every
-        electron to have thermalised already, so their energy is accounted for as heating instead. Unlike
-        the equivalent case in add_ionisation(), this cannot be raised as an error, because real ions have
-        fine-structure transitions far below any usable emin_ev. Pass verbose=True to the solver to see how
-        many transitions were dropped.
+        The method drops each transition with an energy above emax_ev, because no electron that the
+        solver holds can drive it. A transition with an energy below emin_ev stays, as in
+        add_excitation(): an electron above emin_ev can drive it, and the electron loses that energy.
+        Real ions have fine-structure transitions far below any usable emin_ev. Pass verbose=True to the
+        solver to see how many transitions were dropped.
 
         n_ion:
             the ion number density in cm^-3, or None for an ion with a registered population
@@ -1630,19 +1629,21 @@ class SpencerFanoSolver:
             transition_filter &= pl.col("upper") < maxnlevelsupper
         dftransitions_allenergies = dftransitions_allenergies.filter(transition_filter)
 
-        # the solver drops the transitions outside the grid (see the docstring). The verbose output gives their
-        # number, so that the user sees a grid that excludes most of the excitation channels of an ion
+        # The solver drops the transitions above the grid, and the transitions with no energy (see the docstring).
+        # A transition energy below emin_ev stays, as in add_excitation(): an electron of the grid can drive
+        # it. The verbose output gives the number of dropped transitions, so that the user sees a grid that
+        # excludes most of the excitation channels of an ion.
         dftransitions = dftransitions_allenergies.filter(
-            pl.col("epsilon_trans_ev").is_between(self.engrid[0], self.engrid[-1])
+            (pl.col("epsilon_trans_ev") > 0.0) & (pl.col("epsilon_trans_ev") <= self.engrid[-1])
         )
 
         if self.verbose and len(dftransitions) < len(dftransitions_allenergies):
             arr_epsilon_trans_ev = dftransitions_allenergies["epsilon_trans_ev"]
-            n_below_grid = int((arr_epsilon_trans_ev < self.engrid[0]).sum())
+            n_above_grid = int((arr_epsilon_trans_ev > self.engrid[-1]).sum())
             print(
-                f"  dropped {n_below_grid} transition(s) below emin_ev={self.engrid[0]} eV and"
-                f" {len(dftransitions_allenergies) - len(dftransitions) - n_below_grid} above"
-                f" emax_ev={self.engrid[-1]} eV for Z={Z} ion_stage {ion_stage} ({len(dftransitions)} kept)"
+                f"  dropped {n_above_grid} transition(s) above emax_ev={self.engrid[-1]} eV and"
+                f" {len(dftransitions_allenergies) - len(dftransitions) - n_above_grid} with an energy that is not"
+                f" above zero for Z={Z} ion_stage {ion_stage} ({len(dftransitions)} kept)"
             )
 
         if dftransitions.is_empty():

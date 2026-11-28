@@ -606,8 +606,8 @@ with pynonthermal.SpencerFanoSolver() as sf:
   level population then follows the ion population, whether it is fixed or comes from a balance.
 - `epsilon_trans_ev`: the transition energy in eV. It must be positive and no greater than `emax_ev`,
   since no electron the solver represents could otherwise drive the transition. Transitions below
-  `emin_ev` are allowed here. For excitations from the level table, `add_element(excitation=True)` excludes
-  transitions below `emin_ev`. The solver counts the energy of electrons that thermalise below this limit as heating.
+  `emin_ev` are allowed here. The excitations from the level table (`add_ion_excitation()` and
+  `add_element(excitation=True)`) also include the transitions below `emin_ev`. The solver counts the energy of electrons that thermalise below this limit as heating.
 - `xs_vec`, and `transitionkey`: the key to pass to `get_excitation_ratecoeff()`.
 
 `sf.calculate_N_e()` integrates over a domain just above the ionisation potential that is narrower than
