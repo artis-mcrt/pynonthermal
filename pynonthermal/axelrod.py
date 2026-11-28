@@ -17,6 +17,7 @@ import numpy.typing as npt
 
 import pynonthermal
 from pynonthermal.base import _check_ion
+from pynonthermal.base import _is_bool
 from pynonthermal.base import get_betasq
 from pynonthermal.constants import CLIGHT
 from pynonthermal.constants import EV
@@ -161,6 +162,10 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
     get_workfn_ev() uses the sum.
     """
     # LJS: translated from artis nonthermal.cc
+    # the chained comparison also rejects nan, and it raises TypeError for a str, which float() accepts
+    if _is_bool(ionpot_ev) or not 0.0 < ionpot_ev < math.inf:
+        msg = f"ionpot_ev must be greater than zero and finite but is {ionpot_ev!r}"
+        raise ValueError(msg)
     electron_binding = get_binding_energies()
     q = get_shell_occupancies(atomic_number, ion_stage)
 
@@ -169,7 +174,8 @@ def get_sum_q_over_binding_energy(atomic_number: int, ion_stage: int, ionpot_ev:
         electronsinshell = q[electron_loop]
         if (electronsinshell) > 0:
             enbinding = electron_binding[atomic_number - 1][electron_loop]
-            ionpot = ionpot_ev * EV
+            # a Python float, because the product underflows in half precision
+            ionpot = float(ionpot_ev) * EV
             if enbinding <= 0:
                 # fall back to the next shell in, which a negative index would silently
                 # turn into the outermost shell instead
@@ -195,9 +201,16 @@ def get_workfn_ev(
     potential. Zbar is the mean atomic number of the plasma (see pynonthermal.base.get_Zbar()), and
     lotz_a_cm2_ev2 [cm^2 eV^2] is the constant of the Lotz formula.
     """
+    if _is_bool(Zbar) or not 0.0 < Zbar < math.inf:
+        msg = f"Zbar must be greater than zero and finite but is {Zbar!r}"
+        raise ValueError(msg)
+    if _is_bool(lotz_a_cm2_ev2) or not 0.0 < lotz_a_cm2_ev2 < math.inf:
+        msg = f"lotz_a_cm2_ev2 must be greater than zero and finite but is {lotz_a_cm2_ev2!r}"
+        raise ValueError(msg)
     # the approximation reduces to the sum of the shell occupancies over the binding energies
     binding = get_sum_q_over_binding_energy(atomic_number, ion_stage, ionpot_ev)
-    oneoverW = lotz_a_cm2_ev2 * EV * EV * binding / Zbar / (2 * math.pi * pow(QE, 4))
+    # Python floats, because the quotient by a float16 Zbar underflows to zero in half precision
+    oneoverW = float(lotz_a_cm2_ev2) * EV * EV * binding / float(Zbar) / (2 * math.pi * pow(QE, 4))
 
     return (1 / oneoverW) / EV
 
@@ -221,6 +234,12 @@ def get_lotz_xs_ionisation_vec(
     atomic_number = int(shell["Z"])
     ion_stage = int(shell["ion_stage"])
     ionpot_ev = shell["ionpot_ev"]
+    # the chained comparison also rejects nan, and it raises TypeError for a str, which float() accepts
+    if _is_bool(ionpot_ev) or not 0.0 < ionpot_ev < math.inf:
+        msg = f"the ionpot_ev of a shell must be greater than zero and finite but is {ionpot_ev!r}"
+        raise ValueError(msg)
+    # a Python float, because the conversion of a float16 potential to erg underflows to zero
+    ionpot_ev = float(ionpot_ev)
     shellindex = -int(shell["l"])
 
     electronsinshell = get_shell_occupancies(atomic_number, ion_stage)[shellindex]

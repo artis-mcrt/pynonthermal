@@ -192,7 +192,8 @@ def _check_element_rule(
             if _is_bool(n_ion) or not 0.0 <= n_ion < math.inf:
                 msg = f"the density of Z={Z} ion_stage {ion_stage} must be non-negative and finite but is {n_ion}"
                 raise ValueError(msg)
-        if not 0.0 < sum(ion_densities.values()) < math.inf:
+        # Python floats, so that a sum of half-precision densities does not overflow
+        if not 0.0 < sum(float(n_ion) for n_ion in ion_densities.values()) < math.inf:
             msg = f"the ion densities of Z={Z} must sum to a number greater than zero and finite"
             raise ValueError(msg)
         # Python integers, so that a numpy integer key does not reach ionpopdict
@@ -2396,8 +2397,10 @@ class SpencerFanoSolver:
                 if _is_bool(fraction) or not 0.0 <= fraction <= 1.0:
                     msg = f"the ion fraction of Z={Z} ion_stage {ion_stage} must be between 0 and 1 but is {fraction}"
                     raise ValueError(msg)
-            if not math.isclose(sum(ion_fractions.values()), 1.0, rel_tol=1e-6):
-                msg = f"the ion fractions of Z={Z} must sum to one but sum to {sum(ion_fractions.values())}"
+            # Python floats, so that the sum of half-precision fractions keeps double precision
+            sum_ion_fractions = sum(float(fraction) for fraction in ion_fractions.values())
+            if not math.isclose(sum_ion_fractions, 1.0, rel_tol=1e-6):
+                msg = f"the ion fractions of Z={Z} must sum to one but sum to {sum_ion_fractions}"
                 raise ValueError(msg)
             assert n_elem is not None
             ion_densities = {

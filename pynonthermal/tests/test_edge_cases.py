@@ -310,3 +310,95 @@ def test_verbose_output_has_no_count_for_bound_levels(capsys: pytest.CaptureFixt
     sf.set_temperature(10000.0)
     sf.add_ion_excitation(Z=8, ion_stage=2, n_ion=1e8)
     assert "go to levels above the ionisation potential" not in capsys.readouterr().out
+
+
+def test_half_precision_densities_sum_in_double_precision() -> None:
+    # the sum of the two populations (80000 cm^-3) is above the largest float16 value
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+    sf.add_element(8, ion_densities={1: np.float16(40000), 2: np.float16(40000)})  # ty: ignore[invalid-argument-type]
+    assert np.isclose(sum(sf.ionpopdict.values()), 80000.0)
+
+
+def test_half_precision_fractions_sum_in_double_precision() -> None:
+    # the stored values sum to 1.00048828125, which is outside the tolerance of 1e-6
+    sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=3000, npts=300)
+    with pytest.raises(ValueError, match=r"must sum to one but sum to 1\.00048828125"):
+        sf.add_element(
+            8,
+            1e10,
+            ion_fractions={1: np.float16(0.5), 2: np.float16(0.5003)},  # ty: ignore[invalid-argument-type]
+        )
+
+
+def test_half_precision_ionisation_potential_gives_the_same_work_function() -> None:
+    # the conversion of a float16 potential to erg underflows to zero
+    workfn_float = pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0)
+    workfn_half = pynonthermal.axelrod.get_workfn_ev(26, 2, np.float16(15), 20.0)  # ty: ignore[invalid-argument-type]
+    assert np.isclose(workfn_half, workfn_float, rtol=1e-12)
+    assert np.isclose(workfn_float, 327.27, rtol=1e-4)
+
+
+def test_half_precision_mean_atomic_number_gives_the_same_work_function() -> None:
+    # the quotient by a float16 Zbar underflows to zero, so the work was nan
+    workfn_float = pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0)
+    workfn_half = pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, np.float16(20))  # ty: ignore[invalid-argument-type]
+    assert np.isclose(workfn_half, workfn_float, rtol=1e-12)
+
+
+def test_half_precision_potential_gives_the_same_lotz_cross_section() -> None:
+    # the conversion of a float16 potential to erg underflows to zero, so every cross section was infinite
+    arr_en_ev = np.linspace(1.0, 3000.0, 300)
+    shell = {"Z": 26, "ion_stage": 2, "l": -3}
+    xs_float = pynonthermal.axelrod.get_lotz_xs_ionisation_vec({**shell, "ionpot_ev": 15.0}, arr_en_ev)
+    xs_half = pynonthermal.axelrod.get_lotz_xs_ionisation_vec(
+        {**shell, "ionpot_ev": np.float16(15)},  # ty: ignore[invalid-argument-type]
+        arr_en_ev,
+    )
+    assert xs_float.max() > 0.0
+    assert np.allclose(xs_half, xs_float, rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.parametrize("ionpot_ev", [0.0, -15.0, float("nan"), float("inf"), True, np.True_])
+def test_work_function_rejects_an_invalid_potential(ionpot_ev: object) -> None:
+    with pytest.raises(ValueError, match="ionpot_ev must be greater than zero and finite"):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, ionpot_ev, 20.0)  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("Zbar", [0.0, -20.0, float("nan"), float("inf"), True])
+def test_work_function_rejects_an_invalid_mean_atomic_number(Zbar: object) -> None:
+    with pytest.raises(ValueError, match="Zbar must be greater than zero and finite"):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, Zbar)  # ty: ignore[invalid-argument-type]
+
+
+def test_work_function_rejects_a_text_potential() -> None:
+    # float() parses "15", so without the check the text gave a result with no error
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, "15", 20.0)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, "20")  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("ionpot_ev", [0.0, -15.0, float("nan"), float("inf"), True, np.True_])
+def test_lotz_cross_section_rejects_an_invalid_potential(ionpot_ev: object) -> None:
+    shell = {"Z": 26, "ion_stage": 2, "l": -3, "ionpot_ev": ionpot_ev}
+    with pytest.raises(ValueError, match="the ionpot_ev of a shell must be greater than zero and finite"):
+        pynonthermal.axelrod.get_lotz_xs_ionisation_vec(shell, np.linspace(1.0, 3000.0, 300))  # ty: ignore[invalid-argument-type]
+
+
+def test_lotz_cross_section_rejects_a_text_potential() -> None:
+    # float() parses "15", so without the check the text gave a cross section with no error
+    shell = {"Z": 26, "ion_stage": 2, "l": -3, "ionpot_ev": "15"}
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_lotz_xs_ionisation_vec(shell, np.linspace(1.0, 3000.0, 300))  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("lotz_a_cm2_ev2", [0.0, -1.33e-14, float("nan"), float("inf"), True])
+def test_work_function_rejects_an_invalid_lotz_constant(lotz_a_cm2_ev2: object) -> None:
+    with pytest.raises(ValueError, match="lotz_a_cm2_ev2 must be greater than zero and finite"):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0, lotz_a_cm2_ev2=lotz_a_cm2_ev2)  # ty: ignore[invalid-argument-type]
+
+
+def test_work_function_rejects_a_text_lotz_constant() -> None:
+    # float() parses "1.33e-14", so without the check the text gave a result with no error
+    with pytest.raises(TypeError):
+        pynonthermal.axelrod.get_workfn_ev(26, 2, 15.0, 20.0, lotz_a_cm2_ev2="1.33e-14")  # ty: ignore[invalid-argument-type]
