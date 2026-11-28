@@ -116,7 +116,8 @@ sf = pynonthermal.SpencerFanoSolver(emin_ev=0.1, emax_ev=16000.0, npts=4096)
   (see [Cross-section datasets](#cross-section-datasets)).
 - `heating_only_approximation`: leave the excitation and ionisation loss terms out of the matrix and solve
   with the heating loss alone. The rates still follow from that approximate solution, so the fractions do
-  not sum to one.
+  not sum to one. The equation is then diagonal, so the solver keeps no matrix: `sf.sfmatrix` is a
+  read-only view of one zero.
 - `lotz_a_cm2_ev2`: the constant of the Lotz formula for the shells without a fitted cross section
   (default `1.33e-14`, the Axelrod value; see [Cross-section datasets](#cross-section-datasets)).
 - `use_km1993_auger`: give the built-in channels the Auger data of Kaastra and Mewe (1993, A&AS, 97,
