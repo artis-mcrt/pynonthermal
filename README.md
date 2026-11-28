@@ -254,7 +254,8 @@ the lower level population `levelnumberdensity` in cm^-3, the cross sections `xs
 `sf.engrid_mid`, and the transition energy `epsilon_trans_ev` in eV.
 
 The solution itself is `sf.yvec` over `sf.engrid_mid`, both read-only arrays: `sf.yvec[j]` is the solution
-at the middle of the grid interval that starts at `sf.engrid[j]`. With `verbose=True` the
+at the middle of the grid interval that starts at `sf.engrid[j]`. The interval of the last value starts at
+`emax_ev`. No electron has an energy above `emax_ev`, so `sf.yvec[-1]` is zero. With `verbose=True` the
 solver prints the per-ion and per-shell breakdown as it analyses the solution.
 
 For a plot of your own, three arrays on `sf.engrid_mid` give the share of the deposited energy per unit

@@ -91,7 +91,9 @@ def test_deposition_rate_validated() -> None:
                 sf.solve(deposition_ev_per_s_per_cm3=badvalue)
 
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
-        assert (sf.yvec > 0.0).all()
+        # the interval of the last column is above emax_ev, and it has no electrons
+        assert (sf.yvec[:-1] > 0.0).all()
+        assert sf.yvec[-1] == 0.0
         assert sf.get_ionisation_ratecoeff(8, 2) > 0.0
 
 
@@ -237,7 +239,8 @@ def test_N_e_empty_second_integral_domain() -> None:
         enlambda = min(float(sf.engrid[-1]) - energy_ev, energy_ev + ionpot_ev)
         arr_epsilon: npt.NDArray[np.float64] = np.linspace(ionpot_ev, enlambda, num=20001)
         arr_e_p: npt.NDArray[np.float64] = energy_ev + arr_epsilon
-        arr_y: npt.NDArray[np.float64] = np.interp(arr_e_p, sf.engrid_mid, sf.yvec, left=0.0, right=0.0)
+        # the values of the last interval below emax_ev apply up to emax_ev, and the last column has no electrons
+        arr_y: npt.NDArray[np.float64] = np.interp(arr_e_p, sf.engrid_mid[:-1], sf.yvec[:-1], left=0.0)
         arr_xs = pynonthermal.collion.get_arxs_array_shell(arr_e_p, shell)
         # the closed form of Psecondary, written out so that the reference does not depend on the
         # implementation it is checking
@@ -251,7 +254,9 @@ def test_N_e_empty_second_integral_domain() -> None:
         assert math.isclose(got, expected, rel_tol=5e-4)
 
         # reproduce the term the old clamping added, and check the result would no longer pass
-        clamped_index = sf.get_energyindex_lteq(2 * energy_ev + ionpot_ev)
+        # the clamped index is the last column, which has no electrons, so the term uses the last interval
+        # below emax_ev
+        clamped_index = sf.get_energyindex_lteq(2 * energy_ev + ionpot_ev) - 1
         spurious = 1e8 * float(
             sf.deltaen
             * sf.yvec[clamped_index]
@@ -267,8 +272,8 @@ def test_N_e_empty_second_integral_domain() -> None:
 def test_N_e_second_integral_ends_at_emax() -> None:
     # The second integral of KF92 eq. 6 runs over [2E + I, E_max]. It becomes empty at E = (E_max - I) / 2, so
     # N(E) is continuous there. The solution is at the middle of each grid interval, and the last of these
-    # energies is half an interval above E_max. With that energy as the end of the integral, N(E) had a step
-    # of 1.2 times the term below, which is half an interval at E_max.
+    # energies below E_max is half an interval below it. With an integral that does not end at E_max, N(E)
+    # has a step of the order of the term below, which is half an interval at E_max.
     with pynonthermal.SpencerFanoSolver(emin_ev=1400, emax_ev=3000, npts=150) as sf:
         sf.add_ionisation(11, 10, n_ion=1e8)
         sf.solve(deposition_ev_per_s_per_cm3=1e8)
@@ -278,7 +283,7 @@ def test_N_e_second_integral_ends_at_emax() -> None:
         half_interval_term = 1e8 * float(
             0.5
             * sf.deltaen
-            * sf.yvec[-1]
+            * sf.yvec[-2]
             * channel.evaluate_xs(np.array([e_max]))[0]
             * pynonthermal.collion.Psecondary_vec(
                 e_p=e_max, e_s=energy_empty_ev, ionpot_ev=channel.ionpot_ev, J=channel.J_ev
