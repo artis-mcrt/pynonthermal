@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+import types
 import typing as t
 import warnings
 from collections.abc import Callable
@@ -491,7 +492,8 @@ class SpencerFanoSolver:
     _stage_matrices: dict[tuple[int, int], npt.NDArray[np.float64]]
     _lotz_a_cm2_ev2: float
     deposition_ev_per_s_per_cm3: float
-    ionpopdict: dict[tuple[int, int], float]
+    # the populations of the solver. The public ionpopdict is a read-only view of this dict.
+    _ionpopdict: dict[tuple[int, int], float]
     excitationlists: dict[tuple[int, int], dict[t.Any, ExcitationTransition]]
     verbose: bool
     heating_only_approximation: bool
@@ -610,7 +612,8 @@ class SpencerFanoSolver:
         # the unit matrix of each balanced stage, keyed by (Z, ion_stage) (see _get_stage_matrix())
         self._stage_matrices = {}
 
-        self.ionpopdict = {}  # key is (Z, ion_stage) value is number density
+        self._ionpopdict = {}  # key is (Z, ion_stage) value is number density
+        self._ionpopdict_view = types.MappingProxyType(self._ionpopdict)
 
         # key is (Z, ion_stage) value is {transitionkey: ExcitationTransition}
         self.excitationlists = {}
@@ -688,6 +691,17 @@ class SpencerFanoSolver:
         self.sfmatrix = np.zeros((npts, npts))
         self._sfmatrix_stale = False
         self._sfmatrix_writes = 0
+
+    @property
+    def ionpopdict(self) -> Mapping[tuple[int, int], float]:
+        """The number density [cm^-3] of each ion, keyed by (Z, ion_stage), as a read-only view.
+
+        The matrix holds the terms of each population, so a write to the populations alone gave results
+        that were not consistent: the reported density changed, and the matrix kept the old population.
+        A write to the view raises a TypeError. To change a population, make a new solver, or use the
+        ionisation balance of add_element().
+        """
+        return self._ionpopdict_view
 
     @property
     def lotz_a_cm2_ev2(self) -> float:
@@ -819,7 +833,7 @@ class SpencerFanoSolver:
     def _restore_record_marks(self, marks: _RecordMarks) -> None:
         # return the records to the sizes of _get_record_marks(). Each marks object has only one restore, so the
         # restore uses the copies of the marks and makes no new copy.
-        _truncate_dict(self.ionpopdict, marks.n_ionpopdict)
+        _truncate_dict(self._ionpopdict, marks.n_ionpopdict)
         _truncate_dict(self._ionisation_channels, len(marks.n_channels))
         for ion, n_channels in marks.n_channels.items():
             del self._ionisation_channels[ion][n_channels:]
@@ -998,7 +1012,7 @@ class SpencerFanoSolver:
             return
         # a Python float, because a numpy float32 would make the loss function and the free
         # electron density float32 too
-        self.ionpopdict[(Z, ion_stage)] = float(n_ion)
+        self._ionpopdict[(Z, ion_stage)] = float(n_ion)
         # the free electron density derived from the ion populations is no longer current
         self._n_e = None
 
@@ -2512,7 +2526,7 @@ class SpencerFanoSolver:
         weight_total = sum(weights)
         for (ion_stage, channels), weight in zip(channels_of_stage.items(), weights, strict=True):
             n_ion_guess = element.n_elem * weight / weight_total
-            self.ionpopdict[(Z, ion_stage)] = n_ion_guess
+            self._ionpopdict[(Z, ion_stage)] = n_ion_guess
             self._apply_ion_channels(Z, ion_stage, n_ion_guess, channels)
         self._n_e = None
 
@@ -2594,7 +2608,7 @@ class SpencerFanoSolver:
         Z = element.Z
         for ion_stage in element.ion_stages:
             n_new = populations[ion_stage]
-            self.ionpopdict[(Z, ion_stage)] = n_new
+            self._ionpopdict[(Z, ion_stage)] = n_new
             templates = element.excitation_templates.get(ion_stage, {})
             if templates:
                 self.excitationlists[(Z, ion_stage)] = {
@@ -3788,7 +3802,7 @@ class SpencerFanoSolver:
                         Z,
                         ion_stage,
                         ionpot_ev=ionpot_valence,
-                        Zbar=get_Zbar(ions=tuple(self.ionpopdict.keys()), ionpopdict=self.ionpopdict),
+                        Zbar=get_Zbar(ions=tuple(self._ionpopdict.keys()), ionpopdict=self._ionpopdict),
                         lotz_a_cm2_ev2=self._lotz_a_cm2_ev2,
                     )
                     print(f"       approx workfn: {workfn_ev:8.2f} [eV] (without Spencer-Fano solution)")

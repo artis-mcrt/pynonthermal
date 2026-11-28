@@ -227,7 +227,7 @@ Use the same ion to read its population and rate coefficients.
 <!-- test: continue -->
 ```python
 sf.get_ion_fractions(Z)  # {ion_stage: fraction of the element}
-sf.ionpopdict  # {(Z, ion_stage): number density [cm^-3]}
+sf.ionpopdict  # {(Z, ion_stage): number density [cm^-3]}, a read-only view
 sf.get_n_e()  # free (thermal) electron density [cm^-3]
 sf.get_n_e_nt()  # non-thermal electron density [cm^-3]
 sf.get_n_ion_tot()  # total nuclei [cm^-3]
