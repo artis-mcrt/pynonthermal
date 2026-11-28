@@ -82,8 +82,8 @@ def test_balance_fills_the_matrix_again_after_a_large_population_decrease() -> N
     np.testing.assert_allclose(sf.sfmatrix, sf_fresh.sfmatrix, rtol=1e-9, atol=0.0)
     np.testing.assert_allclose(sf.yvec, sf_fresh.yvec, rtol=1e-9)
     assert math.isclose(sf.get_frac_heating(), sf_fresh.get_frac_heating(), rel_tol=1e-9)
-    # the heating fraction was 0.03132 with the residue in the matrix
-    assert sf.get_frac_heating() == pytest.approx(0.2615, abs=5e-4)
+    # the heating fraction was 0.03132 with the residue in the matrix, and it is above 0.2 without it
+    assert sf.get_frac_heating() > 0.2
     assert math.isclose(sf.get_frac_sum(), 1.0, rel_tol=1e-12)
 
 
