@@ -3267,18 +3267,18 @@ class SpencerFanoSolver:
         lastindex = len(self.engrid) - 2
 
         def y_times_xs(en_ev: float, xsvec: npt.NDArray[np.float64]) -> float:
-            # the product of y and a cross section at an energy of the grid range, by linear
-            # interpolation of the product between the middle energies of the grid intervals
-            # (engrid_mid), where the solver holds them, or zero outside the grid. Below the first
-            # middle energy, the values of the first interval apply.
+            # the product of y and a cross section at an energy of the grid range, or zero outside the
+            # grid. The solver holds y and the cross section at the middle energies of the grid
+            # intervals (engrid_mid). This function interpolates the product linearly between these
+            # energies. Below the first middle energy, the values of the first interval apply.
             # The product is the quantity of the matrix, as in _get_y_weighted_by_xs(). Below a
             # threshold, y holds only the losses to the free electrons, so it can be much larger than
             # y above the threshold. An interpolation of y and of the cross section one by one
             # multiplied that large y by the cross section above the threshold. N(E) was then 60
             # times too large for a 10 eV transition at a free electron density of 100 cm^-3.
-            # The interpolation is written out rather than left to np.interp because this runs once
-            # per transition per quadrature node, where the call overhead of np.interp costs more
-            # than the arithmetic; the grid is uniform, so the index and weight are exact.
+            # This function does not call np.interp. It runs once for each transition at each
+            # quadrature node, and there the call overhead of np.interp costs more than the
+            # arithmetic. The grid is uniform, so the index and the weight are exact.
             if not e_min <= en_ev <= e_max:
                 return 0.0
             pos = max((en_ev - e_mid_min) / deltaen, 0.0)
@@ -3293,12 +3293,13 @@ class SpencerFanoSolver:
 
             transitions = self.excitationlists.get((Z, ion_stage), {})
             for trans in transitions.values():
-                # Interpolate y and the cross section at energy_ev + epsilon_trans_ev, as the two
-                # ionisation integrals below also do, rather than snapping down to the grid point under
-                # it. Snapping lands below the transition energy whenever E has not yet carried the sum
-                # past it, and get_xs_excitation_vector makes the cross section exactly zero there, so
-                # the whole transition silently dropped out: on the helium benchmark at E = 0.25 eV that
-                # was 280 of 296 transitions and 43% of N_e.
+                # Interpolate the product of y and the cross section at energy_ev + epsilon_trans_ev (see
+                # y_times_xs()). The two ionisation integrals below also use values between the grid
+                # points. Do not snap down to the grid point under that energy. Snapping lands below the
+                # transition energy whenever E has not yet carried the sum past it, and
+                # get_xs_excitation_vector makes the cross section exactly zero there, so the whole
+                # transition silently dropped out: on the helium benchmark at E = 0.25 eV that was 280
+                # of 296 transitions and 43% of N_e.
                 # the level population is absolute, so this term is not scaled by n_ion below
                 N_e += trans.levelnumberdensity * y_times_xs(energy_ev + trans.epsilon_trans_ev, trans.xs_vec)
 
