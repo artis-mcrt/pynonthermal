@@ -685,7 +685,14 @@ class SpencerFanoSolver:
                 f" {source_emax:.2f} eV with E_init {self.E_init_ev:7.2f} [eV/s/cm3]"
             )
 
-        self.sfmatrix = np.zeros((npts, npts))
+        # In the heating-only approximation each matrix term is zero, and the equation is diagonal (see
+        # _solve_matrix()). The matrix is then a read-only view of one zero with the full shape, so the solver
+        # needs only linear storage. At 4096 points a matrix of zeros is 128 mebibytes.
+        self.sfmatrix = (
+            np.broadcast_to(np.float64(0.0), (npts, npts))
+            if self.heating_only_approximation
+            else np.zeros((npts, npts))
+        )
         self._sfmatrix_stale = False
         self._sfmatrix_writes = 0
 
@@ -844,6 +851,10 @@ class SpencerFanoSolver:
         # transitions. A fill that stopped part-way leaves the matrix and the records out of step. A later update
         # adds only the change of each population, so it cannot correct that.
         npts = len(self.engrid)
+        if self.heating_only_approximation:
+            # no fill writes to the matrix, which is a view of one zero (see __init__)
+            self._sfmatrix_stale = False
+            return
         self.sfmatrix = np.zeros((npts, npts))
         bands: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
         for (Z, _), transitions in self.excitationlists.items():
@@ -1774,10 +1785,13 @@ class SpencerFanoSolver:
         # sets only its width J and not the shape. An autoionisation channel has no such
         # distribution: its primary loses exactly ionpot_ev, so it uses the band of an excitation.
         self._require_not_solved("add ionisation")
-        if self.heating_only_approximation or n_ion == 0.0:
+        if self.heating_only_approximation or n_ion == 0.0 or not channel.xs_grid.any():
             # leave the ionisation loss out of the matrix. add_ionisation keeps the ion
             # registration and the channel data that the analysis reads. A zero population adds
             # nothing, and a balanced element builds the fill when its population changes.
+            # A channel with no cross section on the grid, for example a shell with a potential above
+            # emax_ev, also adds nothing: each term of its fill is zero. The fill of such a shell took as
+            # much time as the fill of an active shell. The channel record stays, so a rate query gives zero.
             return
         if matrix is None:
             self._sfmatrix_writes += 1
@@ -2532,7 +2546,9 @@ class SpencerFanoSolver:
         stage_matrix = self._stage_matrices.get((Z, ion_stage))
         if stage_matrix is not None:
             return stage_matrix
-        channels = self._ionisation_channels.get((Z, ion_stage), [])
+        # a channel with no cross section on the grid adds nothing, so a stage with only such channels has no
+        # unit matrix. A unit matrix of zeros took a full share of BALANCE_STAGE_MATRIX_MAX_BYTES.
+        channels = [channel for channel in self._ionisation_channels.get((Z, ion_stage), []) if channel.xs_grid.any()]
         npts = len(self.engrid)
         bytes_used = sum(matrix.nbytes for matrix in self._stage_matrices.values())
         if (
@@ -2903,7 +2919,15 @@ class SpencerFanoSolver:
         # triangular. KF92 solve it with a "standard matrix technique" that they do not name.
         # Back-substitution from the highest energy down uses the triangular form, and it is much
         # faster than a general LU solve.
-        yvec_reference = solve_upper_triangular(self.sfmatrix, self.rhsvec, diag_add=lossvec)
+        if self.heating_only_approximation:
+            # the matrix is zero, so the loss function alone is the diagonal of the equation, and each row
+            # gives its y with one division. The triangular solve gave the same y from a matrix of zeros.
+            if np.any(lossvec == 0.0):
+                msg = "matrix is singular: zero on the diagonal"
+                raise np.linalg.LinAlgError(msg)
+            yvec_reference = self.rhsvec / lossvec
+        else:
+            yvec_reference = solve_upper_triangular(self.sfmatrix, self.rhsvec, diag_add=lossvec)
         self.yvec = yvec_reference * self.deposition_ev_per_s_per_cm3 / self.E_init_ev
         # the caller reads the solution, and every fraction and rate coefficient integrates it, so an
         # in-place write would silently change them. A write must raise at the mutation site, as for engrid.
