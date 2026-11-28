@@ -3267,22 +3267,25 @@ class SpencerFanoSolver:
         lastindex = len(self.engrid) - 2
 
         def y_times_xs(en_ev: float, xsvec: npt.NDArray[np.float64]) -> float:
-            # y and a cross section at an energy of the grid range, both by linear interpolation
-            # between the middle energies of the grid intervals (engrid_mid), where the solver holds
-            # them, or zero outside the grid. Below the first middle energy, the values of the first
-            # interval apply. The interpolation is written out
-            # rather than left to np.interp because this runs once per transition per quadrature
-            # node, where the call overhead of np.interp costs more than the arithmetic; the grid
-            # is uniform, so the index and weight are exact.
+            # the product of y and a cross section at an energy of the grid range, by linear
+            # interpolation of the product between the middle energies of the grid intervals
+            # (engrid_mid), where the solver holds them, or zero outside the grid. Below the first
+            # middle energy, the values of the first interval apply.
+            # The product is the quantity of the matrix, as in _get_y_weighted_by_xs(). Below a
+            # threshold, y holds only the losses to the free electrons, so it can be much larger than
+            # y above the threshold. An interpolation of y and of the cross section one by one
+            # multiplied that large y by the cross section above the threshold. N(E) was then 60
+            # times too large for a 10 eV transition at a free electron density of 100 cm^-3.
+            # The interpolation is written out rather than left to np.interp because this runs once
+            # per transition per quadrature node, where the call overhead of np.interp costs more
+            # than the arithmetic; the grid is uniform, so the index and weight are exact.
             if not e_min <= en_ev <= e_max:
                 return 0.0
             pos = max((en_ev - e_mid_min) / deltaen, 0.0)
             i = min(int(pos), lastindex)
             weight = pos - i
-            return float(
-                (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i]))
-                * (xsvec[i] + weight * (xsvec[i + 1] - xsvec[i]))
-            )
+            product_lower = self.yvec[i] * xsvec[i]
+            return float(product_lower + weight * (self.yvec[i + 1] * xsvec[i + 1] - product_lower))
 
         for Z, ion_stage in self._get_all_ions():
             N_e_ion = 0.0
