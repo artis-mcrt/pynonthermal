@@ -1,0 +1,81 @@
+"""Check the Saha coefficient where its Boltzmann factor alone is below the range of double precision."""
+
+import math
+
+import pynonthermal.ionbalance
+
+# the NIST ionisation potential of hydrogen [eV]
+IONPOT_H_EV = 13.598434599702
+
+
+def test_saha_factor_at_a_low_temperature() -> None:
+    # exp(-chi / (k_B T)) is 1.9e-327 at 210 K, below the smallest double of 4.9e-324. The complete
+    # coefficient is in the range, and the product of the factors gave zero.
+    assert math.exp(-IONPOT_H_EV / pynonthermal.ionbalance.K_B / 210.0) == 0.0
+    saha_factor = pynonthermal.ionbalance.get_saha_factor(210.0, IONPOT_H_EV, 2.0, 1.0)
+    # math.isclose() has no absolute tolerance by default. pytest.approx() has one of 1e-12, which accepts zero.
+    assert math.isclose(saha_factor, 3.2970e-308, rel_tol=1e-4)
+
+    # the charge-neutral ionised fraction x of hydrogen satisfies x^2 n / (1 - x) = K, so x is sqrt(K / n)
+    n_elem = 1e10
+    fractions = pynonthermal.ionbalance.get_saha_ion_fractions(
+        1, [1, 2], 210.0, n_elem=n_elem, partfuncs={1: 2.0, 2: 1.0}
+    )
+    # the coefficient is near the lower limit of the normal doubles, so the root search loses digits
+    assert math.isclose(fractions[2], math.sqrt(saha_factor / n_elem), rel_tol=1e-5)
+    assert math.isclose(fractions[2], 1.82e-159, rel_tol=5e-3)
+    assert fractions[1] == 1.0
+
+
+def test_saha_factor_agrees_with_the_product_of_its_factors() -> None:
+    for temperature, ionpot_ev, partfunc_lower, partfunc_upper in (
+        (6000.0, IONPOT_H_EV, 2.0, 1.0),
+        (1000.0, 7.9024681, 25.0, 30.0),
+        (1e5, 54.4177655, 2.0, 1.0),
+    ):
+        product = (
+            2.0
+            * partfunc_upper
+            / partfunc_lower
+            * pynonthermal.ionbalance.SAHA_CONST
+            * math.pow(temperature, 1.5)
+            * math.exp(-ionpot_ev / pynonthermal.ionbalance.K_B / temperature)
+        )
+        assert product > 0.0
+        assert math.isclose(
+            pynonthermal.ionbalance.get_saha_factor(temperature, ionpot_ev, partfunc_lower, partfunc_upper),
+            product,
+            rel_tol=1e-12,
+        )
+
+
+def test_saha_factor_below_the_range_is_zero() -> None:
+    # at 100 K the coefficient of hydrogen is about 1e-682, so zero is the correct double, and the
+    # charge-neutral gas is neutral
+    assert pynonthermal.ionbalance.get_saha_factor(100.0, IONPOT_H_EV, 2.0, 1.0) == 0.0
+    fractions = pynonthermal.ionbalance.get_saha_ion_fractions(
+        1, [1, 2], 100.0, n_elem=1e10, partfuncs={1: 2.0, 2: 1.0}
+    )
+    assert fractions == {1: 1.0, 2: 0.0}
+
+
+def test_saha_factor_with_a_partition_function_ratio_below_the_range() -> None:
+    # the ratio 2 * 5e-324 / 1e100 is zero in double precision, and the complete coefficient is in the range
+    saha_factor = pynonthermal.ionbalance.get_saha_factor(1e100, 1e-300, 1e100, 5e-324)
+    expected_ln = (
+        math.log(2.0)
+        + math.log(5e-324)
+        - math.log(1e100)
+        + math.log(pynonthermal.ionbalance.SAHA_CONST)
+        + 150.0 * math.log(10.0)
+    )
+    assert math.isclose(math.log(saha_factor), expected_ln, rel_tol=1e-12)
+    assert math.isclose(saha_factor, 2.4e-258, rel_tol=0.05)
+
+
+def test_saha_factor_above_the_range_is_infinite() -> None:
+    # at 1e200 K the coefficient is about 1e315, above the largest double. math.exp() raises an OverflowError
+    # there, and the product of the factors gave inf.
+    assert pynonthermal.ionbalance.get_saha_factor(1e200, 1.0, 1.0, 1.0) == math.inf
+    # a coefficient just below the range stays finite
+    assert 1e300 < pynonthermal.ionbalance.get_saha_factor(1e195, 1.0, 1.0, 1.0) < math.inf

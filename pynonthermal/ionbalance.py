@@ -94,14 +94,24 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
     temperature, ionpot_ev = float(temperature), float(ionpot_ev)
     partfunc_lower, partfunc_upper = float(partfunc_lower), float(partfunc_upper)
 
-    return (
-        2.0
-        * partfunc_upper
-        / partfunc_lower
-        * SAHA_CONST
-        * math.pow(temperature, 1.5)
-        * math.exp(-ionpot_ev / K_B / temperature)
+    # The sum of the logarithms has one exponential. The Boltzmann factor alone is below the range of double
+    # precision at a low temperature, where the coefficient with the temperature factor is still in the
+    # range. For hydrogen at 210 K, the product of the factors gave zero, and the coefficient is 3.297e-308.
+    # A coefficient below the range still gives zero. The two partition functions also have one logarithm
+    # each, because their ratio alone can be outside the range.
+    ln_saha_factor = (
+        math.log(2.0)
+        + math.log(partfunc_upper)
+        - math.log(partfunc_lower)
+        + math.log(SAHA_CONST)
+        + 1.5 * math.log(temperature)
+        - ionpot_ev / K_B / temperature
     )
+    try:
+        return math.exp(ln_saha_factor)
+    except OverflowError:
+        # a coefficient above the range is infinite, as the product of the factors was
+        return math.inf
 
 
 def get_ion_fractions(ratio_coeffs: Sequence[float], n_e: float) -> list[float]:
