@@ -3,8 +3,6 @@
 import math
 
 import pynonthermal.ionbalance
-from pynonthermal.ionbalance import K_B
-from pynonthermal.ionbalance import SAHA_CONST
 
 # the NIST ionisation potential of hydrogen [eV]
 IONPOT_H_EV = 13.598434599702
@@ -13,7 +11,7 @@ IONPOT_H_EV = 13.598434599702
 def test_saha_factor_at_a_low_temperature() -> None:
     # exp(-chi / (k_B T)) is 1.9e-327 at 210 K, below the smallest double of 4.9e-324. The complete
     # coefficient is in the range, and the product of the factors gave zero.
-    assert math.exp(-IONPOT_H_EV / K_B / 210.0) == 0.0
+    assert math.exp(-IONPOT_H_EV / pynonthermal.ionbalance.K_B / 210.0) == 0.0
     saha_factor = pynonthermal.ionbalance.get_saha_factor(210.0, IONPOT_H_EV, 2.0, 1.0)
     # math.isclose() has no absolute tolerance by default. pytest.approx() has one of 1e-12, which accepts zero.
     assert math.isclose(saha_factor, 3.2970e-308, rel_tol=1e-4)
@@ -39,9 +37,9 @@ def test_saha_factor_agrees_with_the_product_of_its_factors() -> None:
             2.0
             * partfunc_upper
             / partfunc_lower
-            * SAHA_CONST
+            * pynonthermal.ionbalance.SAHA_CONST
             * math.pow(temperature, 1.5)
-            * math.exp(-ionpot_ev / K_B / temperature)
+            * math.exp(-ionpot_ev / pynonthermal.ionbalance.K_B / temperature)
         )
         assert product > 0.0
         assert math.isclose(
@@ -59,3 +57,17 @@ def test_saha_factor_below_the_range_is_zero() -> None:
         1, [1, 2], 100.0, n_elem=1e10, partfuncs={1: 2.0, 2: 1.0}
     )
     assert fractions == {1: 1.0, 2: 0.0}
+
+
+def test_saha_factor_with_a_partition_function_ratio_below_the_range() -> None:
+    # the ratio 2 * 5e-324 / 1e100 is zero in double precision, and the complete coefficient is in the range
+    saha_factor = pynonthermal.ionbalance.get_saha_factor(1e100, 1e-300, 1e100, 5e-324)
+    expected_ln = (
+        math.log(2.0)
+        + math.log(5e-324)
+        - math.log(1e100)
+        + math.log(pynonthermal.ionbalance.SAHA_CONST)
+        + 150.0 * math.log(10.0)
+    )
+    assert math.isclose(math.log(saha_factor), expected_ln, rel_tol=1e-12)
+    assert math.isclose(saha_factor, 2.4e-258, rel_tol=0.05)

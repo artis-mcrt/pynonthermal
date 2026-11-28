@@ -97,9 +97,12 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
     # The sum of the logarithms has one exponential. The Boltzmann factor alone is below the range of double
     # precision at a low temperature, where the coefficient with the temperature factor is still in the
     # range. For hydrogen at 210 K, the product of the factors gave zero, and the coefficient is 3.297e-308.
-    # A coefficient below the range still gives zero.
+    # A coefficient below the range still gives zero. The two partition functions also have one logarithm
+    # each, because their ratio alone can be outside the range.
     return math.exp(
-        math.log(2.0 * partfunc_upper / partfunc_lower)
+        math.log(2.0)
+        + math.log(partfunc_upper)
+        - math.log(partfunc_lower)
         + math.log(SAHA_CONST)
         + 1.5 * math.log(temperature)
         - ionpot_ev / K_B / temperature
