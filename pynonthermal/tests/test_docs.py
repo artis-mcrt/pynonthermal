@@ -21,7 +21,19 @@ README_BLOCK = re.compile(r"<!-- test(?P<continue>: continue)? -->\n```python\n(
 
 NOTEBOOK_RESULT_LABELS = {
     "quickstart.ipynb": ("heating:", "ionisation:", "excitation:", "sum:"),
-    "fe_ionbalance_sn1a.ipynb": ("iron number density:", "cobalt number density:", "deposition rate density:"),
+    # The first three labels are inputs of the solver. The other labels are results of the ionisation balance:
+    # the free electron density, and the ion fraction and the rate coefficient of three stages. The energy sum
+    # is one to rounding also with an error in these results, so the sum alone does not check them. The saved
+    # values of these lines are not near a rounding limit of the last digit that the notebook shows.
+    "fe_ionbalance_sn1a.ipynb": (
+        "iron number density:",
+        "cobalt number density:",
+        "deposition rate density:",
+        "free electron density:",
+        "  Fe II ",
+        "  Fe III ",
+        "  Fe IV ",
+    ),
 }
 
 
