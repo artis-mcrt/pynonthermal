@@ -103,12 +103,6 @@ BALANCE_SEED_STAGE_RATIO: float = 1e-2
 # from the records. The relative error of the matrix terms of the stage then stays below about 1e-10.
 BALANCE_REBUILD_POPULATION_RATIO: float = 1e-6
 
-# The maximum number of reduced steps in one solve() (see SpencerFanoSolver._solve_ion_balance()). A
-# reduced step moves the free electron density one half of the distance to the limit of the loss
-# function. If the limit still stops the balance after this number of steps, the solution is at or
-# above the limit, and solve() gives the error of the loss function.
-BALANCE_MAX_REDUCED_STEPS: int = 30
-
 # The memory [bytes] that the unit matrices of the balanced stages can use (see
 # SpencerFanoSolver._get_stage_matrix()). A unit matrix makes an iteration of the balance two to three
 # times faster for that stage. At the default npts of 4096 a unit matrix takes 134 MB, so the default
@@ -3016,7 +3010,8 @@ class SpencerFanoSolver:
         # populations of a trial step can give a density at or above the limit when the solution is below
         # it. The loop then takes a reduced step.
         n_e_limit = _get_n_e_limit(float(self.engrid[0]))
-        reduced_steps = 0
+        # the part of the trial step that the last iteration took
+        step = 1.0
 
         max_residual = math.inf
         # the history of Anderson acceleration (Walker & Ni 2011) of the fixed-point map in ln(rate)
@@ -3046,14 +3041,13 @@ class SpencerFanoSolver:
                 )
             # the part of the trial step that the loop takes
             step = 1.0
-            if self._n_e_override is None and n_e >= n_e_limit and reduced_steps < BALANCE_MAX_REDUCED_STEPS:
+            if self._n_e_override is None and n_e >= n_e_limit:
                 # The free electron density is linear in the populations. A part of the step from the
                 # current populations to the trial populations thus gives a density between the two. The
                 # reduced step ends half-way between the current density and the limit.
                 n_e_current = self.calculate_free_electron_density()
                 if n_e_current < n_e_limit:
                     step = 0.5 * (n_e_limit - n_e_current) / (n_e - n_e_current)
-                    reduced_steps += 1
             for element in elements:
                 fractions = get_ion_fractions_cuts(cut_coeffs[element.Z], n_e)
                 populations = {
@@ -3166,6 +3160,19 @@ class SpencerFanoSolver:
                         )
                 break
         else:
+            if step < 1.0:
+                # Each reduced step moves the density one half of the distance to the limit. The trial step
+                # of the last iteration was still not below the limit, so the solution is at the limit or
+                # above it.
+                msg = (
+                    f"the ionisation balance found no free electron density below {n_e_limit:.4e} cm^-3 in"
+                    f" {BALANCE_MAXITER} iterations. That density is the limit of the free-electron loss function"
+                    f" at emin_ev ({self.engrid[0]} eV), where the Coulomb logarithm is zero. The solution is at"
+                    " the limit or above it. Raise emin_ev for a denser plasma. A solver with an earlier solution"
+                    " returns to it. Else the populations of the last iteration stay in ionpopdict, and they"
+                    " are not a solution."
+                )
+                raise ValueError(msg)
             msg = (
                 f"the ionisation balance did not converge in {BALANCE_MAXITER} iterations: the largest relative"
                 f" change of an ionisation rate coefficient is {max_residual:.2e} (balance_tol {balance_tol}). A"

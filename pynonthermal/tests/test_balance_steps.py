@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import pynonthermal
+import pynonthermal.spencerfano
 
 
 def _get_dense_hydrogen() -> pynonthermal.SpencerFanoSolver:
@@ -40,8 +41,21 @@ def test_balance_reduces_a_trial_step_above_the_density_limit() -> None:
 def test_balance_keeps_the_error_for_a_solution_above_the_density_limit() -> None:
     # at this deposition rate the solution is above the limit, so no number of reduced steps finds it
     sf = _get_dense_hydrogen()
-    with pytest.raises(ValueError, match="the free-electron loss function is not valid"):
+    with pytest.raises(ValueError, match="free-electron loss function"):
         sf.solve(deposition_ev_per_s_per_cm3=1e26)
+    # the solver has no solution, and a solve at a lower deposition rate then gives one
+    sf.solve(deposition_ev_per_s_per_cm3=1.1243756814216838e23, balance_tol=1e-8)
+    assert sf.get_n_e() == pytest.approx(5.377e16, rel=1e-3)
+
+
+def test_balance_reports_the_density_limit_after_the_last_iteration(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The reduced steps have no limit of their own. If the last iteration of the balance still took a reduced
+    # step, the error names the density limit, and it is not the error of a balance that did not converge.
+    monkeypatch.setattr(pynonthermal.spencerfano, "BALANCE_MAXITER", 5)
+    sf = _get_dense_hydrogen()
+    with pytest.raises(ValueError, match=r"found no free electron density below 6\.7211e\+16 cm\^-3 in 5 iterations"):
+        sf.solve(deposition_ev_per_s_per_cm3=1e26)
+    assert sf.balance_iterations == 5
 
 
 # the top stage O II of this short chain takes a part of the ionisation, which is not the subject here
