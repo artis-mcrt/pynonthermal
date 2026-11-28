@@ -156,14 +156,13 @@ def test_auger_energy_fractions_and_rate_coefficients() -> None:
 
 
 def test_auger_option_with_an_ionisation_balance() -> None:
-    # A stage of the balance cannot go above the top stage of the chain, so an ionisation that
-    # passes the top stage ends in the top stage.
+    # A stage of the balance cannot go above the top stage of the chain, so the ion of an ionisation
+    # that passes the top stage ends in the top stage. The channel keeps the electron count of its
+    # Auger data.
     sf = pynonthermal.SpencerFanoSolver(npts=800, use_km1993_auger=True)
     sf.add_element(Z=26, n_elem=1e5, recomb_ratecoeffs={2: 3e-12, 3: 5e-12, 4: 1e-11})
-    top = 4
-    for ion_stage in (1, 2, 3):
-        channels = sf._ionisation_channels[(26, ion_stage)]
-        assert max(channel.n_ejected for channel in channels) <= top - ion_stage
+    # Fe III to Fe V and Fe III to Fe VI pass the top stage Fe IV
+    assert {channel.n_ejected for channel in sf._ionisation_channels[(26, 3)]} == {1, 2, 3}
     assert any(channel.n_ejected == 2 for channel in sf._ionisation_channels[(26, 1)])
     # the channels of Fe III keep the source term of the Auger electrons
     assert any(channel.mean_auger_electron for channel in sf._ionisation_channels[(26, 3)])
@@ -172,6 +171,60 @@ def test_auger_option_with_an_ionisation_balance() -> None:
         sf.solve(deposition_ev_per_s_per_cm3=1e3)
     assert math.isclose(sum(sf.get_ion_fractions(26).values()), 1.0, rel_tol=1e-9)
     assert math.isclose(sf.get_frac_sum(), 1.0, abs_tol=5e-3)
+
+
+def test_balance_keeps_the_electron_count_of_each_auger_event() -> None:
+    # The balance and a solve with its populations as fixed inputs have the same matrix. Thus they
+    # give the same rate coefficient for each number of ejected electrons. With the stage limit in the
+    # channels, the balance gave zero for the double and the triple ionisation of Fe III.
+    recomb_ratecoeffs = {2: 3e-12, 3: 5e-12, 4: 1e-11}
+    sf = pynonthermal.SpencerFanoSolver(npts=200, use_km1993_auger=True)
+    sf.add_element(Z=26, n_elem=1e5, recomb_ratecoeffs=recomb_ratecoeffs)
+    with pytest.warns(UserWarning, match="leave the chain") as records:
+        sf.solve(deposition_ev_per_s_per_cm3=1e3)
+    populations = {ion_stage: sf.ionpopdict[(26, ion_stage)] for ion_stage in (1, 2, 3, 4)}
+
+    sf_fixed = pynonthermal.SpencerFanoSolver(npts=200, use_km1993_auger=True)
+    sf_fixed.add_element(Z=26, ion_densities=populations)
+    sf_fixed.solve(deposition_ev_per_s_per_cm3=1e3)
+
+    np.testing.assert_allclose(sf.yvec, sf_fixed.yvec, rtol=1e-12)
+    for ion_stage in (1, 2, 3):
+        for n_ejected in (None, 1, 2, 3):
+            assert math.isclose(
+                sf.get_ionisation_ratecoeff(26, ion_stage, n_ejected),
+                sf_fixed.get_ionisation_ratecoeff(26, ion_stage, n_ejected),
+                rel_tol=1e-12,
+            )
+    assert sf.get_ionisation_ratecoeff(26, 3, 2) == pytest.approx(6.96e-6, rel=2e-3)
+    assert sf.get_ionisation_ratecoeff(26, 3, 3) == pytest.approx(9.82e-7, rel=2e-3)
+
+    # The populations balance the rates with the ions of the passing events in the top stage: the rate
+    # across the cut below Fe IV is equal to the recombination rate of Fe IV.
+    n_e = sf.get_n_e()
+    rate_up = sum(
+        populations[ion_stage] * sf.get_ionisation_ratecoeff(26, ion_stage, n_ejected)
+        for ion_stage in (1, 2, 3)
+        for n_ejected in (1, 2, 3)
+        if ion_stage + n_ejected > 3
+    )
+    assert math.isclose(rate_up, populations[4] * n_e * recomb_ratecoeffs[4], rel_tol=1e-5)
+
+    # The events that leave the chain are the ionisations of Fe IV and the ionisations from the lower
+    # stages that pass Fe IV. The warning gives the sum of their rates, and the stage that holds them all.
+    rate_top = populations[4] * sf.get_ionisation_ratecoeff(26, 4)
+    rate_passing = sum(
+        populations[ion_stage] * sf.get_ionisation_ratecoeff(26, ion_stage, n_ejected)
+        for ion_stage in (1, 2, 3)
+        for n_ejected in (1, 2, 3)
+        if ion_stage + n_ejected > 4
+    )
+    assert rate_passing > 0.0
+    message = next(str(record.message) for record in records if "leave the chain" in str(record.message))
+    assert f"is {rate_top + rate_passing:.2e} /s/cm3" in message
+    assert f"top stage give {rate_top:.2e} /s/cm3" in message
+    # Fe III with three ejected electrons ends in Fe VI
+    assert "up to ion stage 6" in message
 
 
 def test_auger_option_validation() -> None:

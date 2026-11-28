@@ -564,8 +564,9 @@ class SpencerFanoSolver:
           coefficient, and the ionisation balance of add_element() sends the ions to that stage.
 
         max_auger_electrons is the largest a, and the probabilities of the higher numbers go to it.
-        The default of 2 is the NT_MAX_AUGER_ELECTRONS of ARTIS. A stage of a balanced element also
-        cannot go above the top stage of its chain. The option has no effect on a channel of
+        The default of 2 is the NT_MAX_AUGER_ELECTRONS of ARTIS. In an ionisation balance, an ionisation
+        that passes the top stage of the chain keeps its n_ejected, and its ion ends in the top stage.
+        The option has no effect on a channel of
         add_ionisation_channel().
 
         Every method takes Z and ion_stage as integers, with ion_stage from 1 to Z + 1.
@@ -1045,21 +1046,16 @@ class SpencerFanoSolver:
                 raise ValueError(msg)
             seen.add(key)
 
-    def _build_builtin_channels(
-        self, Z: int, ion_stage: int, warn_lotz: bool = True, top_ion_stage: int | None = None
-    ) -> list[IonisationChannel]:
+    def _build_builtin_channels(self, Z: int, ion_stage: int, warn_lotz: bool = True) -> list[IonisationChannel]:
         # the checked built-in ionisation channels of one stage. Nothing here writes to the solver,
         # so a caller can build the channels of every stage before it stores the first one. An ion
         # without a row in the cross-section table raises, so an element skips its bare nucleus
         # before it calls this method.
-        max_auger_electrons = self._max_auger_electrons
-        element = self._balanced_elements.get(Z) if top_ion_stage is None else None
-        if element is not None:
-            top_ion_stage = element.ion_stages[-1]
-        if top_ion_stage is not None and ion_stage < top_ion_stage:
-            # the balance has no stage above the top of the chain, so an ionisation that passes the
-            # top stage ends in the top stage, as in ARTIS
-            max_auger_electrons = min(max_auger_electrons, top_ion_stage - ion_stage - 1)
+        # A channel of a balanced element keeps the electron count of its Auger data, also where the
+        # ionisation passes the top stage of the chain. The balance applies the limit of the chain
+        # when it moves the ions (see _balanced_cut_coeffs()). With the limit in the channels, the
+        # rate coefficient for each n_ejected was different from that of the same ions with fixed
+        # populations.
         channels = pynonthermal.collion.get_ion_ionisation_channels(
             self.dfcollion,
             Z,
@@ -1067,7 +1063,7 @@ class SpencerFanoSolver:
             self.engrid,
             lotz_a_cm2_ev2=self._lotz_a_cm2_ev2,
             use_km1993_auger=self._use_km1993_auger,
-            max_auger_electrons=max_auger_electrons,
+            max_auger_electrons=self._max_auger_electrons,
         )
         self._check_ionpot_above_emin(Z, ion_stage, [channel.ionpot_ev for channel in channels])
         self._check_ionisation_channel_keys(Z, ion_stage, [channel.key for channel in channels])
@@ -2483,7 +2479,7 @@ class SpencerFanoSolver:
             ion_stage: (
                 []
                 if ion_stage == Z + 1 or not builtin_channels
-                else self._build_builtin_channels(Z, ion_stage, warn_lotz=False, top_ion_stage=element.ion_stages[-1])
+                else self._build_builtin_channels(Z, ion_stage, warn_lotz=False)
             )
             for ion_stage in element.ion_stages
         }
@@ -3109,7 +3105,9 @@ class SpencerFanoSolver:
         # the cut coefficients C_{j,i} [cm^-3] of pynonthermal.ionbalance.get_ion_fractions_cuts() at
         # the deposition rate density of the solution. The index of a stage in the chain is its
         # offset from the lowest stage. Cut j lies between the stages of index j and j + 1, and an
-        # ionisation of stage i with n_ejected > j - i crosses it.
+        # ionisation of stage i with n_ejected > j - i crosses it. The balance has no stage above the
+        # top of the chain. An ionisation that passes the top stage crosses each cut above its stage
+        # and no other cut, so its ion ends in the top stage, as in ARTIS.
         deposition = self.deposition_ev_per_s_per_cm3
         stages = element.ion_stages
         cuts = []
@@ -3144,33 +3142,42 @@ class SpencerFanoSolver:
         }
 
     def _warn_top_stage_leak(self, element: _BalancedElement) -> None:
-        # the top stage of the chain has no stage to ionise into, so its ionisation rate must be small
-        # compared with the total ionisation rate of the element (see BALANCE_TOP_STAGE_LEAK_WARN_FRACTION)
+        # The chain has no stage above its top stage. An ionisation of the top stage, or one from a lower
+        # stage that passes the top stage, leaves the chain. The rate of these events must be small
+        # compared with the total ionisation rate of the element (see BALANCE_TOP_STAGE_LEAK_WARN_FRACTION).
         Z = element.Z
         top = element.ion_stages[-1]
         # the balance already holds the rate coefficient per unit deposition of every stage below
         # the top, from the same solution, so only the top stage needs a new integral
         assert element.ratecoeffs_per_deposition is not None
         deposition = self.deposition_ev_per_s_per_cm3
-        rates = {
-            ion_stage: self.ionpopdict[(Z, ion_stage)]
-            * (
-                self._calculate_ionisation_ratecoeff(Z, ion_stage)
-                if ion_stage == top
-                else sum(element.ratecoeffs_per_deposition[ion_stage].values()) * deposition
-            )
-            for ion_stage in element.ion_stages
-        }
-        rate_total = sum(rates.values())
-        if rates[top] > BALANCE_TOP_STAGE_LEAK_WARN_FRACTION * rate_total:
-            # a channel of the top stage with n_ejected > 1 must also end in a stage of the longer chain
-            stage_needed = top + max(
-                (channel.n_ejected for channel in self._ionisation_channels.get((Z, top), [])), default=1
+        rate_total = 0.0
+        rate_leaving = 0.0
+        for ion_stage in element.ion_stages[:-1]:
+            for n_ejected, ratecoeff in element.ratecoeffs_per_deposition[ion_stage].items():
+                rate = self.ionpopdict[(Z, ion_stage)] * ratecoeff * deposition
+                rate_total += rate
+                if ion_stage + n_ejected > top:
+                    rate_leaving += rate
+        rate_top = self.ionpopdict[(Z, top)] * self._calculate_ionisation_ratecoeff(Z, top)
+        rate_total += rate_top
+        rate_leaving += rate_top
+        if rate_leaving > BALANCE_TOP_STAGE_LEAK_WARN_FRACTION * rate_total:
+            # each channel must end in a stage of the longer chain
+            stage_needed = max(
+                top + 1,
+                *(
+                    ion_stage + channel.n_ejected
+                    for ion_stage in element.ion_stages
+                    for channel in self._ionisation_channels.get((Z, ion_stage), [])
+                ),
             )
             _warn(
-                f"the ionisation rate out of the top stage {top} of Z={Z} is {rates[top]:.2e} /s/cm3."
+                f"the rate of the ionisations that leave the chain above the top stage {top} of Z={Z} is"
+                f" {rate_leaving:.2e} /s/cm3. The ionisations of the top stage give {rate_top:.2e} /s/cm3 of that"
+                " rate, and the ionisations from lower stages that pass the top stage give the remainder."
                 f" The total ionisation rate of the element is {rate_total:.2e} /s/cm3."
-                f" Thus {rates[top] / rate_total:.1%} of the ionisation events of the element leave the chain."
+                f" Thus {rate_leaving / rate_total:.1%} of the ionisation events of the element leave the chain."
                 f" Extend the chain with recombination rate coefficients up to ion stage {stage_needed}."
             )
 

@@ -358,11 +358,13 @@ Points to note:
   include thermal collisional ionisation, photoionisation, or charge exchange. The ion fractions
   therefore depend on the deposition rate density, unlike the fixed-population case.
 - The top stage of the chain is a sink. Its ionisation is an energy loss in the matrix, but the ions
-  it makes have no stage to go to. The solver gives a warning if the ionisation rate out of the top
-  stage exceeds 1 % of the total ionisation rate of the element. The ratio of the two rates is the
-  fraction of the ionisation events of the element that leave the chain. The ratio does not estimate
-  the omitted population. Extend the chain with a rate coefficient for the next stage.
-  If a channel of the top stage removes `k` electrons, extend the chain to the top stage plus `k`.
+  it makes have no stage to go to. An ionisation of the top stage leaves the chain. A built-in
+  channel with Auger data that passes the top stage from a lower stage also leaves the chain. The
+  solver gives a warning if the rate of these events exceeds 1 % of the total ionisation rate of the
+  element. The ratio of the two rates is the fraction of the ionisation events of the element that
+  leave the chain. The ratio does not estimate the omitted population. Extend the chain with a rate
+  coefficient for the next stage. If a channel of a stage removes `k` electrons, extend the chain to
+  that stage plus `k`.
 - The free electron density comes from charge neutrality, unless `override_n_e()` gives it.
 
 The functions behind the balance are in `pynonthermal.ionbalance`:
@@ -504,7 +506,8 @@ For each subshell with a fitted cross section and Auger data, the option does th
 
 `max_auger_electrons` is the largest `a`. The probabilities of the higher numbers go to it. The default
 of `2` is the `NT_MAX_AUGER_ELECTRONS` of ARTIS. In an ionisation balance, an ionisation that passes the
-top stage of the chain ends in the top stage, as in ARTIS. A shell that uses the Lotz formula has no
+top stage of the chain ends in the top stage, as in ARTIS. Its channel keeps its `n_ejected`, so
+`get_ionisation_ratecoeff()` gives the same value for each `n_ejected` as with fixed populations. A shell that uses the Lotz formula has no
 Auger data.
 
 <!-- test -->
