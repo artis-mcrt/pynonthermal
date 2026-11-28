@@ -3278,8 +3278,10 @@ class SpencerFanoSolver:
         # E / E_0 near zero, so their value at this small energy is the limit to about six digits. The
         # method gave zero at E = 0.
         # The terms of the excitations and of the autoionisation channels have no such point, so they use
-        # energy_ev. With the lowest energy, a band with a threshold near e_max was outside the grid.
-        energy_ion_ev = max(energy_ev, N_E_ZERO_ENERGY_FRACTION * e_min, N_E_ZERO_ENERGY_EMAX_FRACTION * e_max)
+        # the energy of the call. With the lowest energy, a band with a threshold near e_max was outside the
+        # grid.
+        energy_band_ev = energy_ev
+        energy_ev = max(energy_ev, N_E_ZERO_ENERGY_FRACTION * e_min, N_E_ZERO_ENERGY_EMAX_FRACTION * e_max)
         e_mid_min = float(self.engrid_mid[0])
         deltaen = float(self.deltaen)
         lastindex = len(self.engrid) - 2
@@ -3315,7 +3317,7 @@ class SpencerFanoSolver:
                 # the whole transition silently dropped out: on the helium benchmark at E = 0.25 eV that
                 # was 280 of 296 transitions and 43% of N_e.
                 # the level population is absolute, so this term is not scaled by n_ion below
-                N_e += trans.levelnumberdensity * y_times_xs(energy_ev + trans.epsilon_trans_ev, trans.xs_vec)
+                N_e += trans.levelnumberdensity * y_times_xs(energy_band_ev + trans.epsilon_trans_ev, trans.xs_vec)
 
             for channel in self._ionisation_channels.get((Z, ion_stage), ()):
                 ionpot_ev = channel.ionpot_ev
@@ -3325,10 +3327,10 @@ class SpencerFanoSolver:
                     # term above, with the ion population as the level population, and it has no
                     # secondary integrals. The cross section comes from the grid array, as for an
                     # excitation, so the two terms agree to machine precision.
-                    N_e_ion += y_times_xs(energy_ev + ionpot_ev, channel.xs_grid)
+                    N_e_ion += y_times_xs(energy_band_ev + ionpot_ev, channel.xs_grid)
                     continue
 
-                enlambda = min(e_max - energy_ion_ev, energy_ion_ev + ionpot_ev)
+                enlambda = min(e_max - energy_ev, energy_ev + ionpot_ev)
                 J = channel.J_ev
 
                 # Integral over epsilon from ionpot_ev to enlambda. Its width is at most energy_ev, which
@@ -3340,7 +3342,7 @@ class SpencerFanoSolver:
                     arr_epsilon = np.linspace(
                         ionpot_ev, enlambda, num=self._npts_subgrid(enlambda - ionpot_ev, J), dtype=np.float64
                     )
-                    arr_e_p = energy_ion_ev + arr_epsilon
+                    arr_e_p = energy_ev + arr_epsilon
                     # every node here lies between grid points, so y is interpolated (see
                     # _get_y_weighted_by_xs()) and the cross section evaluated directly, the latter because
                     # it rises steeply from zero just above the ionisation threshold that starts this integral
@@ -3362,7 +3364,7 @@ class SpencerFanoSolver:
                 # made the integral 35% high. Resolve the leading panels on a sub-grid, and let the main
                 # grid carry the smooth remainder. An empty domain is skipped rather than integrated
                 # backwards.
-                en_lower2 = 2 * energy_ion_ev + ionpot_ev
+                en_lower2 = 2 * energy_ev + ionpot_ev
                 if en_lower2 < e_max:
                     # the solution and the cross sections of the grid are at engrid_mid
                     startindex = pynonthermal.get_energyindex_gteq(en_ev=en_lower2, engrid=self.engrid_mid)
@@ -3377,7 +3379,7 @@ class SpencerFanoSolver:
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
                         arr_xs=channel.evaluate_xs(arr_e_p_low),
-                        e_s=energy_ion_ev,
+                        e_s=energy_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
                     )
@@ -3394,7 +3396,7 @@ class SpencerFanoSolver:
                             arr_xs=np.append(
                                 channel.xs_grid[stopindex:-1], 0.5 * (channel.xs_grid[-2] + channel.xs_grid[-1])
                             ),
-                            e_s=energy_ion_ev,
+                            e_s=energy_ev,
                             ionpot_ev=ionpot_ev,
                             J=J,
                         )
