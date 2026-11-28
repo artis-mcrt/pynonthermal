@@ -78,6 +78,9 @@ else:
 # most of the energy. The mixing alone then converges slowly, so Anderson acceleration (below) speeds it.
 BALANCE_MIXING_WEIGHT: float = 2.0 / 3.0
 
+# calculate_N_e() uses this fraction of emin_ev as its lowest energy (see SpencerFanoSolver._calculate_N_e())
+N_E_ZERO_ENERGY_FRACTION: float = 1e-6
+
 # The maximum number of iterations of the ionisation balance in solve(). With the acceleration below,
 # a case that needs more than a few tens of iterations has a problem that more iterations would not
 # fix, so solve() raises a RuntimeError instead.
@@ -3234,6 +3237,10 @@ class SpencerFanoSolver:
         multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
         the energy of those electrons at or below emin_ev in a different term.
 
+        For an energy below 1e-6 emin_ev, the method gives N(E) at 1e-6 emin_ev. Thus N(0) is the limit
+        from positive energies. That limit is finite if each cross section goes to zero at its ionisation
+        potential, as the built-in cross sections do.
+
         calculate_frac_heating() does not call this method. It adds an energy for the electrons that
         appear below emin_ev, and that energy is not the integral of E N(E) from zero to emin_ev. The
         energy also has a part from the electrons that appear in the first grid interval above emin_ev.
@@ -3256,11 +3263,14 @@ class SpencerFanoSolver:
         # equation's lambda limit computed as enlambda below), and the secondaries of
         # ionisations by primaries above 2E + I.
         # not valid for energy > E_0
-        if energy_ev == 0.0:
-            return 0.0
-
         N_e = 0.0
         e_min = float(self.engrid[0])
+        # N(E) at zero energy is its limit from positive energies. At exactly zero, the second integral
+        # starts at the ionisation potential, where the secondary-electron distribution is singular and the
+        # cross section is zero. The quadrature cannot use that point, and below about 1e-12 eV the sum
+        # 2 E + I loses the digits of E. N(E) changes by a relative amount of about E / E_0 near zero, so
+        # the value at this small energy is the limit to about six digits. The method gave zero at E = 0.
+        energy_ev = max(energy_ev, N_E_ZERO_ENERGY_FRACTION * e_min)
         e_max = float(self.engrid[-1])
         e_mid_min = float(self.engrid_mid[0])
         deltaen = float(self.deltaen)
