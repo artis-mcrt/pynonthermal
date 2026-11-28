@@ -78,8 +78,12 @@ else:
 # most of the energy. The mixing alone then converges slowly, so Anderson acceleration (below) speeds it.
 BALANCE_MIXING_WEIGHT: float = 2.0 / 3.0
 
-# calculate_N_e() uses this fraction of emin_ev as its lowest energy (see SpencerFanoSolver._calculate_N_e())
+# The ionisation integrals of calculate_N_e() use a lowest energy (see SpencerFanoSolver._calculate_N_e()). It
+# is the larger of the first fraction of emin_ev and the second fraction of emax_ev. The first keeps the value
+# near the limit at zero energy. The second keeps the digits of the energy in a sum with an ionisation
+# potential, which is at most emax_ev.
 N_E_ZERO_ENERGY_FRACTION: float = 1e-6
+N_E_ZERO_ENERGY_EMAX_FRACTION: float = 1e-11
 
 # The maximum number of iterations of the ionisation balance in solve(). With the acceleration below,
 # a case that needs more than a few tens of iterations has a problem that more iterations would not
@@ -3237,9 +3241,10 @@ class SpencerFanoSolver:
         multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
         the energy of those electrons at or below emin_ev in a different term.
 
-        For an energy below 1e-6 emin_ev, the method gives N(E) at 1e-6 emin_ev. Thus N(0) is the limit
-        from positive energies. That limit is finite if each cross section goes to zero at its ionisation
-        potential, as the built-in cross sections do.
+        For an energy below 1e-6 emin_ev, the ionisation terms of N(E) are those at 1e-6 emin_ev, or at
+        1e-11 emax_ev if that energy is larger. Thus N(0) is the limit from positive energies. That limit
+        is finite if each cross section goes to zero at its ionisation potential, as the built-in cross
+        sections do.
 
         calculate_frac_heating() does not call this method. It adds an energy for the electrons that
         appear below emin_ev, and that energy is not the integral of E N(E) from zero to emin_ev. The
@@ -3265,13 +3270,16 @@ class SpencerFanoSolver:
         # not valid for energy > E_0
         N_e = 0.0
         e_min = float(self.engrid[0])
-        # N(E) at zero energy is its limit from positive energies. At exactly zero, the second integral
-        # starts at the ionisation potential, where the secondary-electron distribution is singular and the
-        # cross section is zero. The quadrature cannot use that point, and below about 1e-12 eV the sum
-        # 2 E + I loses the digits of E. N(E) changes by a relative amount of about E / E_0 near zero, so
-        # the value at this small energy is the limit to about six digits. The method gave zero at E = 0.
-        energy_ev = max(energy_ev, N_E_ZERO_ENERGY_FRACTION * e_min)
         e_max = float(self.engrid[-1])
+        # N(E) at zero energy is its limit from positive energies. At exactly zero, the second ionisation
+        # integral starts at the ionisation potential, where the secondary-electron distribution is singular
+        # and the cross section is zero. The quadrature cannot use that point, and at a very small energy the
+        # sum 2 E + I loses the digits of E. The ionisation integrals change by a relative amount of about
+        # E / E_0 near zero, so their value at this small energy is the limit to about six digits. The
+        # method gave zero at E = 0.
+        # The terms of the excitations and of the autoionisation channels have no such point, so they use
+        # energy_ev. With the lowest energy, a band with a threshold near e_max was outside the grid.
+        energy_ion_ev = max(energy_ev, N_E_ZERO_ENERGY_FRACTION * e_min, N_E_ZERO_ENERGY_EMAX_FRACTION * e_max)
         e_mid_min = float(self.engrid_mid[0])
         deltaen = float(self.deltaen)
         lastindex = len(self.engrid) - 2
@@ -3320,7 +3328,7 @@ class SpencerFanoSolver:
                     N_e_ion += y_times_xs(energy_ev + ionpot_ev, channel.xs_grid)
                     continue
 
-                enlambda = min(e_max - energy_ev, energy_ev + ionpot_ev)
+                enlambda = min(e_max - energy_ion_ev, energy_ion_ev + ionpot_ev)
                 J = channel.J_ev
 
                 # Integral over epsilon from ionpot_ev to enlambda. Its width is at most energy_ev, which
@@ -3332,7 +3340,7 @@ class SpencerFanoSolver:
                     arr_epsilon = np.linspace(
                         ionpot_ev, enlambda, num=self._npts_subgrid(enlambda - ionpot_ev, J), dtype=np.float64
                     )
-                    arr_e_p = energy_ev + arr_epsilon
+                    arr_e_p = energy_ion_ev + arr_epsilon
                     # every node here lies between grid points, so y is interpolated (see
                     # _get_y_weighted_by_xs()) and the cross section evaluated directly, the latter because
                     # it rises steeply from zero just above the ionisation threshold that starts this integral
@@ -3354,7 +3362,7 @@ class SpencerFanoSolver:
                 # made the integral 35% high. Resolve the leading panels on a sub-grid, and let the main
                 # grid carry the smooth remainder. An empty domain is skipped rather than integrated
                 # backwards.
-                en_lower2 = 2 * energy_ev + ionpot_ev
+                en_lower2 = 2 * energy_ion_ev + ionpot_ev
                 if en_lower2 < e_max:
                     # the solution and the cross sections of the grid are at engrid_mid
                     startindex = pynonthermal.get_energyindex_gteq(en_ev=en_lower2, engrid=self.engrid_mid)
@@ -3369,7 +3377,7 @@ class SpencerFanoSolver:
                         arr_e_p=arr_e_p_low,
                         arr_y=self._get_y_weighted_by_xs(channel.xs_grid, arr_e_p_low),
                         arr_xs=channel.evaluate_xs(arr_e_p_low),
-                        e_s=energy_ev,
+                        e_s=energy_ion_ev,
                         ionpot_ev=ionpot_ev,
                         J=J,
                     )
@@ -3386,7 +3394,7 @@ class SpencerFanoSolver:
                             arr_xs=np.append(
                                 channel.xs_grid[stopindex:-1], 0.5 * (channel.xs_grid[-2] + channel.xs_grid[-1])
                             ),
-                            e_s=energy_ev,
+                            e_s=energy_ion_ev,
                             ionpot_ev=ionpot_ev,
                             J=J,
                         )
