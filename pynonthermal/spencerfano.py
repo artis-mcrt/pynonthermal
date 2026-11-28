@@ -78,6 +78,13 @@ else:
 # most of the energy. The mixing alone then converges slowly, so Anderson acceleration (below) speeds it.
 BALANCE_MIXING_WEIGHT: float = 2.0 / 3.0
 
+# The ionisation integrals of calculate_N_e() use a lowest energy (see SpencerFanoSolver._calculate_N_e()). It
+# is the larger of the first fraction of emin_ev and the second fraction of emax_ev. The first keeps the value
+# near the limit at zero energy. The second keeps the digits of the energy in a sum with an ionisation
+# potential, which is at most emax_ev.
+N_E_ZERO_ENERGY_FRACTION: float = 1e-6
+N_E_ZERO_ENERGY_EMAX_FRACTION: float = 1e-11
+
 # The maximum number of iterations of the ionisation balance in solve(). With the acceleration below,
 # a case that needs more than a few tens of iterations has a problem that more iterations would not
 # fix, so solve() raises a RuntimeError instead.
@@ -3237,6 +3244,11 @@ class SpencerFanoSolver:
         multiple ionisation, and the electrons of an autoionisation). calculate_frac_heating() adds
         the energy of those electrons at or below emin_ev in a different term.
 
+        For an energy below 1e-6 emin_ev, the ionisation terms of N(E) are those at 1e-6 emin_ev, or at
+        1e-11 emax_ev if that energy is larger. Thus N(0) is the limit from positive energies. That limit
+        is finite if each cross section goes to zero at its ionisation potential, as the built-in cross
+        sections do.
+
         calculate_frac_heating() does not call this method. It adds an energy for the electrons that
         appear below emin_ev, and that energy is not the integral of E N(E) from zero to emin_ev. The
         energy also has a part from the electrons that appear in the first grid interval above emin_ev.
@@ -3259,12 +3271,20 @@ class SpencerFanoSolver:
         # equation's lambda limit computed as enlambda below), and the secondaries of
         # ionisations by primaries above 2E + I.
         # not valid for energy > E_0
-        if energy_ev == 0.0:
-            return 0.0
-
         N_e = 0.0
         e_min = float(self.engrid[0])
         e_max = float(self.engrid[-1])
+        # N(E) at zero energy is its limit from positive energies. At exactly zero, the second ionisation
+        # integral starts at the ionisation potential, where the secondary-electron distribution is singular
+        # and the cross section is zero. The quadrature cannot use that point, and at a very small energy the
+        # sum 2 E + I loses the digits of E. The ionisation integrals change by a relative amount of about
+        # E / E_0 near zero, so their value at this small energy is the limit to about six digits. The
+        # method gave zero at E = 0.
+        # The terms of the excitations and of the autoionisation channels have no such point, so they use
+        # the energy of the call. With the lowest energy, a band with a threshold near e_max was outside the
+        # grid.
+        energy_band_ev = energy_ev
+        energy_ev = max(energy_ev, N_E_ZERO_ENERGY_FRACTION * e_min, N_E_ZERO_ENERGY_EMAX_FRACTION * e_max)
         e_mid_min = float(self.engrid_mid[0])
         deltaen = float(self.deltaen)
         lastindex = len(self.engrid) - 2
@@ -3300,7 +3320,7 @@ class SpencerFanoSolver:
                 # the whole transition silently dropped out: on the helium benchmark at E = 0.25 eV that
                 # was 280 of 296 transitions and 43% of N_e.
                 # the level population is absolute, so this term is not scaled by n_ion below
-                N_e += trans.levelnumberdensity * y_times_xs(energy_ev + trans.epsilon_trans_ev, trans.xs_vec)
+                N_e += trans.levelnumberdensity * y_times_xs(energy_band_ev + trans.epsilon_trans_ev, trans.xs_vec)
 
             for channel in self._ionisation_channels.get((Z, ion_stage), ()):
                 ionpot_ev = channel.ionpot_ev
@@ -3310,7 +3330,7 @@ class SpencerFanoSolver:
                     # term above, with the ion population as the level population, and it has no
                     # secondary integrals. The cross section comes from the grid array, as for an
                     # excitation, so the two terms agree to machine precision.
-                    N_e_ion += y_times_xs(energy_ev + ionpot_ev, channel.xs_grid)
+                    N_e_ion += y_times_xs(energy_band_ev + ionpot_ev, channel.xs_grid)
                     continue
 
                 enlambda = min(e_max - energy_ev, energy_ev + ionpot_ev)
