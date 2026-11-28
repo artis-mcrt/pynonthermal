@@ -651,10 +651,15 @@ class SpencerFanoSolver:
         # (0.1 keV for a 3 keV Emax) to match KF92
         source_spread_pts = math.ceil(npts / 30.0)
 
-        sourcevec[npts - source_spread_pts :] = 1.0 / (self.deltaen * source_spread_pts)
+        # The npts points of the grid are the limits of npts - 1 intervals, and emax_ev is the upper limit
+        # of the last one. The interval of the last column starts at emax_ev, so it has no source. Its row has
+        # a right-hand side of zero, so yvec is zero there, and each term of that column is zero. Thus the
+        # source, the cross sections, and the integrals of the analysis all end at emax_ev. With a source in
+        # the last column, a cross section that is zero up to emax_ev had an ionisation fraction of 0.25.
+        sourcevec[npts - 1 - source_spread_pts : npts - 1] = 1.0 / (self.deltaen * source_spread_pts)
 
         source_emin = self.engrid[np.flatnonzero(sourcevec)[0]]
-        source_emax = self.engrid[np.flatnonzero(sourcevec)[-1]]
+        source_emax = self.engrid[np.flatnonzero(sourcevec)[-1]] + self.deltaen
 
         # integral of the source from each energy to the top of the grid: the right-hand side
         # of the integral form of the degradation equation (KF92 equation 7)
@@ -3267,6 +3272,7 @@ class SpencerFanoSolver:
         e_max = float(self.engrid[-1])
         e_mid_min = float(self.engrid_mid[0])
         deltaen = float(self.deltaen)
+        # the last interval below e_max. The interval of the last column is above e_max, and yvec is zero there.
         lastindex = len(self.engrid) - 2
 
         def y_times_xs(en_ev: float, xsvec: npt.NDArray[np.float64]) -> float:
@@ -3280,7 +3286,10 @@ class SpencerFanoSolver:
             if not e_min <= en_ev <= e_max:
                 return 0.0
             pos = max((en_ev - e_mid_min) / deltaen, 0.0)
-            i = min(int(pos), lastindex)
+            i = int(pos)
+            if i >= lastindex:
+                # above the middle of the last interval below e_max, the values of that interval apply
+                return float(self.yvec[lastindex] * xsvec[lastindex])
             weight = pos - i
             return float(
                 (self.yvec[i] + weight * (self.yvec[i + 1] - self.yvec[i]))
@@ -3368,17 +3377,14 @@ class SpencerFanoSolver:
                     )
                     # the rest is smooth on the scale of J, so y comes from the solution and the
                     # cross section from the on-grid array of the channel, with no new evaluation. The
-                    # last point is E_max, which is half-way between the last two energies of engrid_mid,
-                    # so the mean of the last two values is the linear interpolation there. With the last
-                    # energy of engrid_mid as the end, N(E) had half an interval too much, and a step at
-                    # the energy where this integral becomes empty.
+                    # last point is E_max, which is half an interval above the last energy of engrid_mid
+                    # below it. The values of that last interval apply up to E_max. The interval of the
+                    # last column is above E_max, and it has no electrons (see sourcevec in __init__).
                     if stopindex < len(self.engrid) - 1:
                         N_e_ion += self._integrate_shell_secondaries(
                             arr_e_p=np.append(self.engrid_mid[stopindex:-1], e_max),
-                            arr_y=np.append(self.yvec[stopindex:-1], 0.5 * (self.yvec[-2] + self.yvec[-1])),
-                            arr_xs=np.append(
-                                channel.xs_grid[stopindex:-1], 0.5 * (channel.xs_grid[-2] + channel.xs_grid[-1])
-                            ),
+                            arr_y=np.append(self.yvec[stopindex:-1], self.yvec[-2]),
+                            arr_xs=np.append(channel.xs_grid[stopindex:-1], channel.xs_grid[-2]),
                             e_s=energy_ev,
                             ionpot_ev=ionpot_ev,
                             J=J,
@@ -3400,9 +3406,11 @@ class SpencerFanoSolver:
         # y is much larger than the y above it, and a linear interpolation of y spread it over the bin.
         # The heating of N(E) was then 2.6 times too large at x_e = 1e-6.
         # the solution and the cross section of the grid are at engrid_mid. Below the first of these energies,
-        # the values of the first interval apply.
-        xs_interp = np.interp(arr_en_ev, self.engrid_mid, xs_grid, right=0.0)
-        y_xs_interp = np.interp(arr_en_ev, self.engrid_mid, self.yvec * xs_grid, right=0.0)
+        # the values of the first interval apply. Above the last of these energies below emax_ev, the values of
+        # the last interval below emax_ev apply. The interval of the last column is above emax_ev, and yvec is
+        # zero there.
+        xs_interp = np.interp(arr_en_ev, self.engrid_mid[:-1], xs_grid[:-1])
+        y_xs_interp = np.interp(arr_en_ev, self.engrid_mid[:-1], self.yvec[:-1] * xs_grid[:-1])
         return np.divide(y_xs_interp, xs_interp, out=np.zeros_like(xs_interp), where=xs_interp > 0.0)
 
     def _band_energy_below_e0(self, xs_vec: npt.NDArray[np.float64], epsilon_ev: float) -> float:
@@ -4128,15 +4136,17 @@ class SpencerFanoSolver:
         else:
             ax = axis
 
+        # yvec[j] is the solution at the middle of grid interval j. The interval of the last column is above
+        # emax_ev, and yvec is zero there, so the plot ends at the last interval below emax_ev.
+        arr_en_ev = self.engrid_mid[:-1]
         if en_y_on_d_en:
-            arr_y = np.log10(self.yvec * self.engrid_mid)
+            arr_y = np.log10(self.yvec[:-1] * arr_en_ev)
             ax.set_ylabel(r"log(E y(E))", fontsize=fs)
         else:
-            arr_y = np.log10(self.yvec)
+            arr_y = np.log10(self.yvec[:-1])
             ax.set_ylabel(r"log y [y (e$^-$ / cm$^2$ / s / eV)]", fontsize=fs)
 
-        # yvec[j] is the solution at the middle of grid interval j
-        ax.plot(self.engrid_mid, arr_y, marker="None", lw=1.5, color="black")
+        ax.plot(arr_en_ev, arr_y, marker="None", lw=1.5, color="black")
         # axes[0].plot(engrid, np.log10(yvec), marker="None", lw=1.5, color='black')
         # axes[0].set_ylabel(r'log y(E) [s$^{-1}$ cm$^{-2}$ eV$^{-1}$]', fontsize=fs)
         # axes[0].set_ylim(bottom=15.5, top=19.)
