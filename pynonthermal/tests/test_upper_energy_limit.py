@@ -12,7 +12,10 @@ def test_cross_section_above_emax_gives_no_ionisation() -> None:
     # The middle of the last column is at 100.495 eV, above the emax_ev of 100 eV. With a source in that
     # column, a channel with a cross section only above 100 eV had an ionisation fraction of 0.25022.
     sf = pynonthermal.SpencerFanoSolver(emin_ev=1, emax_ev=100, npts=101)
-    sf.add_ionisation_channel(8, 1, 1e10, 99.9, np.where(sf.engrid_mid > 100.0, 1e-16, 0.0), channelkey="above")
+    # a function, so that the cross section is zero up to 100 eV also between the middles of the grid intervals
+    sf.add_ionisation_channel(
+        8, 1, 1e10, 99.9, lambda energies_ev: np.where(energies_ev > 100.0, 1e-16, 0.0), channelkey="above"
+    )
     sf.override_n_e(1e5)
     sf.solve(deposition_ev_per_s_per_cm3=1e5)
 
