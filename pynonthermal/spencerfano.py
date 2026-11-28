@@ -97,6 +97,12 @@ BALANCE_ANDERSON_MAX_LN_STEP: float = 5.0
 # below the limit of the loss function.
 BALANCE_SEED_STAGE_RATIO: float = 1e-2
 
+# The balance adds the change of each population to the matrix. The rounding residue of a stage is
+# about the machine precision times the largest population of the stage that the matrix held. If a new
+# population is less than this fraction of that largest population, the balance fills the matrix again
+# from the records. The relative error of the matrix terms of the stage then stays below about 1e-10.
+BALANCE_REBUILD_POPULATION_RATIO: float = 1e-6
+
 # The memory [bytes] that the unit matrices of the balanced stages can use (see
 # SpencerFanoSolver._get_stage_matrix()). A unit matrix makes an iteration of the balance two to three
 # times faster for that stage. At the default npts of 4096 a unit matrix takes 134 MB, so the default
@@ -510,6 +516,8 @@ class SpencerFanoSolver:
     sfmatrix: npt.NDArray[np.float64]
     # True when sfmatrix does not hold the records of the solver (see _rebuild_sfmatrix())
     _sfmatrix_stale: bool
+    # the largest population of each balanced stage that sfmatrix held after its last fill from the records
+    _sfmatrix_population_scales: dict[tuple[int, int], float]
     # the number of fills of sfmatrix that have started, so that a failed add call knows if it wrote to the matrix
     _sfmatrix_writes: int
     adata_polars: pl.DataFrame | None
@@ -688,6 +696,7 @@ class SpencerFanoSolver:
 
         self.sfmatrix = np.zeros((npts, npts))
         self._sfmatrix_stale = False
+        self._sfmatrix_population_scales = {}
         self._sfmatrix_writes = 0
 
     @property
@@ -869,6 +878,8 @@ class SpencerFanoSolver:
                     self.ionpopdict[(Z, ion_stage)], channel, cache=Z in self._balanced_elements
                 )
         self._sfmatrix_stale = False
+        # the matrix holds each population with no residue of an earlier population
+        self._sfmatrix_population_scales = {}
 
     def set_temperature(self, temperature: float) -> None:
         """Set the temperature in K for the LTE populations of the excitation levels.
@@ -2556,13 +2567,32 @@ class SpencerFanoSolver:
         # in the population, so adding the change of each population keeps the matrix equal to the
         # fixed contributions plus the current ionpopdict contributions of the balanced ions, with
         # no copy of the matrix. The rounding residue is of the order of the machine precision
-        # times the largest population that was applied.
+        # times the largest population that was applied. A large decrease of a population fills the
+        # matrix again from the records (see BALANCE_REBUILD_POPULATION_RATIO).
         if self._sfmatrix_stale:
             # an earlier fill stopped part-way, so the matrix does not hold the records (see _rebuild_sfmatrix()).
             # Only the records change, and the next fill of the whole matrix adds the new populations.
             self._set_balanced_records(element, populations)
             return
         Z = element.Z
+        # The matrix holds the sum of the changes of each population. The residue of that sum is of the order of
+        # the machine precision times the largest population. A new population that is much smaller than the
+        # largest one has no precision in the matrix. After a decrease of O II from 5.7e7 to 6.9e-13 cm^-3, the
+        # residue was larger than the terms of the new population, and the energy sum was 0.77.
+        precision_lost = False
+        for ion_stage in element.ion_stages:
+            scale = max(self._sfmatrix_population_scales.get((Z, ion_stage), 0.0), self.ionpopdict[(Z, ion_stage)])
+            if populations[ion_stage] < BALANCE_REBUILD_POPULATION_RATIO * scale:
+                precision_lost = True
+            self._sfmatrix_population_scales[Z, ion_stage] = max(scale, populations[ion_stage])
+        if precision_lost:
+            self._set_balanced_records(element, populations)
+            try:
+                self._rebuild_sfmatrix()
+            except BaseException:
+                self._sfmatrix_stale = True
+                raise
+            return
         deltas = {
             ion_stage: populations[ion_stage] - self.ionpopdict[(Z, ion_stage)] for ion_stage in element.ion_stages
         }
@@ -2979,6 +3009,13 @@ class SpencerFanoSolver:
             if Z not in self._balanced_elements
         )
 
+        # The loss function is valid only below this free electron density (see _solve_matrix()). The
+        # populations of a trial step can give a density at or above the limit when the solution is below
+        # it. The loop then takes a reduced step.
+        n_e_limit = _get_n_e_limit(float(self.engrid[0]))
+        # the part of the trial step that the last iteration took
+        step = 1.0
+
         max_residual = math.inf
         # the history of Anderson acceleration (Walker & Ni 2011) of the fixed-point map in ln(rate)
         history_x: list[npt.NDArray[np.float64]] = []
@@ -3005,19 +3042,50 @@ class SpencerFanoSolver:
                     n_e_fixed,
                     [(element.n_elem, element.ion_stages[0], cut_coeffs[element.Z]) for element in elements],
                 )
+            # the part of the trial step that the loop takes
+            step = 1.0
+            if self._n_e_override is None and n_e >= n_e_limit:
+                # The free electron density is linear in the populations. A part of the step from the
+                # current populations to the trial populations thus gives a density between the two. The
+                # reduced step ends half-way between the current density and the limit.
+                n_e_current = self.calculate_free_electron_density()
+                if n_e_current < n_e_limit:
+                    step = 0.5 * (n_e_limit - n_e_current) / (n_e - n_e_current)
             for element in elements:
                 fractions = get_ion_fractions_cuts(cut_coeffs[element.Z], n_e)
-                self._set_balanced_populations(
-                    element,
-                    {
-                        ion_stage: element.n_elem * frac
-                        for ion_stage, frac in zip(element.ion_stages, fractions, strict=True)
-                    },
-                )
+                populations = {
+                    ion_stage: element.n_elem * frac
+                    for ion_stage, frac in zip(element.ion_stages, fractions, strict=True)
+                }
+                if step < 1.0:
+                    populations = {
+                        ion_stage: (1.0 - step) * self.ionpopdict[(element.Z, ion_stage)] + step * n_trial
+                        for ion_stage, n_trial in populations.items()
+                    }
+                self._set_balanced_populations(element, populations)
 
             # the loss function takes n_e from ionpopdict (or the override), so the populations and the
             # loss term agree to machine precision whatever the tolerance of the root find
             self._solve_matrix()
+
+            if step < 1.0:
+                # The mixed rate coefficients did not give the populations of the matrix, so the residual
+                # has no meaning for this step, and the history of the acceleration does not apply. The next
+                # iteration starts from the rate coefficients of this solution.
+                max_residual = math.inf
+                history_x.clear()
+                history_f.clear()
+                for element in elements:
+                    element.ratecoeffs_per_deposition = self._balanced_ratecoeffs_per_deposition(element)
+                    mixed_rates[element.Z] = {
+                        ion_stage: dict(rates) for ion_stage, rates in element.ratecoeffs_per_deposition.items()
+                    }
+                if self.verbose:
+                    print(
+                        f"  ionisation balance iteration {iteration}: the trial n_e {n_e:.4e} [/cm3] is not below the"
+                        f" limit {n_e_limit:.4e} of the loss function, so the step is {step:.3f} of the trial step"
+                    )
+                continue
 
             # the residual compares the rate coefficients that the new solution gives with the rate
             # coefficients that gave the populations in the matrix. At convergence the populations,
@@ -3095,6 +3163,19 @@ class SpencerFanoSolver:
                         )
                 break
         else:
+            if step < 1.0:
+                # Each reduced step moves the density one half of the distance to the limit. The trial step
+                # of the last iteration was still not below the limit, so the solution is at the limit or
+                # above it.
+                msg = (
+                    f"the ionisation balance found no free electron density below {n_e_limit:.4e} cm^-3 in"
+                    f" {BALANCE_MAXITER} iterations. That density is the limit of the free-electron loss function"
+                    f" at emin_ev ({self.engrid[0]} eV), where the Coulomb logarithm is zero. The solution is at"
+                    " the limit or above it. Raise emin_ev for a denser plasma. A solver with an earlier solution"
+                    " returns to it. Else the populations of the last iteration stay in ionpopdict, and they"
+                    " are not a solution."
+                )
+                raise ValueError(msg)
             msg = (
                 f"the ionisation balance did not converge in {BALANCE_MAXITER} iterations: the largest relative"
                 f" change of an ionisation rate coefficient is {max_residual:.2e} (balance_tol {balance_tol}). A"
