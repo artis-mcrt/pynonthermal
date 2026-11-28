@@ -1,6 +1,7 @@
 """Check the charge-neutral root search for a free electron density near the lower limit of double precision."""
 
 import math
+import sys
 
 import pytest
 
@@ -12,12 +13,20 @@ def test_upper_bracket_is_the_root() -> None:
     assert pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, lambda _n_e: 1e-270, 0.0, 1e-270) == 1e-270
 
 
-@pytest.mark.parametrize("root", [1e-280, 1e-300, 1e-310])
+@pytest.mark.parametrize("root", [1e-280, 1e-300, 3e-308, sys.float_info.min])
 def test_root_inside_a_bracket_with_a_first_trial_that_underflows(root: float) -> None:
-    # the root is between the smallest positive double and the upper bracket
+    # the root is between the smallest normal double and the upper bracket, or it is that double
     n_e = pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, lambda _n_e: root, 0.0, 1e-270)
     # math.isclose() has no absolute tolerance by default
     assert math.isclose(n_e, root, rel_tol=1e-9)
+
+
+@pytest.mark.parametrize("root", [1e-310, 2 * math.ulp(0.0), math.ulp(0.0)])
+def test_subnormal_root_keeps_its_error(root: float) -> None:
+    # A subnormal double has less precision than a normal double. For a root of 2 ulp, a bisection in
+    # ln(n_e) down to the smallest positive double gave 1 ulp, with no error.
+    with pytest.raises(ValueError, match="below the range of a double precision number"):
+        pynonthermal.ionbalance.solve_charge_neutral_n_e(0.0, lambda _n_e: root, 0.0, 1e-270)
 
 
 def test_no_charge_keeps_its_error() -> None:
