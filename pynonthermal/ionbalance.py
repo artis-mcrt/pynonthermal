@@ -99,7 +99,7 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
     # range. For hydrogen at 210 K, the product of the factors gave zero, and the coefficient is 3.297e-308.
     # A coefficient below the range still gives zero. The two partition functions also have one logarithm
     # each, because their ratio alone can be outside the range.
-    return math.exp(
+    ln_saha_factor = (
         math.log(2.0)
         + math.log(partfunc_upper)
         - math.log(partfunc_lower)
@@ -107,6 +107,11 @@ def get_saha_factor(temperature: float, ionpot_ev: float, partfunc_lower: float,
         + 1.5 * math.log(temperature)
         - ionpot_ev / K_B / temperature
     )
+    try:
+        return math.exp(ln_saha_factor)
+    except OverflowError:
+        # a coefficient above the range is infinite, as the product of the factors was
+        return math.inf
 
 
 def get_ion_fractions(ratio_coeffs: Sequence[float], n_e: float) -> list[float]:

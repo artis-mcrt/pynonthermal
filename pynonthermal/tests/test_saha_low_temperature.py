@@ -71,3 +71,11 @@ def test_saha_factor_with_a_partition_function_ratio_below_the_range() -> None:
     )
     assert math.isclose(math.log(saha_factor), expected_ln, rel_tol=1e-12)
     assert math.isclose(saha_factor, 2.4e-258, rel_tol=0.05)
+
+
+def test_saha_factor_above_the_range_is_infinite() -> None:
+    # at 1e200 K the coefficient is about 1e315, above the largest double. math.exp() raises an OverflowError
+    # there, and the product of the factors gave inf.
+    assert pynonthermal.ionbalance.get_saha_factor(1e200, 1.0, 1.0, 1.0) == math.inf
+    # a coefficient just below the range stays finite
+    assert 1e300 < pynonthermal.ionbalance.get_saha_factor(1e195, 1.0, 1.0, 1.0) < math.inf
